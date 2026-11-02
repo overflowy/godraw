@@ -820,3 +820,29 @@ func TestNoMCPWithoutAServer(t *testing.T) {
 		}
 	}
 }
+
+// A marker goes under what it marks in what an export draws, as on the canvas.
+func TestExportPutsHighlightsUnder(t *testing.T) {
+	a, _, _ := newTest(t)
+	e := a.ed
+	drag := func(x0, y0, x1, y1 float64) {
+		e.PointerMove(x0, y0, editor.Mods{}, 0)
+		e.PointerDown(x0, y0, 0, 1, editor.Mods{}, 0)
+		e.PointerMove(x1, y1, editor.Mods{}, 0)
+		e.PointerUp(x1, y1, editor.Mods{}, 0)
+	}
+	e.SetGeoTool("rectangle")
+	e.Next.Fill = "solid"
+	drag(100, 100, 300, 300)
+	box := geo.Box{X: 50, Y: 50, W: 300, H: 300}
+	at := func() color.Color {
+		return a.RenderImage(box, e.Children(e.Page), 1).At(150, 150)
+	}
+	before := at()
+	e.SetTool(editor.ToolHighlight)
+	e.Next.Color = "yellow"
+	drag(80, 200, 320, 200)
+	if after := at(); after != before {
+		t.Errorf("the marker shows over a solid box: %v, was %v", after, before)
+	}
+}

@@ -128,6 +128,10 @@ func sameVia(a, b []geo.Vec) bool {
 // turn more is only another shape of route, which may well be what was meant.
 const needlessTurns = 2
 
+// How far a via can lie off the way a route would go without it before that's more
+// than a choice of route.
+const farOutOfTheWay = 120.0
+
 // How far along an arrow or an edge a route may run before it reads as one with it.
 const routeAlong = 24.0
 
@@ -145,6 +149,38 @@ func (e *Editor) NeedlessVia(s *doc.Shape) int {
 		return 0
 	}
 	return extra
+}
+
+// ViaDetour returns how far an elbow arrow's via points lie off a route that would
+// be clear without them, if that's far, or 0.
+func (e *Editor) ViaDetour(s *doc.Shape) float64 {
+	if s.Kind != "elbow" || len(s.Via()) == 0 {
+		return 0
+	}
+	plain := s.Clone()
+	plain.SetVia(nil)
+	route := e.routeOf(plain)
+	far := 0.0
+	for _, p := range s.Via() {
+		near := math.Inf(1)
+		for i := 1; i < len(route); i++ {
+			near = min(near, distToSegment(p, route[i-1], route[i]))
+		}
+		far = max(far, near)
+	}
+	if far < farOutOfTheWay || e.routeIsTaken(plain, route) {
+		return 0
+	}
+	return far
+}
+
+func distToSegment(p, a, b geo.Vec) float64 {
+	d := b.Sub(a)
+	l := d.Dot(d)
+	if l == 0 {
+		return p.Dist(a)
+	}
+	return p.Dist(a.Add(d.Mul(math.Max(0, math.Min(1, p.Sub(a).Dot(d)/l)))))
 }
 
 // routeOf returns the corners of an elbow arrow as it would lie, in its own space.

@@ -2038,7 +2038,7 @@ func TestArrowOverAFramesName(t *testing.T) {
 // that does.
 func TestWarningOfAClippedRouteSaysHowToFixIt(t *testing.T) {
 	e := newEditor()
-	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`,
+	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-10]]}]`,
 		`s sticks out of frame f, which clips it; in:"" takes it out of the frame`)
 	wantWarnings(t, e, `[{"set":"s","in":""}]`)
 	if e.Doc.Shapes["shape:s"].Parent != e.Page {
@@ -2218,4 +2218,38 @@ func TestWarnsOfANeedlessVia(t *testing.T) {
 	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`)
 	// Going around something is what it's for.
 	wantWarnings(t, newEditor(), `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`)
+}
+
+// Ending on something that sits on a note, an arrow is inside the note's box,
+// which is fine, as it's leaving a container. Its text is another matter.
+func TestWarnsOfAnArrowOverTheTextOfWhatItEndsIn(t *testing.T) {
+	const on = `{"add":"note","id":"n","x":0,"y":0,"text":"Some text in the note here, right across it"},{"add":"rectangle","id":"i","x":70,"y":150,"w":60,"h":40},{"add":"rectangle","id":"far","x":70,"y":-300,"w":60,"h":60},`
+	wantWarnings(t, newEditor(), `[`+on+`{"add":"arrow","id":"s","from":"far","to":"i"}]`, "s runs over n's text")
+
+	// Coming in from the side, it stays clear of the text, and that's fine.
+	wantWarnings(t, newEditor(), `[`+on+`{"add":"rectangle","id":"side","x":400,"y":170,"w":60,"h":40},{"add":"arrow","id":"s","from":"side","to":"i","straight":"h"}]`)
+
+	// So does one that's bound to the note itself.
+	wantWarnings(t, newEditor(), `[{"add":"note","id":"n","x":0,"y":0,"text":"Some text"},{"add":"rectangle","id":"far","x":70,"y":-300,"w":60,"h":60},{"add":"arrow","id":"s","from":"far","to":"n"}]`)
+}
+
+// Moved one end at a time, a via stays where it was, and takes the route a long
+// way off with no more turns than it needs. That's told of.
+func TestWarnsOfAViaThatGoesFarOutOfTheWay(t *testing.T) {
+	const row = `[` + threeInARow + `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`
+	e := newEditor()
+	ops(t, e, row)
+	ops(t, e, `[{"set":"a","dy":200}]`)
+	out := ops(t, e, `[{"set":"b","dy":200},{"set":"m","dy":200}]`)
+	if !strings.Contains(out, "s's via takes it") || !strings.Contains(out, "out of its way") {
+		t.Errorf("apply: %s", out)
+	}
+	if got, _ := read(e, readArgs{Check: true}, "", ""); !strings.Contains(got, "out of its way") {
+		t.Errorf("check: %s", got)
+	}
+	wantWarnings(t, e, `[{"set":"s","via":[]}]`)
+
+	// Over what's in the way is what it's for, however far.
+	e = newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"tall","x":250,"y":-300,"w":100,"h":500},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-340]]}]`)
 }

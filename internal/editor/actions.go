@@ -1253,27 +1253,39 @@ func (e *Editor) visualBounds(id doc.ID) geo.Box {
 	return b.Expand(pad)
 }
 
-// WalkPaint calls fn for what id paints, in order, with its transform.
-// frames open and close around their contents, with enter and leave.
-func (e *Editor) WalkPaint(id doc.ID, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
-	s := e.Doc.Shapes[id]
-	if s == nil {
-		return
-	}
-	switch s.Type {
-	case doc.TypeGroup:
-		for _, k := range e.Children(id) {
-			e.WalkPaint(k, fn, enter, leave)
+// WalkPaint calls fn for what ids paint, in order, with their transforms: as on
+// the canvas, the highlights among them first, under the rest. Frames open and
+// close around their contents, with enter and leave.
+func (e *Editor) WalkPaint(ids []doc.ID, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
+	e.walkLayer(ids, true, fn, enter, leave)
+	e.walkLayer(ids, false, fn, enter, leave)
+}
+
+func (e *Editor) walkLayer(ids []doc.ID, highlights bool, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
+	for _, id := range ids {
+		s := e.Doc.Shapes[id]
+		if s == nil {
+			continue
 		}
-	case doc.TypeFrame:
-		fn(s)
-		enter(s)
-		for _, k := range e.Children(id) {
-			e.WalkPaint(k, fn, enter, leave)
+		switch s.Type {
+		case doc.TypeGroup:
+			e.walkLayer(e.Children(id), highlights, fn, enter, leave)
+		case doc.TypeHighlight:
+			if highlights {
+				fn(s)
+			}
+		case doc.TypeFrame:
+			if !highlights {
+				fn(s)
+				enter(s)
+				e.WalkPaint(e.Children(id), fn, enter, leave)
+				leave(s)
+			}
+		default:
+			if !highlights {
+				fn(s)
+			}
 		}
-		leave(s)
-	default:
-		fn(s)
 	}
 }
 
@@ -1299,35 +1311,33 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 		}
 		return ""
 	}
-	for _, id := range ids {
-		e.WalkPaint(id, func(s *doc.Shape) {
-			m := e.PageMat(s.ID)
-			fmt.Fprintf(&b, `<g%s>`, opacity(s))
-			for _, p := range e.Display(s, pal) {
-				e.svgPrim(&b, p, m)
+	e.WalkPaint(ids, func(s *doc.Shape) {
+		m := e.PageMat(s.ID)
+		fmt.Fprintf(&b, `<g%s>`, opacity(s))
+		for _, p := range e.Display(s, pal) {
+			e.svgPrim(&b, p, m)
+		}
+		if s.Type == doc.TypeFrame && s.Name != "" {
+			size, font := FrameHeading(s)
+			color := pal.Text
+			if size > 0 {
+				color = pal.Swatch(s.Color).Solid
 			}
-			if s.Type == doc.TypeFrame && s.Name != "" {
-				size, font := FrameHeading(s)
-				color := pal.Text
-				if size > 0 {
-					color = pal.Swatch(s.Color).Solid
-				}
-				if size == 0 {
-					size = FrameHeadingFloor
-				}
-				o := m.Apply(geo.V(0, -size/2))
-				fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s">%s</text>`, o.X, o.Y, svgFontFamily(font), size, color.CSS(), xmlEscape(s.Name))
+			if size == 0 {
+				size = FrameHeadingFloor
 			}
-			b.WriteString(`</g>`)
-		}, func(f *doc.Shape) {
-			clips++
-			m := e.PageMat(f.ID)
-			c := m.ApplyBox(geo.Box{W: f.W, H: f.H})
-			fmt.Fprintf(&b, `<clipPath id="c%d"><path d="%s"/></clipPath><g clip-path="url(#c%d)">`, clips, (&geo.Path{}).Poly(c[:], true).SVG(geo.Identity), clips)
-		}, func(f *doc.Shape) {
-			b.WriteString(`</g>`)
-		})
-	}
+			o := m.Apply(geo.V(0, -size/2))
+			fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s">%s</text>`, o.X, o.Y, svgFontFamily(font), size, color.CSS(), xmlEscape(s.Name))
+		}
+		b.WriteString(`</g>`)
+	}, func(f *doc.Shape) {
+		clips++
+		m := e.PageMat(f.ID)
+		c := m.ApplyBox(geo.Box{W: f.W, H: f.H})
+		fmt.Fprintf(&b, `<clipPath id="c%d"><path d="%s"/></clipPath><g clip-path="url(#c%d)">`, clips, (&geo.Path{}).Poly(c[:], true).SVG(geo.Identity), clips)
+	}, func(f *doc.Shape) {
+		b.WriteString(`</g>`)
+	})
 	b.WriteString(`</svg>`)
 	return b.Bytes(), true
 }

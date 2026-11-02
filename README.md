@@ -120,7 +120,7 @@ File menu.
 
 `apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
 covers text, naming what caused it, when a text shape sticks out of the box under it, when an arrow is hidden, off level, buried by its label, runs through a box or along its edge,
-crosses a frame's name or has a route that crosses itself, when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched, and other warnings come before arrows that fan out from one anchor, which count as one trunk. `read` with `check` lists the warnings of the whole page.
+crosses a frame's name or the text of what it ends in, has a route that crosses itself or a `via` that only adds turns or goes far out of its way, when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched, and other warnings come before arrows that fan out from one anchor, which count as one trunk. `read` with `check` lists the warnings of the whole page.
 
 A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
 a rectangle and two text shapes, so it needs nothing special to open elsewhere.

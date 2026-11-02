@@ -106,3 +106,23 @@ func TestDragKeepsAViaThatGoesAround(t *testing.T) {
 		t.Errorf("via went with %v in the way", in.ID)
 	}
 }
+
+// Export goes the way the canvas does: highlights first, under what's in the same
+// page or frame, wherever they come in the order.
+func TestWalkPaintPutsHighlightsUnder(t *testing.T) {
+	h := newHarness(t)
+	rect := h.rect(100, 100, 100, 100)
+	h.SetTool(ToolHighlight)
+	h.drag(90, 150, 210, 150)
+	var mark doc.ID
+	for _, id := range h.Children(h.Page) {
+		if h.shape(id).Type == doc.TypeHighlight {
+			mark = id
+		}
+	}
+	var got []doc.ID
+	h.WalkPaint(h.Children(h.Page), func(s *doc.Shape) { got = append(got, s.ID) }, func(*doc.Shape) {}, func(*doc.Shape) {})
+	if len(got) != 2 || got[0] != mark || got[1] != rect.ID {
+		t.Errorf("painted %v, want %v then %v", got, mark, rect.ID)
+	}
+}

@@ -66,18 +66,7 @@ func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA 
 					s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
 					s.view = geo.Box{X: at.X, Y: at.Y, W: float64(side), H: float64(side)}
 					p.Fill(r, toUI(pal.Background), 0)
-					for _, id := range ids {
-						sh := e.Doc.Shapes[id]
-						switch sh.Type {
-						case "group":
-							s.layer(id, true)
-							s.layer(id, false)
-						case "frame":
-							s.frame(sh)
-						default:
-							s.shape(sh)
-						}
-					}
+					s.paint(ids)
 				})
 			}, side, side, float32(scale))
 			draw.Draw(out, image.Rect(tx, ty, tx+tile, ty+tile), img, image.Point{}, draw.Src)

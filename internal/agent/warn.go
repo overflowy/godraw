@@ -528,6 +528,8 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 	}
 	if n := r.e.NeedlessVia(s); n > 0 {
 		r.warn("%s's via adds %d turns, and the way without it is clear; via:[] clears it", name, n)
+	} else if d := r.e.ViaDetour(s); d > 0 {
+		r.warn("%s's via takes it %s out of its way, and the way without it is clear; via:[] clears it", name, num(d))
 	} else if s.Kind == "elbow" && crossesItself(pts) {
 		if len(s.Via()) > 0 {
 			r.warn("%s's route crosses itself; its via may be out of place: set via again, or via:[] clears it", name)
@@ -559,7 +561,8 @@ func crossesItself(pts []geo.Vec) bool {
 
 // checkCrossings tells of an arrow running through a box it doesn't join, or
 // along an edge of one, where it can't be told from the edge. One that starts or
-// ends inside the box is leaving a container, which is fine.
+// ends inside the box is leaving a container, which is fine, as long as it keeps
+// off the container's text.
 func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.ArrowInfo, pts []geo.Vec, bs, be *doc.Binding, items []*item) {
 	hint := ""
 	if s.Kind == "elbow" {
@@ -569,8 +572,8 @@ func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.
 	joins := func(it *item, b *doc.Binding) bool {
 		return b != nil && (b.To == it.s.ID || it.owner == ownerOf(r.e, b.To) || r.e.IsAncestor(it.s.ID, b.To))
 	}
-	crosses := func(it *item) bool {
-		corners := it.box.Expand(-2).Corners()
+	crosses := func(box geo.Box) bool {
+		corners := box.Expand(-2).Corners()
 		for i := 1; i < len(pts); i++ {
 			if len(geo.SegmentPolyline(pts[i-1], pts[i], corners[:], true)) > 0 {
 				return true
@@ -584,9 +587,15 @@ func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.
 			continue
 		}
 		inside := it.box.Contains(rawStart) || it.box.Contains(rawEnd)
-		if it.content && it.s.Type != doc.TypeFrame && !joins(it, bs) && !joins(it, be) && !inside && crosses(it) {
-			r.warn("%s runs through %s%s", name, shortID(it.owner), hint)
-			continue
+		if it.content && it.s.Type != doc.TypeFrame && !joins(it, bs) && !joins(it, be) {
+			if !inside && crosses(it.box) {
+				r.warn("%s runs through %s%s", name, shortID(it.owner), hint)
+				continue
+			}
+			if inside && it.text != nil && crosses(*it.text) {
+				r.warn("%s runs over %s's text%s", name, shortID(it.owner), hint)
+				continue
+			}
 		}
 		// A text shape has no edge to run along, and those of a card's text are
 		// inside its box.

@@ -142,17 +142,19 @@ func (s *scene) grid(r ui.Rect) {
 
 // children paints what a page or frame holds: highlights first, under
 // everything, as ink laid over paper, then the rest.
-func (s *scene) children(parent doc.ID) {
-	s.layer(parent, true)
-	s.layer(parent, false)
+func (s *scene) children(parent doc.ID) { s.paint(s.e.Children(parent)) }
+
+func (s *scene) paint(ids []doc.ID) {
+	s.layer(ids, true)
+	s.layer(ids, false)
 }
 
-func (s *scene) layer(parent doc.ID, highlights bool) {
-	for _, id := range s.e.Children(parent) {
+func (s *scene) layer(ids []doc.ID, highlights bool) {
+	for _, id := range ids {
 		sh := s.e.Doc.Shapes[id]
 		switch sh.Type {
 		case doc.TypeGroup:
-			s.layer(id, highlights)
+			s.layer(s.e.Children(id), highlights)
 		case doc.TypeHighlight:
 			if highlights {
 				s.shape(sh)

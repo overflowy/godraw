@@ -662,12 +662,8 @@ func (e *Editor) arrowPrims(s *doc.Shape, pal *Palette) []Prim {
 			c := lb.Corners()
 			out = append(out, fillWith(geo.RoundedPoly(c[:], 4), pal.Background))
 			size := arrowLabelSizeOf(s.Size) * s.Scale
-			b := e.Measure(s.Text, s.Font, size, 0)
-			if b.W > 280*s.Scale {
-				b = e.Measure(s.Text, s.Font, size, 280*s.Scale)
-			}
 			pad := 4.25 * s.Scale
-			b = alignBlock(b, lb.W-2*pad, "middle")
+			b := alignBlock(e.arrowLabelBlock(s), lb.W-2*pad, "middle")
 			out = append(out, Prim{
 				Kind: PrimText, Block: &b, X: lb.X + pad, Y: lb.Y + pad, Size: size, Font: s.Font,
 				Color: pal.Swatch(s.LabelColor).Solid, Label: true,

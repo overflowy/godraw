@@ -318,26 +318,51 @@ func (i *ArrowInfo) at(t float64) geo.Vec {
 // arrowLabelBox returns the box of an arrow's label, in the arrow's space.
 func (e *Editor) arrowLabelBox(s *doc.Shape) *geo.Box {
 	info := e.Arrow(s)
-	text := s.Text
-	if text == "" {
-		text = " "
-	}
-	size := arrowLabelSizeOf(s.Size) * s.Scale
-	b := e.Measure(text, s.Font, size, 0)
-	if b.W > 280*s.Scale {
-		b = e.Measure(text, s.Font, size, 280*s.Scale)
-	}
+	b := e.arrowLabelBlock(s)
 	pos := s.LabelPosition
 	if pos == 0 {
 		pos = 0.5
 	}
 	c := info.at(pos)
 	pad := 4.25 * s.Scale
-	var side string
-	if s.MetaValue(doc.MetaLabel, &side) && side == "above" {
+	if labelAbove(s) {
 		c = c.Add(info.clearOfLine(pos, b.W/2+pad, b.H/2+pad, strokeWidthOf(s)/2+3*s.Scale))
 	}
 	return &geo.Box{X: c.X - b.W/2 - pad, Y: c.Y - b.H/2 - pad, W: b.W + 2*pad, H: b.H + 2*pad}
+}
+
+// arrowLabelBlock lays out an arrow's label, for the room it takes and for drawing.
+func (e *Editor) arrowLabelBlock(s *doc.Shape) TextBlock {
+	text := s.Text
+	if text == "" {
+		text = " "
+	}
+	size := arrowLabelSizeOf(s.Size) * s.Scale
+	b := e.Measure(text, s.Font, size, 0)
+	if w := labelWidth(b.W, size, s.Scale, geo.BoxOf(e.Arrow(s).Line), labelAbove(s)); w < b.W {
+		b = e.Measure(text, s.Font, size, w)
+	}
+	return b
+}
+
+func labelAbove(s *doc.Shape) bool {
+	var side string
+	return s.MetaValue(doc.MetaLabel, &side) && side == "above"
+}
+
+// labelWidth returns how wide an arrow's label may be. On the line, it's what
+// tldraw allows, so that it wraps the same there: a label on an arrow wider than
+// tall leaves some of the arrow showing, by wrapping if it has to. Above the line
+// it's in nothing's way, which tldraw has no way of saying.
+func labelWidth(w, size, scale float64, body geo.Box, above bool) float64 {
+	const margin = 64.0
+	switch {
+	case above:
+		return 280 * scale
+	case body.W > body.H:
+		return max(min(w, margin), min(body.W-margin, w))
+	}
+	return min(w, 16*size)
 }
 
 // clearOfLine returns how far to move a box of half sizes hw and hh off a part
