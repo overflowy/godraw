@@ -572,12 +572,45 @@ func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 	return out
 }
 
+// FrameHeading returns the font of a frame's heading, and its size in the page
+// when it was given one, to read as what the frame holds does. Without one, a
+// heading stays the same size on the screen, as tldraw's does.
+func FrameHeading(s *doc.Shape) (size float64, font string) {
+	var style string
+	if s.MetaValue(doc.MetaFrameSize, &style) {
+		size = fontSizeOf(style) // as a card's title, which is a text shape
+		font = "draw"
+	}
+	s.MetaValue(doc.MetaFrameFont, &font)
+	return size, font
+}
+
+// FrameHeadingFloor is the size of a frame's heading on the screen, which a
+// heading with a size of its own doesn't go below.
+const FrameHeadingFloor = 12.0
+
+// FrameHeadingBox returns what a frame's heading covers in the page, in a picture
+// or view where px of the page make a pixel.
+func (e *Editor) FrameHeadingBox(s *doc.Shape, px float64) geo.Box {
+	size, font := FrameHeading(s)
+	size = math.Max(size, FrameHeadingFloor*px)
+	w := s.W
+	if s.Name != "" && e.Measure != nil {
+		w = math.Min(w, e.Measure(s.Name, font, size, 0).W)
+	}
+	h := size * 1.6
+	return e.PageMat(s.ID).BoundsOf(geo.Box{Y: -h, W: w, H: h})
+}
+
 func (e *Editor) framePrims(s *doc.Shape, pal *Palette) []Prim {
 	box := geo.Box{W: s.W, H: s.H}
 	c := box.Corners()
 	path := (&geo.Path{}).Poly(c[:], true)
 	sw := pal.Swatch(s.Color)
 	stroke := strokeWith(path, 1, sw.FrameStroke)
+	if size, _ := FrameHeading(s); size > 0 {
+		stroke = strokeWith(path, strokeOf("s"), sw.Solid)
+	}
 	stroke.Butt = true
 	return []Prim{fillWith(path, sw.FrameFill), stroke}
 }

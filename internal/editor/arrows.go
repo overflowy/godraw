@@ -140,7 +140,7 @@ func (e *Editor) computeArrow(s *doc.Shape, bs, be *doc.Binding, ts, te *doc.Sha
 	}
 
 	if s.Kind == "elbow" {
-		return e.computeElbow(s, info, ts, te, outlineIn)
+		return e.computeElbow(s, info, bs, be, ts, te, inv, outlineIn)
 	}
 
 	dist := a.Dist(b)
@@ -279,40 +279,6 @@ func crossAlong(line, outline []geo.Vec, atEnd bool) (float64, bool) {
 		}
 	}
 	return 0, false
-}
-
-// computeElbow lays out a right-angled arrow: out from each end along the
-// longer axis, with its bend where elbowMidPoint says.
-func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, ts, te *doc.Shape, outlineIn func(*doc.Shape) []geo.Vec) *ArrowInfo {
-	a, b := info.RawStart, info.RawEnd
-	mid := s.ElbowMidPoint
-	if mid == 0 {
-		mid = 0.5
-	}
-	d := b.Sub(a)
-	var pts []geo.Vec
-	if math.Abs(d.X) >= math.Abs(d.Y) {
-		x := a.X + d.X*mid
-		pts = []geo.Vec{a, geo.V(x, a.Y), geo.V(x, b.Y), b}
-	} else {
-		y := a.Y + d.Y*mid
-		pts = []geo.Vec{a, geo.V(a.X, y), geo.V(b.X, y), b}
-	}
-	// Clip each bound end to its target, along its first and last legs.
-	if ts != nil {
-		if p, ok := lastCross(pts[0], pts[1], outlineIn(ts)); ok {
-			pts[0] = p
-		}
-	}
-	if te != nil {
-		if p, ok := lastCross(pts[3], pts[2], outlineIn(te)); ok {
-			pts[3] = p.Add(pts[2].Sub(pts[3]).Uni().Mul(strokeWidthOf(s)))
-		}
-	}
-	info.Elbow, info.Line = pts, pts
-	info.Start, info.End = pts[0], pts[3]
-	info.Mid = geo.Med(pts[1], pts[2])
-	return info
 }
 
 func (e *Editor) arrowGeometry(s *doc.Shape) *Geometry {

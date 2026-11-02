@@ -510,8 +510,12 @@ func (e *Editor) Hit(p geo.Vec, margin float64, allowLocked bool) HitResult {
 
 func (e *Editor) hitFrameHeading(s *doc.Shape, q geo.Vec) bool {
 	z := e.Cam().Z
-	h := 26 / z
-	return q.Y < 0 && q.Y >= -h && q.X >= 0 && q.X <= math.Min(s.W, 160/z)
+	h, w := 26/z, 160/z
+	if size, font := FrameHeading(s); size > 0 {
+		h = math.Max(h, size*1.6)
+		w = math.Max(w, e.Measure(s.Name, font, size, 0).W)
+	}
+	return q.Y < 0 && q.Y >= -h && q.X >= 0 && q.X <= math.Min(s.W, w)
 }
 
 // frameAt returns the top frame holding a point of the page, other than

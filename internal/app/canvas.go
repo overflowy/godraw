@@ -22,6 +22,9 @@ type scene struct {
 	origin geo.Vec
 	view   geo.Box // what the camera shows, in the page
 	export bool
+	// shrink is the scale of a picture of the page that comes out smaller than
+	// the page: see pixel.
+	shrink float64
 	// lightInk draws hand-inked strokes as lines rather than filled masks:
 	// see atlasBudget.
 	lightInk bool
@@ -230,7 +233,7 @@ func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
 		}
 		w := float32(pr.Width * s.cam.Z)
 		if pr.Butt {
-			w = max(w, 1)
+			w = max(w, s.pixel())
 		}
 		s.p.StrokePath(path, w, toUI(pr.Color.Alpha(o)))
 	case editor.PrimText:
@@ -381,6 +384,16 @@ func (s *scene) frame(sh *doc.Shape) {
 	s.frameHeading(sh, origin, rot)
 }
 
+// pixel returns how much of what is painted makes a pixel of what is shown. A
+// picture smaller than the page it's of scales all it paints, and what stays
+// the same size on the screen has to allow for that.
+func (s *scene) pixel() float32 {
+	if s.shrink > 0 {
+		return float32(1 / s.shrink)
+	}
+	return 1
+}
+
 func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 	if sh.ID == s.e.Editing && !s.export {
 		return
@@ -389,8 +402,16 @@ func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 	if name == "" {
 		name = "Frame"
 	}
-	const size = 12
+	page, font := editor.FrameHeading(sh)
+	floor := float32(editor.FrameHeadingFloor) * s.pixel()
+	size := max(float32(page*s.cam.Z), floor)
 	span := ui.Span{Text: name, Size: size, Color: toUI(s.pal.Text.Alpha(0.65))}
+	if font != "" {
+		span.Font = family(font)
+	}
+	if page > 0 {
+		span.Color = toUI(s.pal.Swatch(sh.Color).Solid)
+	}
 	draw := func() {
 		s.p.RichText(float32(origin.X), float32(origin.Y)-size*1.6, float32(max(sh.W*s.cam.Z, 40)), span)
 	}

@@ -1460,3 +1460,240 @@ func TestWebPagesCantReachIt(t *testing.T) {
 		t.Error("a web page drew on the canvas")
 	}
 }
+
+// arrowLine returns the corners of an arrow, in the page.
+func arrowLine(e *editor.Editor, id string) []geo.Vec {
+	s := e.Doc.Shapes[shapeID(id)]
+	m := e.PageMat(s.ID)
+	var out []geo.Vec
+	for _, p := range e.Arrow(s).Line {
+		out = append(out, m.Apply(p))
+	}
+	return out
+}
+
+const threeInARow = `{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"m","x":250,"y":0,"w":100,"h":100,"text":"m"},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100,"text":"b"},`
+
+// An anchor on the top of a shape leaves by the top, not along it to a corner,
+// and that's enough to get over what is in the way.
+func TestElbowLeavesByItsAnchorsSide(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0]}]`)
+	line := arrowLine(e, "s")
+	if len(line) != 4 {
+		t.Fatalf("not a U: %v", line)
+	}
+	if line[0].X != 50 || line[0].Y != 0 || line[1].X != 50 || line[1].Y >= 0 {
+		t.Errorf("doesn't leave by the top: %v", line)
+	}
+	if last := line[3]; last.X != 550 || last.Y > 0 || line[2].X != 550 {
+		t.Errorf("doesn't arrive at the top: %v", line)
+	}
+}
+
+// Without an anchor on an edge an elbow lies as it always did.
+func TestElbowWithoutSideIsUnchanged(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":200,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow"}]`)
+	line := arrowLine(e, "s")
+	if len(line) != 4 || line[1].X != 200 || line[2].X != 200 || line[0].X != 100 {
+		t.Errorf("got %v", line)
+	}
+}
+
+func TestVia(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow"}]`, "s runs through m; another side or via routes it around")
+	wantWarnings(t, e, `[{"set":"s","via":[[300,-40]]}]`)
+	line := arrowLine(e, "s")
+	found := false
+	for i := 1; i < len(line); i++ {
+		if line[i-1].Y == -40 && line[i].Y == -40 && min(line[i-1].X, line[i].X) <= 300 && max(line[i-1].X, line[i].X) >= 300 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("doesn't pass through it: %v", line)
+	}
+	if got, _ := read(e, readArgs{IDs: names{"s"}}, "", ""); !strings.Contains(got, "via [[300,-40]]") {
+		t.Errorf("read: %s", got)
+	}
+	// Going back to an arc forgets it, and an empty list clears it.
+	ops(t, e, `[{"set":"s","via":[]}]`)
+	if e.Doc.Shapes[shapeID("s")].Via() != nil {
+		t.Error("via:[] didn't clear")
+	}
+	ops(t, e, `[{"set":"s","via":[[300,-40]]},{"set":"s","kind":"arc"}]`)
+	if e.Doc.Shapes[shapeID("s")].Via() != nil {
+		t.Error("an arc kept via")
+	}
+}
+
+// It's kept in the file, and moves and turns over with the arrow.
+func TestViaLasts(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"arrow","id":"s","x1":0,"y1":0,"x2":200,"y2":100,"kind":"elbow","via":[[100,-40]]}]`)
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	back, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := back.Shapes[shapeID("s")].Via(); len(v) != 1 || v[0] != geo.V(100, -40) {
+		t.Errorf("saved as %v", v)
+	}
+	ops(t, e, `[{"dup":"s","dx":0,"dy":300},{"set":"s","dx":10,"dy":20}]`)
+	if got, _ := read(e, readArgs{IDs: names{"s"}}, "", ""); !strings.Contains(got, "via [[110,-20]]") {
+		t.Errorf("moved: %s", got)
+	}
+	var copied bool
+	for id, s := range e.Doc.Shapes {
+		if id != shapeID("s") && len(s.Via()) == 1 {
+			m := e.PageMat(id)
+			copied = m.Apply(s.Via()[0]) == geo.V(100, 260)
+		}
+	}
+	if !copied {
+		t.Error("the copy's via didn't come along")
+	}
+	before := arrowLine(e, "s")
+	ops(t, e, `[{"flip":"s","how":"v"}]`)
+	after := arrowLine(e, "s")
+	if len(before) != len(after) {
+		t.Fatalf("flipped: %v to %v", before, after)
+	}
+	box := geo.BoxOf(before)
+	for i := range before {
+		if want := box.Y + box.MaxY() - before[i].Y; math.Abs(after[i].Y-want) > 0.01 {
+			t.Errorf("flipped: %v to %v", before, after)
+			break
+		}
+	}
+}
+
+func TestRoutesTurnDownWhatTheyCantDo(t *testing.T) {
+	const two = `{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":300,"y":0},`
+	for list, want := range map[string]string{
+		`[` + two + `{"add":"arrow","from":"a","to":"b","kind":"elbow","bend":40}]`:                                         "elbow arrow can't bend",
+		`[` + two + `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow"},{"set":"s","bend":40}]`:                    "elbow arrow can't bend",
+		`[` + two + `{"add":"arrow","from":"a","to":"b","via":[[0,0]]}]`:                                                    `add "kind":"elbow"`,
+		`[` + two + `{"add":"arrow","from":"a","to":"b","kind":"elbow","straight":"h","via":[[0,0]]}]`:                      "can't take via",
+		`[` + two + `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","straight":"h"},{"set":"s","via":[[0,0]]}]`: "can't take via",
+		`[` + two + `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[0,0]]},{"set":"s","straight":"h"}]`: "can't take via",
+		`[` + two + `{"add":"arrow","from":"a","to":"b","kind":"elbow","via":[[0]]}]`:                                       "[x,y] points",
+	} {
+		if _, err := tryOps(newEditor(), list); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", list, err, want)
+		}
+	}
+	// A bent arc that becomes an elbow isn't told off for what it had.
+	ops(t, newEditor(), `[`+two+`{"add":"arrow","id":"s","from":"a","to":"b","bend":40},{"set":"s","kind":"elbow"}]`)
+}
+
+func TestArrowAlongAnEdge(t *testing.T) {
+	const block = `{"add":"card","id":"block","title":"Block","x":200,"y":0,"w":200,"h":100},`
+	wantWarnings(t, newEditor(), `[`+block+`{"add":"arrow","id":"s","x1":100,"y1":0,"x2":500,"y2":0}]`, "s runs along block's top edge for 200")
+	wantWarnings(t, newEditor(), `[`+block+`{"add":"arrow","id":"s","x1":100,"y1":102,"x2":500,"y2":102}]`, "s runs along block's bottom edge")
+	wantWarnings(t, newEditor(), `[`+block+`{"add":"arrow","id":"s","x1":200,"y1":-50,"x2":200,"y2":150}]`, "s runs along block's left edge")
+	// Clear of it, or only touching at a corner of the route, it's fine.
+	wantWarnings(t, newEditor(), `[`+block+`{"add":"arrow","id":"s","x1":100,"y1":-20,"x2":500,"y2":-20}]`)
+	wantWarnings(t, newEditor(), `[`+block+`{"add":"arrow","id":"s","x1":190,"y1":0,"x2":210,"y2":0}]`)
+	// The reported case: over the card, keeping the elbow, exactly on its top.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":100,"w":100,"h":100},{"add":"card","id":"block","title":"Block","x":200,"y":0,"w":200,"h":100},{"add":"rectangle","id":"c","x":500,"y":100,"w":100,"h":100},{"add":"arrow","id":"u","from":"a","to":"c","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,0]]}]`, "u runs along block's top edge for 200")
+}
+
+func TestArrowsSharingALine(t *testing.T) {
+	const three = `{"add":"rectangle","id":"a","x":0,"y":100,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100,"text":"b"},{"add":"rectangle","id":"c","x":500,"y":200,"w":100,"h":100,"text":"c"},`
+	// The reported case: two from one card, one line until they part.
+	out := wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b","kind":"elbow"},{"add":"arrow","id":"q","from":"a","to":"c","kind":"elbow"}]`, "p and q share a line for 200")
+	if strings.Count(out, "share a line") != 1 {
+		t.Errorf("told twice: %s", out)
+	}
+	// Both ways along the same straight line.
+	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b"},{"add":"arrow","id":"q","from":"b","to":"a"}]`, "p and q share a line")
+	// Apart, or just starting from one point, they don't.
+	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","from":"a","to":"b"},{"add":"arrow","from":"a","to":"c"}]`)
+	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","from":"a","to":"b","kind":"elbow","fromAt":[1,0.25],"toAt":[0,0.5]},{"add":"arrow","from":"a","to":"c","kind":"elbow","fromAt":[1,0.75],"toAt":[0,0.5]}]`)
+	// Not again, in a batch that touches neither.
+	e := newEditor()
+	ops(t, e, `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b"},{"add":"arrow","id":"q","from":"b","to":"a"}]`)
+	wantWarnings(t, e, `[{"add":"rectangle","x":0,"y":800,"text":"far"}]`)
+}
+
+// A path of several strokes is one thing to whoever draws it, so an arrow takes
+// it as that. Where no shape stands for the group, the error names those to use.
+func TestArrowToAGroup(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"draw","id":"cyl","d":"M0 20 C0 -6 100 -6 100 20 C100 46 0 46 0 20 M0 20 L0 120 C0 146 100 146 100 120 L100 20","fill":"solid"},{"add":"rectangle","id":"a","x":400,"y":0},{"add":"arrow","id":"s","from":"a","to":"cyl"}]`)
+	if b := e.BindingOf(shapeID("s"), "end"); b == nil || b.To != shapeID("cyl-2") {
+		t.Errorf("bound to %v", b)
+	}
+	if got, _ := read(e, readArgs{IDs: names{"s"}}, "", ""); !strings.Contains(got, "to cyl-2") {
+		t.Errorf("read: %s", got)
+	}
+	ops(t, e, `[{"set":"cyl","dx":0,"dy":300}]`)
+	if line := arrowLine(e, "s"); line[len(line)-1].Y < 250 {
+		t.Errorf("didn't follow: %v", line)
+	}
+	_, err := tryOps(newEditor(), `[{"add":"rectangle","id":"x","x":0,"y":0},{"add":"rectangle","id":"y","x":400,"y":0},{"group":["x","y"],"id":"g"},{"add":"arrow","x1":0,"y1":500,"to":"g"}]`)
+	if err == nil || !strings.Contains(err.Error(), "bind to one in it: x, y") {
+		t.Errorf("got %v", err)
+	}
+}
+
+func TestFrameSize(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"frame","id":"f","name":"API","x":0,"y":0,"w":300,"h":200,"size":"l","font":"sans","color":"blue"}]`)
+	f := e.Doc.Shapes[shapeID("f")]
+	if size, font := editor.FrameHeading(f); size != editor.TextSize("l") || font != "sans" {
+		t.Errorf("got %v %q", size, font)
+	}
+	got, _ := read(e, readArgs{IDs: names{"f"}}, "", "")
+	if !strings.Contains(got, "size l") || !strings.Contains(got, "font sans") {
+		t.Errorf("read: %s", got)
+	}
+	// Kept in the file, for tldraw's strict props not to see it.
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), `"props":{"w":300,"h":200,"name":"API","color":"blue","size"`) {
+		t.Error("size went into the frame's props")
+	}
+	back, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size, _ := editor.FrameHeading(back.Shapes[shapeID("f")]); size != editor.TextSize("l") {
+		t.Error("the size wasn't saved")
+	}
+	// A frame left alone has the heading it always had.
+	ops(t, e, `[{"add":"frame","id":"g","name":"Plain","x":500,"y":0,"w":300,"h":200}]`)
+	if size, font := editor.FrameHeading(e.Doc.Shapes[shapeID("g")]); size != 0 || font != "" {
+		t.Errorf("plain: %v %q", size, font)
+	}
+	// One that now reaches what is above it says so; a small one doesn't.
+	wantWarnings(t, e, `[{"add":"rectangle","id":"r","x":0,"y":-85,"w":200,"h":80,"text":"r"}]`, "frame f's name runs into r")
+	wantWarnings(t, e, `[{"add":"rectangle","x":500,"y":-85,"w":200,"h":80,"text":"r2"}]`)
+	// Group styles and the batch's reach it, as they do any shape's.
+	ops(t, e, `[{"style":{"size":"xl"}},{"add":"frame","id":"h","name":"Styled","x":1000,"y":0,"w":300,"h":200}]`)
+	if size, _ := editor.FrameHeading(e.Doc.Shapes[shapeID("h")]); size != editor.TextSize("xl") {
+		t.Errorf("styled: %v", size)
+	}
+}
+
+// A view of the whole leaves room for a frame's heading, however small the
+// picture makes the page.
+func TestViewKeepsFrameHeadings(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"frame","id":"f","name":"Top","x":0,"y":0,"w":4000,"h":500}]`)
+	box, _, scale, err := viewPlan(e, viewArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if need := editor.FrameHeadingFloor * 1.6 / scale; box.Y > -need {
+		t.Errorf("box starts at %v, with %v needed above the frame", box.Y, need)
+	}
+}

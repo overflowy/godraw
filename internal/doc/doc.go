@@ -154,6 +154,9 @@ const (
 	MetaLabel      = "godrawLabel"      // above
 	MetaCard       = "godrawCard"       // box, head or body: a card's part
 	MetaCardH      = "godrawCardH"      // the height asked of a card's box
+	MetaVia        = "godrawVia"        // what an elbow arrow passes through
+	MetaFrameSize  = "godrawFrameSize"  // a frame's size style, for its heading and border
+	MetaFrameFont  = "godrawFrameFont"  // the font of a frame's heading
 )
 
 // MetaValue reads a key of the shape's meta into v, and says whether it could.
@@ -188,6 +191,32 @@ func (s *Shape) SetMeta(key string, v any) {
 	if b, err := json.Marshal(m); err == nil {
 		s.Meta = b
 	}
+}
+
+// Via returns the points an elbow arrow passes through, in its own space.
+func (s *Shape) Via() []geo.Vec {
+	var pts [][2]float64
+	if !s.MetaValue(MetaVia, &pts) {
+		return nil
+	}
+	out := make([]geo.Vec, len(pts))
+	for i, p := range pts {
+		out[i] = geo.V(p[0], p[1])
+	}
+	return out
+}
+
+// SetVia sets the points an elbow arrow passes through, in its own space.
+func (s *Shape) SetVia(via []geo.Vec) {
+	if len(via) == 0 {
+		s.SetMeta(MetaVia, nil)
+		return
+	}
+	pts := make([][2]float64, len(via))
+	for i, p := range via {
+		pts[i] = [2]float64{p.X, p.Y}
+	}
+	s.SetMeta(MetaVia, pts)
 }
 
 // Binding ties an end of an arrow to a shape.

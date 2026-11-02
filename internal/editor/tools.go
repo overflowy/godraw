@@ -1245,6 +1245,12 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	case doc.TypeArrow:
 		c.Start = geo.V(init.Start.X*lx, init.Start.Y*ly)
 		c.End = geo.V(init.End.X*lx, init.End.Y*ly)
+		if via := init.Via(); via != nil {
+			for i, p := range via {
+				via[i] = geo.V(p.X*lx, p.Y*ly)
+			}
+			c.SetVia(via)
+		}
 		c.Bend = init.Bend * math.Sqrt(abs(lx*ly))
 		if lx*ly < 0 {
 			c.Bend = -c.Bend

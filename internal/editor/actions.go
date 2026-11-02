@@ -1247,6 +1247,9 @@ func (e *Editor) visualBounds(id doc.ID) geo.Box {
 		}
 		return b
 	}
+	if s.Type == doc.TypeFrame {
+		b = b.Union(e.FrameHeadingBox(s, 1))
+	}
 	return b.Expand(pad)
 }
 
@@ -1304,8 +1307,16 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 				e.svgPrim(&b, p, m)
 			}
 			if s.Type == doc.TypeFrame && s.Name != "" {
-				o := m.Apply(geo.V(0, -6))
-				fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="sans-serif" font-size="12" fill="%s">%s</text>`, o.X, o.Y, pal.Text.CSS(), xmlEscape(s.Name))
+				size, font := FrameHeading(s)
+				color := pal.Text
+				if size > 0 {
+					color = pal.Swatch(s.Color).Solid
+				}
+				if size == 0 {
+					size = FrameHeadingFloor
+				}
+				o := m.Apply(geo.V(0, -size/2))
+				fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s">%s</text>`, o.X, o.Y, svgFontFamily(font), size, color.CSS(), xmlEscape(s.Name))
 			}
 			b.WriteString(`</g>`)
 		}, func(f *doc.Shape) {

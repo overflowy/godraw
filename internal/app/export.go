@@ -62,7 +62,7 @@ func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA 
 			at := geo.V(box.X+float64(tx)/scale, box.Y+float64(ty)/scale)
 			img := ui.Render(func(c *ui.Context) {
 				ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
-					s := &scene{a: a, e: e, p: p, pal: pal, export: true}
+					s := &scene{a: a, e: e, p: p, pal: pal, export: true, shrink: math.Min(scale, 1)}
 					s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
 					s.view = geo.Box{X: at.X, Y: at.Y, W: float64(side), H: float64(side)}
 					p.Fill(r, toUI(pal.Background), 0)

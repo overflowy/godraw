@@ -228,7 +228,17 @@ func details(e *editor.Editor, list names) (string, error) {
 			kv("kind", s.Kind)
 			kv("head", s.HeadEnd)
 			kv("tail", s.HeadStart)
-			if s.Bend != 0 {
+			if s.Kind == "elbow" {
+				m := e.PageMat(id)
+				var via []string
+				for _, p := range s.Via() {
+					p = m.Apply(p)
+					via = append(via, "["+num(p.X)+","+num(p.Y)+"]")
+				}
+				if via != nil {
+					kv("via", "["+strings.Join(via, ",")+"]")
+				}
+			} else if s.Bend != 0 {
 				kv("bend", num(s.Bend))
 			}
 			kv("font", s.Font)
@@ -242,6 +252,14 @@ func details(e *editor.Editor, list names) (string, error) {
 				if s.MetaValue(doc.MetaStraightAt, &at) {
 					kv("at", num(at))
 				}
+			}
+		case doc.TypeFrame:
+			var size, font string
+			if s.MetaValue(doc.MetaFrameSize, &size) {
+				kv("size", size)
+			}
+			if s.MetaValue(doc.MetaFrameFont, &font) {
+				kv("font", font)
 			}
 		case doc.TypeLine:
 			kv("spline", s.Spline)
@@ -372,5 +390,19 @@ func viewPlan(e *editor.Editor, a viewArgs) (geo.Box, []doc.ID, float64, error) 
 	}
 	px = max(min(px, maxPx), minPx)
 	scale := math.Min(float64(px)/math.Max(box.W, box.H), 2)
+	// Headings keep their size in a picture of the whole, so need more of it.
+	if len(a.Box) == 0 && scale < 1 {
+		top := box.Y
+		for _, id := range ids {
+			for _, k := range append(e.Descendants(id), id) {
+				if s := e.Doc.Shapes[k]; s.Type == doc.TypeFrame {
+					top = math.Min(top, e.FrameHeadingBox(s, 1/scale).Y-8/scale)
+				}
+			}
+		}
+		box.H += box.Y - top
+		box.Y = top
+		scale = math.Min(float64(px)/math.Max(box.W, box.H), 2)
+	}
 	return box, ids, scale, nil
 }

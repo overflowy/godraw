@@ -25,6 +25,11 @@ const (
 	// How far off level an arrow looks like a slip, not a choice.
 	maxSlant    = 8.0
 	minSlantRun = 40.0
+	// How near a line has to run to an edge or another line to look like it, and
+	// for how long before it's more than a corner or the start of a branch.
+	alongGap    = 4.0
+	minAlong    = 24.0
+	minSharedAt = 48.0
 )
 
 func (r *run) warn(format string, args ...any) {
@@ -169,6 +174,7 @@ func (r *run) checkLayout() {
 		r.checkOverlaps(items)
 		r.checkArrows(ids, items, touched)
 		r.checkFrames(ids, touched)
+		r.checkHeadings(ids, items)
 	}
 	r.reportGrowth()
 }
@@ -406,6 +412,7 @@ func (r *run) checkArrows(ids []doc.ID, items []*item, touched map[doc.ID]bool) 
 		}
 		r.checkArrow(s, bs, be, items)
 	}
+	r.checkShared(ids, touched)
 }
 
 func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
@@ -459,32 +466,146 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 			r.warn(`%s is %s off plumb; straight:"v" levels it`, name, num(dx))
 		}
 	}
-	r.checkCrossings(name, m, info, pts, bs, be, items)
+	r.checkCrossings(s, name, m, info, pts, bs, be, items)
 }
 
-// checkCrossings tells of an arrow running through a box it doesn't join. One
-// that starts or ends inside the box is leaving a container, which is fine.
-func (r *run) checkCrossings(name string, m geo.Mat, info *editor.ArrowInfo, pts []geo.Vec, bs, be *doc.Binding, items []*item) {
-	line := geo.BoxOf(pts)
+// checkCrossings tells of an arrow running through a box it doesn't join, or
+// along an edge of one, where it can't be told from the edge. One that starts or
+// ends inside the box is leaving a container, which is fine.
+func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.ArrowInfo, pts []geo.Vec, bs, be *doc.Binding, items []*item) {
+	hint := ""
+	if s.Kind == "elbow" {
+		hint = "; another side or via routes it around"
+	}
 	rawStart, rawEnd := m.Apply(info.RawStart), m.Apply(info.RawEnd)
 	joins := func(it *item, b *doc.Binding) bool {
 		return b != nil && (b.To == it.s.ID || it.owner == ownerOf(r.e, b.To) || r.e.IsAncestor(it.s.ID, b.To))
 	}
-	for _, it := range items {
-		if !it.content || it.s.Type == doc.TypeFrame || !line.Overlaps(it.box) || r.warned() {
-			continue
-		}
-		if joins(it, bs) || joins(it, be) || it.box.Contains(rawStart) || it.box.Contains(rawEnd) {
-			continue
-		}
+	crosses := func(it *item) bool {
 		corners := it.box.Expand(-2).Corners()
 		for i := 1; i < len(pts); i++ {
 			if len(geo.SegmentPolyline(pts[i-1], pts[i], corners[:], true)) > 0 {
-				r.warn("%s runs through %s", name, shortID(it.owner))
-				break
+				return true
+			}
+		}
+		return false
+	}
+	line := geo.BoxOf(pts).Expand(alongGap)
+	for _, it := range items {
+		if !line.Overlaps(it.box) || r.warned() {
+			continue
+		}
+		inside := it.box.Contains(rawStart) || it.box.Contains(rawEnd)
+		if it.content && it.s.Type != doc.TypeFrame && !joins(it, bs) && !joins(it, be) && !inside && crosses(it) {
+			r.warn("%s runs through %s%s", name, shortID(it.owner), hint)
+			continue
+		}
+		// A text shape has no edge to run along, and those of a card's text are
+		// inside its box.
+		if it.s.Type == doc.TypeText {
+			continue
+		}
+		if edge, run := runAlong(pts, it.box); run >= minAlong {
+			r.warn("%s runs along %s's %s edge for %s%s", name, shortID(it.owner), edge, num(run), hint)
+		}
+	}
+}
+
+// runAlong returns the edge of a box that a line keeps closest to, and for how
+// long.
+func runAlong(pts []geo.Vec, b geo.Box) (string, float64) {
+	sides := [4]float64{}
+	names := [4]string{"top", "bottom", "left", "right"}
+	for i := 1; i < len(pts); i++ {
+		p, q := pts[i-1], pts[i]
+		for side, y := range []float64{b.Y, b.MaxY()} {
+			if math.Abs(p.Y-y) <= alongGap && math.Abs(q.Y-y) <= alongGap {
+				sides[side] += overlap(p.X, q.X, b.X, b.MaxX())
+			}
+		}
+		for side, x := range []float64{b.X, b.MaxX()} {
+			if math.Abs(p.X-x) <= alongGap && math.Abs(q.X-x) <= alongGap {
+				sides[2+side] += overlap(p.Y, q.Y, b.Y, b.MaxY())
 			}
 		}
 	}
+	best := 0
+	for i, run := range sides {
+		if run > sides[best] {
+			best = i
+		}
+	}
+	return names[best], sides[best]
+}
+
+// overlap returns how much two ranges share, each given by its ends in any order.
+func overlap(a, b, lo, hi float64) float64 {
+	return max(min(max(a, b), max(lo, hi))-max(min(a, b), min(lo, hi)), 0)
+}
+
+// checkShared tells of two arrows drawn over each other for so long that they
+// read as one. Arcs are left out: they only meet where they cross.
+func (r *run) checkShared(ids []doc.ID, touched map[doc.ID]bool) {
+	type way struct {
+		id  doc.ID
+		pts []geo.Vec
+		box geo.Box
+		new bool
+	}
+	var ways []way
+	for _, id := range ids {
+		s := r.e.Doc.Shapes[id]
+		if s.Type != doc.TypeArrow {
+			continue
+		}
+		info := r.e.Arrow(s)
+		if info.Arc || len(info.Line) < 2 {
+			continue
+		}
+		m := r.e.PageMat(id)
+		pts := make([]geo.Vec, len(info.Line))
+		for i, p := range info.Line {
+			pts[i] = m.Apply(p)
+		}
+		w := way{id: id, pts: pts, box: geo.BoxOf(pts).Expand(alongGap), new: touched[id]}
+		for _, term := range []string{"start", "end"} {
+			if b := r.e.BindingOf(id, term); b != nil && touched[b.To] {
+				w.new = true
+			}
+		}
+		ways = append(ways, w)
+	}
+	for i, a := range ways {
+		for _, b := range ways[i+1:] {
+			if (!a.new && !b.new) || !a.box.Overlaps(b.box) || r.warned() {
+				continue
+			}
+			if n := sharedLength(a.pts, b.pts); n >= minSharedAt {
+				r.warn("%s and %s share a line for %s, so they read as one arrow; fromAt, toAt or via parts them", shortID(a.id), shortID(b.id), num(n))
+			}
+		}
+	}
+}
+
+// sharedLength returns how long two lines run along each other.
+func sharedLength(a, b []geo.Vec) float64 {
+	total := 0.0
+	for i := 1; i < len(a); i++ {
+		p, d := a[i-1], a[i].Sub(a[i-1])
+		l := d.Len()
+		if l < 1 {
+			continue
+		}
+		u := d.Mul(1 / l)
+		for j := 1; j < len(b); j++ {
+			q0, q1 := b[j-1].Sub(p), b[j].Sub(p)
+			if math.Abs(q0.Dot(u.Per())) > alongGap || math.Abs(q1.Dot(u.Per())) > alongGap {
+				continue
+			}
+			total += overlap(q0.Dot(u), q1.Dot(u), 0, l)
+		}
+	}
+	return total
 }
 
 // checkFrames tells of what a frame cuts off.
@@ -502,6 +623,33 @@ func (r *run) checkFrames(ids []doc.ID, touched map[doc.ID]bool) {
 		const slack = 1.0
 		if b.X < -slack || b.Y < -slack || b.MaxX() > f.W+slack || b.MaxY() > f.H+slack {
 			r.warn("%s sticks out of frame %s, which clips it", r.name(id), shortID(f.ID))
+		}
+	}
+}
+
+// checkHeadings tells of a frame's name running into what is above the frame. A
+// name without a size of its own is small enough to leave alone, and changes size
+// with the zoom.
+func (r *run) checkHeadings(ids []doc.ID, items []*item) {
+	for _, id := range ids {
+		s := r.e.Doc.Shapes[id]
+		if s.Type != doc.TypeFrame || r.warned() {
+			continue
+		}
+		if size, _ := editor.FrameHeading(s); size == 0 || s.Name == "" {
+			continue
+		}
+		box := r.e.FrameHeadingBox(s, 1)
+		for _, it := range items {
+			if it.s.ID == id || r.e.IsAncestor(id, it.s.ID) || !it.content {
+				continue
+			}
+			if !it.touched && !slices.Contains(r.added, id) && !r.changed[id] {
+				continue
+			}
+			if w, h := depth(box, it.box); w > 1 && h > 1 {
+				r.warn("frame %s's name runs into %s", shortID(id), shortID(it.owner))
+			}
 		}
 	}
 }

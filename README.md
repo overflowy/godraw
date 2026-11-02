@@ -115,15 +115,17 @@ to `.tldr` like the rest. Agents can't save or name a drawing. That stays with y
 File menu.
 
 `apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
-covers text, naming what caused it, when a text shape sticks out of the box under it, when an arrow is hidden, off level, buried by its label or runs through a box,
-and when a frame clips something. It only warns about what that call touched.
+covers text, naming what caused it, when a text shape sticks out of the box under it, when an arrow is hidden, off level, buried by its label, runs through a box or along its edge,
+when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched.
 
 A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
 a rectangle and two text shapes, so it needs nothing special to open elsewhere.
 
-An arrow with `straight` set stays level when an agent moves or resizes what it joins. That
+An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
+elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the
+way. A frame's `size` and `font` set its name to match the cards it sits among. All of these
 and `label:"above"` are kept in the shape's `meta`, so tldraw opens the file and shows the
-arrow with its saved anchors and its label on the line.
+arrow with its saved anchors and its own routing, and the frame with its usual heading.
 
 The server listens on this machine only and refuses requests from web pages, but it has no
 login, so other programs on the machine can use it. `src` on an image reads PNG, JPEG and

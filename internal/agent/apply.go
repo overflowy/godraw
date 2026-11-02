@@ -95,18 +95,19 @@ type fields struct {
 	Scale      *float64 `json:"scale"`
 	Locked     *bool    `json:"locked"`
 
-	From   *string    `json:"from"`
-	To     *string    `json:"to"`
-	FromAt *[]float64 `json:"fromAt"`
-	ToAt   *[]float64 `json:"toAt"`
-	X1     *float64   `json:"x1"`
-	Y1     *float64   `json:"y1"`
-	X2     *float64   `json:"x2"`
-	Y2     *float64   `json:"y2"`
-	Kind   *string    `json:"kind"`
-	Bend   *float64   `json:"bend"`
-	Head   *string    `json:"head"`
-	Tail   *string    `json:"tail"`
+	From   *string      `json:"from"`
+	To     *string      `json:"to"`
+	FromAt *[]float64   `json:"fromAt"`
+	ToAt   *[]float64   `json:"toAt"`
+	X1     *float64     `json:"x1"`
+	Y1     *float64     `json:"y1"`
+	X2     *float64     `json:"x2"`
+	Y2     *float64     `json:"y2"`
+	Kind   *string      `json:"kind"`
+	Bend   *float64     `json:"bend"`
+	Head   *string      `json:"head"`
+	Tail   *string      `json:"tail"`
+	Via    *[][]float64 `json:"via"`
 
 	Straight *string  `json:"straight"`
 	At       *float64 `json:"at"`
@@ -151,13 +152,13 @@ var (
 		doc.TypeGeo:       "w h text color labelColor fill dash size font align valign url",
 		doc.TypeText:      "w text color size font align scale",
 		doc.TypeNote:      "text color labelColor size font align valign scale url",
-		doc.TypeFrame:     "w h name color",
+		doc.TypeFrame:     "w h name color size font",
 		doc.TypeImage:     "src w h alt url",
 		doc.TypeDraw:      "d w h color fill dash size",
 		doc.TypeHighlight: "d w h color size",
 		doc.TypeLine:      "d w h color dash size spline",
 		cardKind:          "title body w h color labelColor fill dash size font align",
-		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend head tail straight at label",
+		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend via head tail straight at label",
 	}
 	placeFields = "id in x y rot opacity locked right left above below gap"
 	verbFields  = map[string]string{
@@ -375,6 +376,19 @@ func checkValues(f *fields) error {
 		if f.Bend != nil && *f.Bend != 0 {
 			return errors.New("a straight arrow can't bend")
 		}
+		if f.Via != nil && len(*f.Via) > 0 {
+			return errors.New(`straight runs level, so it can't take via`)
+		}
+	}
+	if f.Via != nil {
+		if len(*f.Via) > maxVia {
+			return fmt.Errorf("via takes up to %d points", maxVia)
+		}
+		for _, p := range *f.Via {
+			if len(p) != 2 || math.IsNaN(p[0]) || math.IsInf(p[0], 0) || math.IsNaN(p[1]) || math.IsInf(p[1], 0) {
+				return errors.New("via is a list of [x,y] points in the page")
+			}
+		}
 	}
 	if f.Scale != nil && *f.Scale <= 0 {
 		return errors.New("scale must be above 0")
@@ -391,6 +405,10 @@ func checkValues(f *fields) error {
 	}
 	return nil
 }
+
+// maxVia is more points than a route should need, and keeps a mistake from
+// costing every frame.
+const maxVia = 32
 
 // shapeKind returns the record type and geo kind of what add names.
 func shapeKind(name string) (kind, geoKind string, err error) {
@@ -793,6 +811,15 @@ func assign(s *doc.Shape, f *fields) {
 	if f.Bend != nil {
 		s.Bend = *f.Bend
 	}
+	// tldraw's frames have no size or font of their own.
+	if s.Type == doc.TypeFrame {
+		if f.Size != nil {
+			s.SetMeta(doc.MetaFrameSize, *f.Size)
+		}
+		if f.Font != nil {
+			s.SetMeta(doc.MetaFrameFont, *f.Font)
+		}
+	}
 	if s.Type == doc.TypeText && f.W != nil {
 		s.AutoSize = false
 		s.W = *f.W / s.Scale
@@ -1189,7 +1216,44 @@ func (r *run) addArrow(o *op) error {
 	if err := r.setEnds(s.ID, &o.fields); err != nil {
 		return err
 	}
+	if err := r.setRoute(s.ID, &o.fields); err != nil {
+		return err
+	}
 	r.added = append(r.added, id)
+	return nil
+}
+
+// setRoute gives an elbow arrow what it passes through, and turns down what a
+// kind of arrow would only store and ignore.
+func (r *run) setRoute(id doc.ID, f *fields) error {
+	s := r.e.Doc.Shapes[id]
+	elbow := s.Kind == "elbow"
+	if elbow && f.Bend != nil && *f.Bend != 0 {
+		return errors.New("an elbow arrow can't bend; fromAt, toAt and via route it")
+	}
+	via := s.Via()
+	if f.Via != nil {
+		m := r.e.PageMat(id).Invert()
+		via = via[:0]
+		for _, p := range *f.Via {
+			via = append(via, m.Apply(geo.V(p[0], p[1])))
+		}
+	}
+	if !elbow {
+		if f.Via != nil && len(via) > 0 {
+			return errors.New(`via routes an elbow arrow; add "kind":"elbow"`)
+		}
+		via = nil
+	}
+	var axis string
+	if len(via) > 0 && s.MetaValue(doc.MetaStraight, &axis) {
+		return errors.New(`a straight arrow runs level, so it can't take via; straight:"off" first`)
+	}
+	if len(via) != len(s.Via()) || f.Via != nil {
+		c := s.Clone()
+		c.SetVia(via)
+		r.e.Put(c)
+	}
 	return nil
 }
 
@@ -1237,11 +1301,13 @@ func (r *run) setEnds(id doc.ID, f *fields) error {
 			if c := r.cardOf(t.ID); c != nil {
 				t = c.box
 			}
-			switch t.Type {
-			case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight, doc.TypeGroup:
-				if t.Type == doc.TypeGroup {
-					return fmt.Errorf("arrows can't bind to a group (%s); bind to a shape in it", *target)
+			if t.Type == doc.TypeGroup {
+				if t, err = r.groupTarget(t); err != nil {
+					return err
 				}
+			}
+			switch t.Type {
+			case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight:
 				return fmt.Errorf("arrows can't bind to a %s (%s)", t.Type, *target)
 			}
 			if t.ID == id {
@@ -1285,6 +1351,41 @@ func (r *run) setEnds(id doc.ID, f *fields) error {
 	}
 	return nil
 }
+
+// groupTarget returns what an arrow told to bind to a group binds to: the shape
+// that is most of it, as the body of a cylinder drawn in several strokes. A
+// group with no such shape has to be told which.
+func (r *run) groupTarget(g *doc.Shape) (*doc.Shape, error) {
+	// How much of a group's box a shape has to fill to stand for the group.
+	const most = 0.6
+	box := r.e.PageBounds(g.ID)
+	var best *doc.Shape
+	var area float64
+	var names []string
+	for _, s := range r.leaves(g.ID) {
+		switch s.Type {
+		case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight:
+			continue
+		}
+		if len(names) < maxTargetsShown {
+			names = append(names, shortID(s.ID))
+		}
+		b := r.e.PageBounds(s.ID)
+		if a := b.W * b.H; a > area {
+			best, area = s, a
+		}
+	}
+	if best != nil && area >= most*box.W*box.H {
+		return best, nil
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("group %s holds nothing an arrow can bind to", shortID(g.ID))
+	}
+	return nil, fmt.Errorf("group %s has no main shape for an arrow to bind to; bind to one in it: %s", shortID(g.ID), strings.Join(names, ", "))
+}
+
+// maxTargetsShown is how many of a group's shapes an error names.
+const maxTargetsShown = 8
 
 // endOf returns an end of an arrow's own points, in the page.
 func (r *run) endOf(id doc.ID, term string) geo.Vec {
@@ -1397,6 +1498,9 @@ func (r *run) setOne(id doc.ID, o *op) error {
 			if err := r.setEnds(id, f); err != nil {
 				return err
 			}
+		}
+		if err := r.setRoute(id, f); err != nil {
+			return err
 		}
 		var axis string
 		straight := r.e.Doc.Shapes[id].MetaValue(doc.MetaStraight, &axis)
