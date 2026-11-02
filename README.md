@@ -69,8 +69,9 @@ Known differences:
 - Clipboard data is godraw's own, so shapes don't paste across to tldraw. Use `.tldr` files
   to move drawings between the two.
 - Hand-drawn strokes and arrow routing are drawn by this app's own algorithms, so they are
-  similar to tldraw's, not identical. The colors and sizes are tldraw's.
-- SVG export names its fonts instead of embedding them.
+  similar to tldraw's, not identical. The colors, sizes and fonts are tldraw's.
+- SVG export names its fonts instead of embedding them, so a viewer without Shantell Sans and
+  IBM Plex falls back to others.
 - Elbow waypoints, a frame's heading size and font, and labels above an arrow are this app's
   own. tldraw keeps them in the file but doesn't show them, and it doesn't update waypoints
   when shapes move.
@@ -145,7 +146,7 @@ GIF files by path.
 | `internal/editor` | Camera, selection, tools and gestures, undo, and what each shape draws; no UI dependency, so it is tested without a window |
 | `internal/app` | The native UI: canvas painter, panels, keyboard, export |
 | `internal/agent` | The MCP server and what its tools do |
-| `internal/assets` | Embedded font and icons |
+| `internal/assets` | Embedded fonts and icons |
 | `e2e.go` | With `-tags e2e`, lets another process drive the app over MyGo's automation socket |
 
 Committed records are immutable: an edit replaces a record. So undo holds the records
@@ -156,6 +157,7 @@ reused across moves and zooms.
 ## Credits
 
 - [Shantell Sans](https://github.com/arrowtype/shantell-sans), the handwriting font (SIL OFL)
+- [IBM Plex](https://github.com/IBM/plex), the sans, serif and mono fonts (SIL OFL)
 - [Lucide](https://lucide.dev), the icons (ISC)
 
 Licenses are in `internal/assets`.

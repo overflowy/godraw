@@ -1351,11 +1351,11 @@ func svgFontFamily(font string) string {
 	case "draw":
 		return "'Shantell Sans', 'Comic Sans MS', cursive"
 	case "serif":
-		return "Georgia, serif"
+		return "'IBM Plex Serif', Georgia, serif"
 	case "mono":
-		return "Menlo, monospace"
+		return "'IBM Plex Mono', Menlo, monospace"
 	}
-	return "-apple-system, 'Helvetica Neue', Arial, sans-serif"
+	return "'IBM Plex Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif"
 }
 
 func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {

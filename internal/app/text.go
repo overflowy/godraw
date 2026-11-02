@@ -11,11 +11,23 @@ import (
 	"godraw/internal/editor"
 )
 
-const drawFamily = "Shantell Sans"
+const (
+	drawFamily  = "Shantell Sans"
+	sansFamily  = "IBM Plex Sans"
+	serifFamily = "IBM Plex Serif"
+	monoFamily  = "IBM Plex Mono"
+)
 
 var registerFonts = sync.OnceFunc(func() {
-	if err := ui.RegisterFont(assets.DrawFont, drawFamily); err != nil {
-		panic(err)
+	for family, data := range map[string][]byte{
+		drawFamily:  assets.DrawFont,
+		sansFamily:  assets.SansFont,
+		serifFamily: assets.SerifFont,
+		monoFamily:  assets.MonoFont,
+	} {
+		if err := ui.RegisterFont(data, family); err != nil {
+			panic(err)
+		}
 	}
 })
 
@@ -25,11 +37,11 @@ func family(font string) string {
 	case "draw":
 		return drawFamily
 	case "serif":
-		return "Georgia, serif"
+		return serifFamily
 	case "mono":
-		return "monospace"
+		return monoFamily
 	}
-	return "system-ui"
+	return sansFamily
 }
 
 type measureKey struct {
