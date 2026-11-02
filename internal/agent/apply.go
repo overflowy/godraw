@@ -241,6 +241,10 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 	d.DisallowUnknownFields()
 	o := &op{}
 	if err := d.Decode(o); err != nil {
+		var wrong *json.UnmarshalTypeError
+		if errors.As(err, &wrong) {
+			return nil, wrongType(wrong)
+		}
 		return nil, errors.New(strings.TrimPrefix(err.Error(), "json: "))
 	}
 	var verbs []string
@@ -386,7 +390,7 @@ func checkValues(f *fields) error {
 		}
 		for _, p := range *f.Via {
 			if len(p) != 2 || math.IsNaN(p[0]) || math.IsInf(p[0], 0) || math.IsNaN(p[1]) || math.IsInf(p[1], 0) {
-				return errors.New("via is a list of [x,y] points in the page")
+				return errors.New(viaHelp)
 			}
 		}
 	}
@@ -399,8 +403,8 @@ func checkValues(f *fields) error {
 		}
 	}
 	for _, at := range []*[]float64{f.FromAt, f.ToAt} {
-		if at != nil && len(*at) != 2 {
-			return errors.New("fromAt and toAt are [x,y], each 0 to 1 across the shape")
+		if at != nil && (len(*at) != 2 || (*at)[0] < 0 || (*at)[0] > 1 || (*at)[1] < 0 || (*at)[1] > 1) {
+			return errors.New(anchorHelp)
 		}
 	}
 	return nil
@@ -409,6 +413,45 @@ func checkValues(f *fields) error {
 // maxVia is more points than a route should need, and keeps a mistake from
 // costing every frame.
 const maxVia = 32
+
+const (
+	viaHelp    = "via is a list of [x,y] points in the page"
+	anchorHelp = "fromAt and toAt are [x,y], each 0 to 1 across the shape"
+)
+
+// wrongType says what a field should have held, in place of what the decoder
+// says, which is in terms of this program. Style's fields are the same fields.
+func wrongType(e *json.UnmarshalTypeError) error {
+	if e.Field == "" {
+		return errors.New(`an op is an object, as {"add":"rectangle"}`)
+	}
+	name := strings.TrimPrefix(strings.TrimPrefix(e.Field, "style."), "fields.")
+	name, _, _ = strings.Cut(name, ".")
+	switch name {
+	case "via":
+		return errors.New(viaHelp)
+	case "fromAt", "toAt":
+		return errors.New(anchorHelp)
+	}
+	for _, t := range []reflect.Type{reflect.TypeFor[fields](), reflect.TypeFor[op]()} {
+		for i := range t.NumField() {
+			if t.Field(i).Tag.Get("json") != name {
+				continue
+			}
+			switch t.Field(i).Type.Elem().Kind() {
+			case reflect.Float64:
+				return fmt.Errorf("%s must be a number", name)
+			case reflect.Int:
+				return fmt.Errorf("%s must be a whole number", name)
+			case reflect.Bool:
+				return fmt.Errorf("%s must be true or false", name)
+			case reflect.String:
+				return fmt.Errorf("%s must be a string", name)
+			}
+		}
+	}
+	return fmt.Errorf("%s has the wrong type", name)
+}
 
 // shapeKind returns the record type and geo kind of what add names.
 func shapeKind(name string) (kind, geoKind string, err error) {
@@ -479,8 +522,12 @@ type run struct {
 	dry    bool
 	quiet  bool
 	// asked is the height a box was asked to have, or had before the batch.
-	asked    map[doc.ID]float64
+	asked map[doc.ID]float64
+	// routes is where arrows' via points were before the batch.
+	routes   map[doc.ID]route
 	warnings []string
+	// What is told after other warnings, for it not to crowd them out.
+	shared, trunks []string
 }
 
 // errDry ends a dry run, whose batch rolls back like one that failed.
@@ -496,6 +543,7 @@ type applyMode struct {
 func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 	dry := mode.dry
 	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, before: map[doc.ID]float64{}, grown: map[doc.ID]*growth{}, dry: dry, quiet: mode.quiet}
+	r.routes = r.routesNow()
 	var report string
 	err := e.Batch(func() error {
 		for i, o := range ops {
@@ -503,6 +551,7 @@ func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 				return fmt.Errorf("ops[%d]: %w; nothing was changed", i, err)
 			}
 		}
+		r.followRoutes()
 		r.settleArrows()
 		r.checkLayout()
 		report = r.report()
@@ -1233,6 +1282,7 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 	}
 	via := s.Via()
 	if f.Via != nil {
+		delete(r.routes, id) // it goes where it was just told to
 		m := r.e.PageMat(id).Invert()
 		via = via[:0]
 		for _, p := range *f.Via {
@@ -1255,6 +1305,72 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 		r.e.Put(c)
 	}
 	return nil
+}
+
+// route is a bound arrow's via points and where its ends are anchored, in the
+// page.
+type route struct {
+	from, to   doc.ID
+	start, end geo.Vec
+	via        []geo.Vec
+}
+
+// anchorPoint returns where a binding holds on to its shape, in the page.
+func (r *run) anchorPoint(b *doc.Binding) geo.Vec {
+	box := r.e.Geometry(r.e.Doc.Shapes[b.To]).Bounds
+	a := anchorX(b)
+	return r.e.PageMat(b.To).Apply(geo.V(box.X+a.X*box.W, box.Y+a.Y*box.H))
+}
+
+// routesNow takes down the routes of arrows bound at both ends.
+func (r *run) routesNow() map[doc.ID]route {
+	out := map[doc.ID]route{}
+	for id, s := range r.e.Doc.Shapes {
+		if s.Type != doc.TypeArrow || len(s.Via()) == 0 {
+			continue
+		}
+		bs, be := r.e.BindingOf(id, "start"), r.e.BindingOf(id, "end")
+		if bs == nil || be == nil {
+			continue
+		}
+		m := r.e.PageMat(id)
+		via := s.Via()
+		for i, p := range via {
+			via[i] = m.Apply(p)
+		}
+		out[id] = route{from: bs.To, to: be.To, start: r.anchorPoint(bs), end: r.anchorPoint(be), via: via}
+	}
+	return out
+}
+
+// followRoutes takes along the via points of an arrow whose ends both moved by
+// the same amount, as when a whole row moves. A route isn't the arrow's to keep
+// when only one end moves: nothing says where its points should go then.
+func (r *run) followRoutes() {
+	for id, was := range r.routes {
+		s := r.e.Doc.Shapes[id]
+		if s == nil || len(s.Via()) == 0 {
+			continue
+		}
+		bs, be := r.e.BindingOf(id, "start"), r.e.BindingOf(id, "end")
+		if bs == nil || be == nil || bs.To != was.from || be.To != was.to {
+			continue
+		}
+		const still = 0.01
+		d := r.anchorPoint(bs).Sub(was.start)
+		if d.Len() < still || r.anchorPoint(be).Sub(was.end).Dist(d) > still {
+			continue
+		}
+		m := r.e.PageMat(id).Invert()
+		via := make([]geo.Vec, len(was.via))
+		for i, p := range was.via {
+			via[i] = m.Apply(p.Add(d))
+		}
+		c := s.Clone()
+		c.SetVia(via)
+		r.e.Put(c)
+		r.changed[id] = true
+	}
 }
 
 // arrowParent returns where an arrow goes: as asked, or in the frame that
@@ -1367,8 +1483,9 @@ func (r *run) groupTarget(g *doc.Shape) (*doc.Shape, error) {
 		case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight:
 			continue
 		}
-		if len(names) < maxTargetsShown {
-			names = append(names, shortID(s.ID))
+		// A card is named as a card: that's what an arrow binds to.
+		if name := r.name(s.ID); len(names) < maxTargetsShown && !slices.Contains(names, name) {
+			names = append(names, name)
 		}
 		b := r.e.PageBounds(s.ID)
 		if a := b.W * b.H; a > area {
@@ -1728,12 +1845,41 @@ func (r *run) dup(o *op) error {
 			d.Y = *o.DY
 		}
 	}
+	r.warnLostEnds(ids)
 	r.e.Select(ids...)
 	for i := 1; i <= n; i++ {
 		r.e.Select(ids...)
 		r.added = append(r.added, r.e.DuplicateAs(d.Mul(float64(i)), r.autoID)...)
 	}
 	return nil
+}
+
+// warnLostEnds tells of arrows about to be copied without what they join: a copy
+// has nothing to bind to, so its ends come out free.
+func (r *run) warnLostEnds(ids []doc.ID) {
+	copied := map[doc.ID]bool{}
+	var all []doc.ID
+	for _, id := range ids {
+		all = append(append(all, id), r.e.Descendants(id)...)
+	}
+	for _, id := range all {
+		copied[id] = true
+	}
+	for _, id := range all {
+		if r.e.Doc.Shapes[id].Type != doc.TypeArrow {
+			continue
+		}
+		var lost []string
+		if b := r.e.BindingOf(id, "start"); b != nil && !copied[b.To] {
+			lost = append(lost, "from")
+		}
+		if b := r.e.BindingOf(id, "end"); b != nil && !copied[b.To] {
+			lost = append(lost, "to")
+		}
+		if len(lost) > 0 {
+			r.warn("the copy of %s lost its %s, as what it joins wasn't copied; dup that too, or set them on the copy", shortID(id), strings.Join(lost, " and "))
+		}
+	}
 }
 
 func (r *run) group(o *op) error {
@@ -1890,7 +2036,7 @@ func (r *run) report() string {
 		b.WriteString("warnings:\n")
 		for i, w := range r.warnings {
 			if i == maxWarnings {
-				b.WriteString("and more\n")
+				fmt.Fprintf(&b, "and %d more; read with check lists the page's\n", len(r.warnings)-maxWarnings)
 				break
 			}
 			b.WriteString(w)

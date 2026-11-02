@@ -21,6 +21,8 @@ const (
 	cardGap  = 6.0
 	cardMinW = 160.0
 	cardMaxW = 360.0
+	// What makes a body smaller than a title with no smaller size to go to.
+	cardSmallBody = 0.8
 )
 
 // card is the parts of a card. A card may lack a title or a body.
@@ -77,6 +79,16 @@ func smaller(size string) string {
 	return sizes[max(slices.Index(sizes, size)-1, 0)]
 }
 
+// styleBody gives a card's body the size for a title of a size style: a step
+// below it, or at the smallest, the same style scaled down.
+func styleBody(body *doc.Shape, title string) {
+	body.Size = smaller(title)
+	body.Scale = 1
+	if body.Size == title {
+		body.Scale = cardSmallBody
+	}
+}
+
 // stylePart applies to a card's part what its fields say of that part.
 func stylePart(part *doc.Shape, role string, f *fields) {
 	switch role {
@@ -87,7 +99,7 @@ func stylePart(part *doc.Shape, role string, f *fields) {
 	case "body":
 		assign(part, &fields{Color: f.LabelColor, Font: f.Font, Align: f.Align, Opacity: f.Opacity})
 		if f.Size != nil {
-			part.Size = smaller(*f.Size)
+			styleBody(part, *f.Size)
 		}
 	}
 }
@@ -98,7 +110,7 @@ func (r *run) newCardText(id, parent doc.ID, role, text string, f *fields) *doc.
 	s.Parent, s.Index = parent, r.e.TopIndex(parent)
 	s.AutoSize = false
 	if role == "body" {
-		s.Size = smaller(s.Size)
+		styleBody(s, s.Size)
 	}
 	stylePart(s, role, f)
 	s.SetText(text)

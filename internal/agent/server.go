@@ -73,7 +73,7 @@ const (
 
 	docProp    = `"doc":{"type":"string"}`
 	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","layout","arrows","paths","edit"]}}}`
-	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}}`
+	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"check":{"type":"boolean","description":"Warnings of the whole page."}}}`
 	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
 	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
 )
@@ -142,17 +142,31 @@ type server struct {
 // sending it all again.
 type dryRun struct {
 	token, doc string
+	page       doc.ID // where it began, which is what its answer was about
 	ops        []*op
+}
+
+// onItsPage says what is wrong if the dry run can't commit on the current page.
+func (d *dryRun) onItsPage(e *editor.Editor) error {
+	if e.Page == d.page {
+		return nil
+	}
+	p := e.Doc.Page(d.page)
+	if p == nil {
+		return errors.New("the page this dry run was on is gone; send ops again")
+	}
+	return fmt.Errorf("this dry run was on page %q; go back with {\"page\":%q} and commit again, or send ops again", p.Name, p.Name)
 }
 
 // How many dry runs stay to be committed: ops can hold images.
 const keptDries = 4
 
-func (s *server) keepDry(doc string, ops []*op) string {
+func (s *server) keepDry(canvas string, page doc.ID, ops []*op) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nDry++
-	d := &dryRun{token: "d" + strconv.Itoa(s.nDry), doc: doc, ops: ops}
+	// Not d, which is what document ids start with.
+	d := &dryRun{token: "t" + strconv.Itoa(s.nDry), doc: canvas, page: page, ops: ops}
 	s.dries = append(s.dries, d)
 	if len(s.dries) > keptDries {
 		s.dries = slices.Delete(s.dries, 0, len(s.dries)-keptDries)
@@ -289,6 +303,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		return nil, err
 	}
 	var ops []*op
+	var committing *dryRun
 	var err error
 	switch {
 	case a.Commit != "":
@@ -296,11 +311,10 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		if !noOps(a.Ops) || a.Dry {
 			return nil, errors.New("commit applies a dry run's ops, so it takes neither ops nor dry")
 		}
-		d := s.findDry(a.Commit)
-		if d == nil {
+		if committing = s.findDry(a.Commit); committing == nil {
 			return nil, fmt.Errorf("no dry run %q to commit: only the latest %d are kept, and each commits once; send ops again", a.Commit, keptDries)
 		}
-		ops, a.Doc = d.ops, d.doc
+		ops, a.Doc = committing.ops, committing.doc
 	case len(a.Ops) == 0:
 		return nil, errors.New(`apply needs ops, or {"commit":TOKEN} from a dry run in place of them`)
 	default:
@@ -318,11 +332,19 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		return nil, err
 	}
 	var out string
+	var began doc.ID
 	deadline := time.Now().Add(busyWait)
 	for {
 		err = onMain(ctx, c, func() error {
+			e := c.Editor()
+			if committing != nil {
+				if err := committing.onItsPage(e); err != nil {
+					return err
+				}
+			}
+			began = e.Page
 			var err error
-			out, err = apply(c.Editor(), ops, applyMode{dry: a.Dry, quiet: a.Quiet})
+			out, err = apply(e, ops, applyMode{dry: a.Dry, quiet: a.Quiet})
 			return err
 		})
 		if !errors.Is(err, editor.ErrBusy) {
@@ -342,7 +364,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	}
 	switch {
 	case a.Dry:
-		out += fmt.Sprintf("\nto apply this, call apply with commit %q and no ops", s.keepDry(c.ID(), ops))
+		out += fmt.Sprintf("\nto apply this, call apply with commit %q and no ops", s.keepDry(c.ID(), began, ops))
 	case a.Commit != "":
 		s.dropDry(a.Commit)
 	}

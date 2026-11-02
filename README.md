@@ -71,6 +71,9 @@ Known differences:
 - Hand-drawn strokes and arrow routing are drawn by this app's own algorithms, so they are
   similar to tldraw's, not identical. The colors and sizes are tldraw's.
 - SVG export names its fonts instead of embedding them.
+- Elbow waypoints, a frame's heading size and font, and labels above an arrow are this app's
+  own. tldraw keeps them in the file but doesn't show them, and it doesn't update waypoints
+  when shapes move.
 - Not implemented: cropping images, note "clone" handles, video playback, multiplayer.
 
 ## Drawing from an agent
@@ -94,7 +97,7 @@ to use another port.
 | Tool | What it does |
 | --- | --- |
 | `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies, and `quiet` leaves out the boxes |
-| `read` | The canvas as compact text, one line per shape, paged and searchable |
+| `read` | The canvas as compact text, one line per shape, paged and searchable. `check` lists the warnings of the whole page instead |
 | `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default, in the window's theme or the one asked for |
 | `guide` | The reference for `apply`, a topic at a time |
 
@@ -116,7 +119,7 @@ File menu.
 
 `apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
 covers text, naming what caused it, when a text shape sticks out of the box under it, when an arrow is hidden, off level, buried by its label, runs through a box or along its edge,
-when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched.
+crosses a frame's name or has a route that crosses itself, when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched, and other warnings come before arrows that fan out from one anchor, which count as one trunk. `read` with `check` lists the warnings of the whole page.
 
 A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
 a rectangle and two text shapes, so it needs nothing special to open elsewhere.

@@ -386,7 +386,7 @@ func TestWarningsStayShort(t *testing.T) {
 	}
 	out := ops(t, newEditor(), "["+strings.Join(list, ",")+"]")
 	_, warnings, _ := strings.Cut(out, "warnings:\n")
-	if n := strings.Count(warnings, "\n"); n > maxWarnings+1 || !strings.HasSuffix(warnings, "and more") {
+	if n := strings.Count(warnings, "\n"); n > maxWarnings || !strings.Contains(warnings, " more; read with check") {
 		t.Errorf("%d warnings:\n%s", n, warnings)
 	}
 }
@@ -759,7 +759,7 @@ func TestDryRunCommits(t *testing.T) {
 	s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
 	args := map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "x"}}}
 	got := textOf(call(t, s, "apply", args))
-	token := regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	token := regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
 	if token == nil || e.Doc.Shapes["shape:x"] != nil {
 		t.Fatalf("dry: %q", got)
 	}
@@ -771,18 +771,18 @@ func TestDryRunCommits(t *testing.T) {
 	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError || !strings.Contains(textOf(r), "send ops again") {
 		t.Errorf("twice: %q", textOf(r))
 	}
-	if r := call(t, s, "apply", map[string]any{"commit": "d1", "ops": []any{map[string]any{"add": "star"}}}); !r.IsError {
+	if r := call(t, s, "apply", map[string]any{"commit": "t1", "ops": []any{map[string]any{"add": "star"}}}); !r.IsError {
 		t.Errorf("commit with ops: %q", textOf(r))
 	}
 	// A client whose old schema requires ops sends an empty list, and that's fine.
 	got = textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "viaEmpty"}}}))
-	empty := regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	empty := regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
 	if r := call(t, s, "apply", map[string]any{"commit": empty[1], "ops": []any{}}); r.IsError || e.Doc.Shapes["shape:viaEmpty"] == nil {
 		t.Errorf("commit with empty ops: %q", textOf(r))
 	}
 	// Sent as an op, it says where it goes.
 	for _, name := range []string{"commit", "dry", "quiet"} {
-		r := call(t, s, "apply", map[string]any{"ops": []any{map[string]any{name: "d1"}}})
+		r := call(t, s, "apply", map[string]any{"ops": []any{map[string]any{name: "t1"}}})
 		if !r.IsError || !strings.Contains(textOf(r), name+" is an argument of apply") {
 			t.Errorf("%s as an op: %q", name, textOf(r))
 		}
@@ -798,7 +798,7 @@ func TestDryRunCommits(t *testing.T) {
 	}
 	ops(t, e, `[{"add":"star","id":"y"}]`)
 	got = textOf(call(t, s, "apply", args))
-	token = regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	token = regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
 	ops(t, e, `[{"del":"y"}]`)
 	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError {
 		t.Errorf("commit after its target went: %q", textOf(r))
@@ -813,11 +813,75 @@ func TestDryRunCommits(t *testing.T) {
 	for i := range keptDries + 1 {
 		got := textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star"}}}))
 		if i == 0 {
-			first = regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)[1]
+			first = regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)[1]
 		}
 	}
 	if r := call(t, s, "apply", map[string]any{"commit": first}); !r.IsError {
 		t.Errorf("oldest still commits: %q", textOf(r))
+	}
+}
+
+// Tokens and document ids are both counters, so they must not look alike: an
+// agent in d1 holding the token of the first dry run mustn't be able to swap them.
+func TestDryRunTokenIsNoDocID(t *testing.T) {
+	e := newEditor()
+	s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
+	args := map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "x"}}}
+	got := textOf(call(t, s, "apply", args))
+	token := regexp.MustCompile(`commit "(t1)"`).FindStringSubmatch(got)
+	if token == nil {
+		t.Fatalf("the first token: %q", got)
+	}
+	if r := call(t, s, "apply", map[string]any{"commit": "d1"}); !r.IsError || !strings.Contains(textOf(r), "no dry run") || e.Doc.Shapes["shape:x"] != nil {
+		t.Errorf("a document id as the token: %q", textOf(r))
+	}
+	if r := call(t, s, "apply", map[string]any{"doc": token[1], "ops": []any{map[string]any{"add": "star"}}}); !r.IsError || !strings.Contains(textOf(r), "no drawing") {
+		t.Errorf("a token as the document: %q", textOf(r))
+	}
+	// Getting them mixed up costs nothing: the dry run is still there.
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError || e.Doc.Shapes["shape:x"] == nil {
+		t.Errorf("commit after the mix-ups: %q", textOf(r))
+	}
+}
+
+// A dry run's answer is about the page it ran on, so it doesn't commit on another.
+func TestCommitStaysOnItsPage(t *testing.T) {
+	e := newEditor()
+	s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
+	ops(t, e, `[{"page":"Other"},{"page":"Page 1"}]`)
+	first := e.Page
+	got := textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "x"}}}))
+	token := regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
+	if token == nil {
+		t.Fatalf("dry: %q", got)
+	}
+	ops(t, e, `[{"page":"Other"}]`)
+	r := call(t, s, "apply", map[string]any{"commit": token[1]})
+	if !r.IsError || !strings.Contains(textOf(r), `"Page 1"`) || e.Doc.Shapes["shape:x"] != nil {
+		t.Fatalf("commit on another page: %q, x on the page: %v", textOf(r), e.Doc.Shapes["shape:x"] != nil)
+	}
+	// Going back is enough: the dry run stays.
+	ops(t, e, `[{"page":"Page 1"}]`)
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError || e.PageOf("shape:x") != first {
+		t.Errorf("commit back on its page: %q", textOf(r))
+	}
+
+	// A page gone is a dry run gone.
+	got = textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "y"}}}))
+	token = regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
+	ops(t, e, `[{"page":"Other"},{"delPage":"Page 1"}]`)
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError || !strings.Contains(textOf(r), "send ops again") || e.Doc.Shapes["shape:y"] != nil {
+		t.Errorf("commit after its page went: %q", textOf(r))
+	}
+
+	// A page op in the dry run counts from where the dry run began.
+	got = textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"page": "Third"}, map[string]any{"add": "star", "id": "z"}}}))
+	token = regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
+	if token == nil {
+		t.Fatalf("dry with a page op: %q", got)
+	}
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError || e.Doc.Shapes["shape:z"] == nil {
+		t.Errorf("commit with a page op: %q", textOf(r))
 	}
 }
 
@@ -1247,7 +1311,7 @@ func TestToolsStayCheap(t *testing.T) {
 		}
 	}
 	// What the handlers take, a client must be told: a strict one refuses the rest.
-	declared := map[string][]string{"apply": {"ops", "dry", "commit", "quiet"}, "view": {"theme"}}
+	declared := map[string][]string{"apply": {"ops", "dry", "commit", "quiet"}, "read": {"check"}, "view": {"theme"}}
 	for _, tool := range res.Tools {
 		schema, _ := json.Marshal(tool.InputSchema)
 		for _, want := range declared[tool.Name] {
@@ -1607,10 +1671,13 @@ func TestArrowAlongAnEdge(t *testing.T) {
 func TestArrowsSharingALine(t *testing.T) {
 	const three = `{"add":"rectangle","id":"a","x":0,"y":100,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100,"text":"b"},{"add":"rectangle","id":"c","x":500,"y":200,"w":100,"h":100,"text":"c"},`
 	// The reported case: two from one card, one line until they part.
-	out := wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b","kind":"elbow"},{"add":"arrow","id":"q","from":"a","to":"c","kind":"elbow"}]`, "p and q share a line for 200")
-	if strings.Count(out, "share a line") != 1 {
+	out := wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b","kind":"elbow"},{"add":"arrow","id":"q","from":"a","to":"c","kind":"elbow"}]`, "p and q share a trunk from a")
+	if strings.Count(out, "share a") != 1 {
 		t.Errorf("told twice: %s", out)
 	}
+	// Into one anchor it's as much a trunk, and with both ends alike it's no tree.
+	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"b","to":"a","kind":"elbow"},{"add":"arrow","id":"q","from":"c","to":"a","kind":"elbow"}]`, "p and q share a trunk into a")
+	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b"},{"add":"arrow","id":"q","from":"a","to":"b"}]`, "p and q share a line")
 	// Both ways along the same straight line.
 	wantWarnings(t, newEditor(), `[`+three+`{"add":"arrow","id":"p","from":"a","to":"b"},{"add":"arrow","id":"q","from":"b","to":"a"}]`, "p and q share a line")
 	// Apart, or just starting from one point, they don't.
@@ -1695,5 +1762,390 @@ func TestViewKeepsFrameHeadings(t *testing.T) {
 	}
 	if need := editor.FrameHeadingFloor * 1.6 / scale; box.Y > -need {
 		t.Errorf("box starts at %v, with %v needed above the frame", box.Y, need)
+	}
+}
+
+// fanOut is a tree whose six arrows share a trunk, on a page with two real
+// problems: a card over a frame's name, and an arrow its frame clips.
+const fanOut = `{"add":"frame","id":"f","name":"Tree","size":"m","x":0,"y":0,"w":900,"h":800},` +
+	`{"add":"card","id":"root","title":"Root","in":"f","x":20,"y":350,"w":100},` +
+	`{"add":"card","id":"t1","title":"1","in":"f","x":600,"y":20,"w":100},` +
+	`{"add":"card","id":"t2","title":"2","in":"f","x":600,"y":140,"w":100},` +
+	`{"add":"card","id":"t3","title":"3","in":"f","x":600,"y":260,"w":100},` +
+	`{"add":"card","id":"t4","title":"4","in":"f","x":600,"y":440,"w":100},` +
+	`{"add":"card","id":"t5","title":"5","in":"f","x":600,"y":560,"w":100},` +
+	`{"add":"card","id":"t6","title":"6","in":"f","x":600,"y":680,"w":100},` +
+	`{"add":"arrow","id":"a1","from":"root","to":"t1","kind":"elbow"},` +
+	`{"add":"arrow","id":"a2","from":"root","to":"t2","kind":"elbow"},` +
+	`{"add":"arrow","id":"a3","from":"root","to":"t3","kind":"elbow"},` +
+	`{"add":"arrow","id":"a4","from":"root","to":"t4","kind":"elbow"},` +
+	`{"add":"arrow","id":"a5","from":"root","to":"t5","kind":"elbow"},` +
+	`{"add":"arrow","id":"a6","from":"root","to":"t6","kind":"elbow"},` +
+	`{"add":"card","id":"lid","title":"Over","x":0,"y":-40,"w":200},` +
+	`{"add":"arrow","id":"out","from":"t1","to":"t2","kind":"elbow","via":[[1000,110]]}`
+
+// The reported case: fifteen pairs in one tree hid what was really wrong.
+func TestFanOutDoesntHideWarnings(t *testing.T) {
+	out := wantWarnings(t, newEditor(), `[`+fanOut+`]`,
+		"frame f's name runs into lid",
+		`out sticks out of frame f, which clips it; in:"" takes it out of the frame`,
+		"a1, a2, a3, a4, a5, a6 share a trunk from root")
+	if n := strings.Count(out, "share a"); n != 1 {
+		t.Errorf("told of %d shared lines:\n%s", n, out)
+	}
+	if strings.Index(out, "share a trunk") < strings.Index(out, "sticks out") {
+		t.Errorf("the trunk comes before what's wrong:\n%s", out)
+	}
+	// With so much else to tell, the trunk is what doesn't fit.
+	out = wantWarnings(t, newEditor(), `[`+fanOut+`,{"add":"arrow","id":"p","from":"t1","to":"t6"},{"add":"arrow","id":"q","from":"t6","to":"t1"}]`, "p and q share a line")
+	if strings.Contains(out, "share a trunk") || !strings.Contains(out, "and 1 more") {
+		t.Errorf("the trunk isn't what's cut:\n%s", out)
+	}
+	// More than enough of them still fit in a line.
+	var list strings.Builder
+	list.WriteString(`{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100}`)
+	for i := range 20 {
+		fmt.Fprintf(&list, `,{"add":"rectangle","id":"t%d","x":3000,"y":%d,"w":100,"h":60},{"add":"arrow","id":"a%d","from":"r","to":"t%d","kind":"elbow"}`, i, i*100-600, i, i)
+	}
+	wantWarnings(t, newEditor(), `[`+list.String()+`]`, "a0, a1, a2, a3, a4, a5, a6, a7 and 12 more share a trunk from r")
+}
+
+func TestOffShapeAnchorsAreRefused(t *testing.T) {
+	const two = `{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":400,"y":0},`
+	for _, at := range []string{`"fromAt":[2,0]`, `"fromAt":[0,-0.1]`, `"toAt":[0.5,1.01]`, `"toAt":[0.5]`} {
+		if _, err := tryOps(newEditor(), `[`+two+`{"add":"arrow","from":"a","to":"b",`+at+`}]`); err == nil || !strings.Contains(err.Error(), "each 0 to 1 across the shape") {
+			t.Errorf("%s: got %v", at, err)
+		}
+	}
+	ops(t, newEditor(), `[`+two+`{"add":"arrow","from":"a","to":"b","fromAt":[0,1],"toAt":[1,0]}]`)
+	e := newEditor()
+	ops(t, e, `[`+two+`{"add":"arrow","id":"s","from":"a","to":"b"}]`)
+	if _, err := tryOps(e, `[{"set":"s","fromAt":[2,0]}]`); err == nil {
+		t.Error("set took an anchor off the shape")
+	}
+}
+
+func viaOf(t *testing.T, e *editor.Editor, id string) string {
+	t.Helper()
+	got, err := read(e, readArgs{IDs: names{id}}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A route keeps to what it joins when that all moves together, by one op or by
+// several, and is left alone by a move that says where it goes.
+func TestViaFollowsWhatItJoins(t *testing.T) {
+	const row = `[` + threeInARow + `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`
+	e := newEditor()
+	ops(t, e, row)
+	before := arrowLine(e, "s")
+	out := wantWarnings(t, e, `[{"set":["a","m","b"],"dy":200}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[300,160]]") {
+		t.Errorf("via stayed behind: %s", got)
+	}
+	if !strings.Contains(out, "\ns ") {
+		t.Errorf("the arrow isn't told of as changed: %s", out)
+	}
+	after := arrowLine(e, "s")
+	if len(before) != len(after) {
+		t.Fatalf("route changed shape: %v to %v", before, after)
+	}
+	for i := range before {
+		if after[i].Sub(before[i]).Dist(geo.V(0, 200)) > 0.01 {
+			t.Errorf("route changed shape: %v to %v", before, after)
+			break
+		}
+	}
+
+	// In one apply, however many ops it takes.
+	e = newEditor()
+	ops(t, e, row)
+	ops(t, e, `[{"set":"a","dx":50},{"set":"b","dx":50}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[350,-40]]") {
+		t.Errorf("two ops: %s", got)
+	}
+
+	// Said in the same batch, it's where it was said to be.
+	e = newEditor()
+	ops(t, e, row)
+	ops(t, e, `[{"set":["a","b"],"dx":50},{"set":"s","via":[[0,-90]]}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[0,-90]]") {
+		t.Errorf("said: %s", got)
+	}
+
+	// One end moving says nothing of where it should go.
+	e = newEditor()
+	ops(t, e, row)
+	ops(t, e, `[{"set":"b","dx":50}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[300,-40]]") {
+		t.Errorf("one end: %s", got)
+	}
+
+	// Bound to something else, it's no longer the same arrow.
+	e = newEditor()
+	ops(t, e, row+``)
+	ops(t, e, `[{"set":"a","dx":0,"dy":100},{"set":"b","dy":100},{"set":"s","to":"m"}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[300,-40]]") {
+		t.Errorf("rebound: %s", got)
+	}
+
+	// A dry run leaves it where it is.
+	e = newEditor()
+	ops(t, e, row)
+	if _, err := apply(e, mustOps(t, `[{"set":["a","b"],"dy":200}]`), applyMode{dry: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[300,-40]]") {
+		t.Errorf("dry: %s", got)
+	}
+
+	// An arrow in a frame moves with it: not twice over.
+	e = newEditor()
+	ops(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":800,"h":400},{"add":"rectangle","id":"a","in":"f","x":20,"y":100,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":500,"y":100,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[300,20]]}]`)
+	ops(t, e, `[{"set":"f","dx":100}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[400,20]]") {
+		t.Errorf("in a frame: %s", got)
+	}
+	// And one that left the frame is taken along all the same.
+	ops(t, e, `[{"set":"s","in":""},{"set":"f","dx":100}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[500,20]]") {
+		t.Errorf("out of the frame: %s", got)
+	}
+}
+
+func mustOps(t *testing.T, list string) []*op {
+	t.Helper()
+	o, err := decodeOps(json.RawMessage(list))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// The reported case: only the target moved, past a waypoint that was in its way.
+func TestWarnsOfARouteCrossingItself(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`)
+	out := wantWarnings(t, e, `[{"set":"b","x":200,"y":300}]`, "s's route crosses itself; its via may be out of place")
+	if !crossesItself(arrowLine(e, "s")) {
+		t.Errorf("no crossing in %v:\n%s", arrowLine(e, "s"), out)
+	}
+	wantWarnings(t, e, `[{"set":"s","via":[]}]`)
+
+	for _, c := range []struct {
+		pts  []geo.Vec
+		want bool
+	}{
+		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(200, 100)}, false},
+		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(50, 100), geo.V(50, -50)}, true},
+		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(20, 0)}, true},
+		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(0, 100)}, false},
+	} {
+		if got := crossesItself(c.pts); got != c.want {
+			t.Errorf("%v: got %v", c.pts, got)
+		}
+	}
+}
+
+func TestCheckCoversTheWholePage(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"frame","id":"f","name":"Top","size":"l","x":0,"y":100,"w":300,"h":200},{"add":"rectangle","id":"r","x":0,"y":20,"w":200,"h":80,"text":"r"},{"add":"rectangle","id":"far","x":800,"y":0,"text":"far"},{"add":"rectangle","id":"gone","x":800,"y":200,"text":"gone"}]`)
+	// What a batch didn't touch it doesn't speak of, even dry.
+	dry, err := apply(e, mustOps(t, `[{"del":"gone"}]`), applyMode{dry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dry, "warnings") {
+		t.Errorf("dry: %s", dry)
+	}
+	got, err := read(e, readArgs{Check: true}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `warnings 1-1 of 1 on page "Page 1"`) || !strings.Contains(got, "frame f's name runs into r") {
+		t.Errorf("check: %s", got)
+	}
+	// It changes nothing, and can be undone to nothing.
+	if _, err := read(e, readArgs{Check: true}, "", ""); err != nil || e.Doc.Shapes["shape:gone"] == nil {
+		t.Errorf("check changed something: %v", err)
+	}
+	ops(t, e, `[{"del":"r"}]`)
+	if got, _ := read(e, readArgs{Check: true}, "", ""); got != `no warnings on page "Page 1"` {
+		t.Errorf("clean: %s", got)
+	}
+
+	// Of another page, by name, and what straight arrows can't do.
+	ops(t, e, `[{"page":"Two"},{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","straight":"h"}]`)
+	ops(t, e, `[{"set":"b","y":400},{"page":"Page 1"}]`)
+	got, err = read(e, readArgs{Check: true, Page: "Two"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "s can't be level: a and b share no height") {
+		t.Errorf("other page: %s", got)
+	}
+
+	// A long list comes in pages, which apply's answer points to.
+	e = newEditor()
+	var list []string
+	for range 30 {
+		list = append(list, `{"add":"rectangle","x":0,"y":0,"w":100,"h":100,"text":"same"}`)
+	}
+	ops(t, e, "["+strings.Join(list, ",")+"]")
+	got, _ = read(e, readArgs{Check: true, Limit: 5, Offset: 2}, "", "")
+	if !strings.Contains(got, "warnings 3-7 of ") || !strings.HasSuffix(got, "more: offset 7") {
+		t.Errorf("paged: %s", got)
+	}
+	if got, _ := read(e, readArgs{Check: true, Offset: 9999}, "", ""); !strings.HasPrefix(got, "warnings: ") {
+		t.Errorf("past the end: %s", got)
+	}
+	if _, err := read(e, readArgs{Check: true, Find: "x"}, "", ""); err == nil {
+		t.Error("check took find")
+	}
+}
+
+func TestCheckOverHTTP(t *testing.T) {
+	h := &fakeHost{}
+	s := connect(t, h)
+	call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"add": "rectangle", "x": 0, "y": 0}}})
+	if got := textOf(call(t, s, "read", map[string]any{"check": true})); !strings.HasPrefix(got, "no warnings") {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestArrowOverAFramesName(t *testing.T) {
+	const frame = `{"add":"frame","id":"f","name":"A long name for it","size":"l","x":0,"y":200,"w":800,"h":300},{"add":"rectangle","id":"in","in":"f","x":40,"y":300,"w":100,"h":100},`
+	wantWarnings(t, newEditor(), `[`+frame+`{"add":"rectangle","id":"up","x":0,"y":-100,"w":100,"h":60},{"add":"arrow","id":"s","from":"up","to":"in"}]`, "s crosses frame f's name")
+	// A plain name is just as crossed.
+	wantWarnings(t, newEditor(), `[{"add":"frame","id":"f","name":"A long name for it","x":0,"y":200,"w":800,"h":300},{"add":"rectangle","id":"in","in":"f","x":0,"y":300,"w":100,"h":100},{"add":"rectangle","id":"up","x":0,"y":-100,"w":100,"h":60},{"add":"arrow","id":"s","from":"up","to":"in"}]`, "s crosses frame f's name")
+	// Past the name, or inside what clips it, it's fine.
+	wantWarnings(t, newEditor(), `[`+frame+`{"add":"rectangle","id":"up","x":700,"y":-100,"w":60,"h":60},{"add":"rectangle","id":"low","in":"f","x":700,"y":300,"w":60,"h":60},{"add":"arrow","id":"s","from":"up","to":"low"}]`)
+	wantWarnings(t, newEditor(), `[`+frame+`{"add":"rectangle","id":"low","in":"f","x":400,"y":300,"w":100,"h":100},{"add":"arrow","id":"s","in":"f","from":"in","to":"low"}]`)
+	// Moving the frame under one counts.
+	e := newEditor()
+	wantWarnings(t, e, `[`+frame+`{"add":"arrow","id":"s","x1":10,"y1":-100,"x2":10,"y2":100}]`)
+	wantWarnings(t, e, `[{"set":"f","y":50}]`, "s crosses frame f's name")
+	// A move of what the arrow joins counts too.
+	e = newEditor()
+	wantWarnings(t, e, `[`+frame+`{"add":"rectangle","id":"p","x":1000,"y":-100,"w":60,"h":60},{"add":"rectangle","id":"q","x":1000,"y":600,"w":60,"h":60},{"add":"arrow","id":"s","from":"p","to":"q"}]`)
+	wantWarnings(t, e, `[{"set":["p","q"],"x":50}]`, "s crosses frame f's name")
+}
+
+// What clips an arrow with both ends in a frame says how to stop it, and doing
+// that does.
+func TestWarningOfAClippedRouteSaysHowToFixIt(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`,
+		`s sticks out of frame f, which clips it; in:"" takes it out of the frame`)
+	wantWarnings(t, e, `[{"set":"s","in":""}]`)
+	if e.Doc.Shapes["shape:s"].Parent != e.Page {
+		t.Error("in:\"\" left it in the frame")
+	}
+	// Moving what it joins so that its route leaves the frame counts too.
+	e = newEditor()
+	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b"}]`)
+	wantWarnings(t, e, `[{"set":"b","y":400}]`, "s sticks out of frame f")
+}
+
+func TestGroupErrorNamesCards(t *testing.T) {
+	_, err := tryOps(newEditor(), `[{"add":"card","id":"eq1","title":"One","body":"Body","x":0,"y":0},{"add":"card","id":"eq2","title":"Two","x":400,"y":0},{"group":["eq1","eq2"],"id":"g"},{"add":"arrow","x1":0,"y1":500,"to":"g"}]`)
+	if err == nil || !strings.Contains(err.Error(), "bind to one in it: eq1, eq2") {
+		t.Errorf("got %v", err)
+	}
+	// And what it names binds.
+	ops(t, newEditor(), `[{"add":"card","id":"eq1","title":"One","x":0,"y":0},{"add":"card","id":"eq2","title":"Two","x":400,"y":0},{"group":["eq1","eq2"],"id":"g"},{"add":"arrow","x1":0,"y1":500,"to":"eq1"}]`)
+}
+
+func TestWrongTypesTeach(t *testing.T) {
+	for list, want := range map[string]string{
+		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"kind":"elbow","via":[["bad"]]}]`: "via is a list of [x,y] points",
+		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"kind":"elbow","via":"bad"}]`:     "via is a list of [x,y] points",
+		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"fromAt":["a","b"]}]`:             "fromAt and toAt are [x,y]",
+		`[{"add":"rectangle","x":"5"}]`:                                                "x must be a number",
+		`[{"add":"rectangle","text":5}]`:                                               "text must be a string",
+		`[{"add":"rectangle","locked":"yes"}]`:                                         "locked must be true or false",
+		`[{"add":5}]`:                                                                  "add must be a string",
+		`[{"dup":"a","n":"two"}]`:                                                      "n must be a whole number",
+		`[{"style":{"color":5}}]`:                                                      "color must be a string",
+		`[5]`:                                                                          "an op is an object",
+	} {
+		_, err := decodeOps(json.RawMessage(list))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", list, err, want)
+		}
+		if err != nil && strings.Contains(err.Error(), "unmarshal") {
+			t.Errorf("%s: says %v", list, err)
+		}
+	}
+}
+
+func TestDupToldOfLostEnds(t *testing.T) {
+	const two = `{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":400,"y":0},{"add":"arrow","id":"s","from":"a","to":"b"},{"add":"arrow","id":"half","from":"a","x2":50,"y2":500},`
+	wantWarnings(t, newEditor(), `[`+two+`{"dup":"s","dy":300}]`, "the copy of s lost its from and to")
+	wantWarnings(t, newEditor(), `[`+two+`{"dup":["s","a"],"dy":300}]`, "the copy of s lost its to")
+	wantWarnings(t, newEditor(), `[`+two+`{"dup":["half"],"dy":300}]`, "the copy of half lost its from")
+	// Copied with what it joins, it joins the copies.
+	e := newEditor()
+	wantWarnings(t, e, `[`+two+`{"del":"half"},{"dup":["a","b","s"],"dy":300}]`)
+	bound := 0
+	for id, s := range e.Doc.Shapes {
+		if s.Type == doc.TypeArrow && id != shapeID("s") && e.BindingOf(id, "start") != nil && e.BindingOf(id, "end") != nil {
+			bound++
+		}
+	}
+	if bound != 1 {
+		t.Errorf("%d copies stayed bound", bound)
+	}
+}
+
+// At the smallest size there's no smaller style for the body, so it scales down,
+// and goes back to whole sizes when the title does.
+func TestCardBodySmallerAtSizeS(t *testing.T) {
+	body := func(e *editor.Editor) float64 {
+		s := e.Doc.Shapes["shape:c-body"]
+		return editor.TextSize(s.Size) * s.Scale
+	}
+	head := func(e *editor.Editor) float64 {
+		s := e.Doc.Shapes["shape:c-head"]
+		return editor.TextSize(s.Size) * s.Scale
+	}
+	e := newEditor()
+	ops(t, e, `[{"add":"card","id":"c","title":"Title","body":"Some body text","size":"s","x":0,"y":0}]`)
+	if body(e) >= head(e) {
+		t.Errorf("body %v, title %v", body(e), head(e))
+	}
+	// The box fits the text at that size.
+	box := e.Doc.Shapes["shape:c-box"]
+	want := e.Geometry(e.Doc.Shapes["shape:c-head"]).Bounds.H + cardGap + e.Geometry(e.Doc.Shapes["shape:c-body"]).Bounds.H + 2*cardPad
+	if !near(box.H, want) {
+		t.Errorf("box %v, text %v", box.H, want)
+	}
+	ops(t, e, `[{"set":"c","size":"m"}]`)
+	if got := e.Doc.Shapes["shape:c-body"]; got.Size != "s" || got.Scale != 1 || head(e) != editor.TextSize("m") {
+		t.Errorf("at m: body %s %v", got.Size, got.Scale)
+	}
+	ops(t, e, `[{"set":"c","size":"s"}]`)
+	if body(e) >= head(e) {
+		t.Errorf("back at s: body %v, title %v", body(e), head(e))
+	}
+	// Through the batch's style, and on a body added later.
+	e = newEditor()
+	ops(t, e, `[{"style":{"size":"s"}},{"add":"card","id":"c","title":"Title","body":"Body","x":0,"y":0}]`)
+	if body(e) >= head(e) {
+		t.Errorf("style: body %v, title %v", body(e), head(e))
+	}
+	// Saved and read back.
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	back, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Shapes["shape:c-body"].Scale; got != cardSmallBody {
+		t.Errorf("saved as %v", got)
 	}
 }

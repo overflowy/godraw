@@ -14,7 +14,7 @@ var guideTopics = map[string]string{
 	"": `Units are page pixels, y down. Later shapes paint over earlier ones.
 Work: apply ops, view to check, set to fix. read shows what is already there.
 Each apply is one undo step, and an error in it changes nothing. It answers with each new shape's box, to place the next from, then warnings of what looks wrong. Fix those.
-Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops. "quiet":true leaves out each shape's box.
+Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops, from the same page. "quiet":true leaves out each shape's box.
 With several drawings open, read lists them; pass doc to pick one, or get the frontmost.
 read says if the window is light or dark; view can show either.
 Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish. Quitting keeps unsaved drawings for the next launch.
@@ -25,7 +25,7 @@ geo (` + strings.Join(editor.GeoKinds, " ") + `): w h text color labelColor fill
 text: text w(wraps) color size font align scale. Without w it stays on one line per \n.
 note: text color labelColor size font align valign scale url. 200 square, grows with its text.
 card: title body w h color labelColor fill dash size font align. Title and wrapped body in a box that fits. See layout.
-frame: name w h color size font. Clips what is in it. Put shapes in with "in". An arrow from inside to outside stays on the page, unclipped. size gives its name a card title's size and its border the color; font is its name's.
+frame: name w h color size font. Clips what is in it. Put shapes in with "in". An arrow from inside to outside stays on the page, unclipped; one with both ends inside is clipped too, unless "in":"" takes it out. size gives its name a card title's size and its border the color; font is its name's.
 image: src(file path or base64 data: URL; PNG, JPEG, GIF) w h alt url.
 draw: d w h color fill dash size. Any path; fill shows when it closes. See paths.
 highlight: d w h color size. Marker over other shapes.
@@ -52,8 +52,8 @@ Example: [{"add":"frame","id":"f","name":"Plan","x":0,"y":0,"w":500,"h":300},{"a
 	"layout": `Font px at size s m l xl: labels ` + sizes(editor.LabelSize) + `; text shapes ` + sizes(editor.TextSize) + `; arrow labels ` + sizes(editor.ArrowLabelSize) + `. A line is ` + num(editor.LineHeight) + ` times that high. A character averages, times that: draw 0.51, sans 0.44, serif 0.45, mono 0.62. Labels sit ` + num(editor.LabelPadding) + ` in from the box.
 A box keeps its w: text wraps, and the box grows past h to hold it. Without h it fits.
 To measure exactly, apply with "dry":true: {"add":"rectangle","text":"Hi","w":200} answers with the box it would get, {"add":"text","text":"Hi"} with the text's size. Try whole layouts the same way.
-Warnings leave alone a box wholly inside another, unless it covers text, and overlaps of shapes without text.
-A label has one style. For a title and body, add a card: color is its box and title, labelColor its body, size its title, with the body a size down. Without w it fits, up to ` + num(cardMaxW) + ` wide. Set title, body, w or h and it sizes itself again. Arrows bind to it by its id.
+Warnings leave alone a box wholly inside another, unless it covers text, and overlaps of shapes without text. They speak of what that apply touched; read with "check":true lists those of the whole page, to see that a finished page is clean.
+A label has one style. For a title and body, add a card: color is its box and title, labelColor its body, size its title, with the body smaller. Without w it fits, up to ` + num(cardMaxW) + ` wide. Set title, body, w or h and it sizes itself again. Arrows bind to it by its id.
 To hold shapes without clipping them, group them with a rectangle behind them.
 Example: [{"add":"card","id":"auth","title":"Auth","body":"Sign-in and sessions","color":"violet","x":0,"y":0},{"add":"rectangle","id":"db","text":"DB","right":"auth"},{"add":"arrow","from":"auth","to":"db","straight":"h","label":"above","text":"reads"}]`,
 
@@ -61,12 +61,12 @@ Example: [{"add":"card","id":"auth","title":"Auth","body":"Sign-in and sessions"
 from,to bind to a shape, and it follows when that shape moves. Free ends use x1,y1 and x2,y2.
 A group binds by the shape that is most of it, as a path's main stroke; if none is, the error names those to pick from.
 fromAt,toAt are [x,y], 0 to 1 across the shape; the default is its center.
-kind:"arc", the default, curves by bend, px off straight. kind:"elbow" runs in right angles, and bend does nothing.
+kind:"arc", the default, curves by bend, px off straight. kind:"elbow" runs in right angles, and takes no bend.
 An elbow's anchor on an edge sets the side it leaves or arrives by: [0.5,0] top, [0.5,1] bottom, [0,0.5] left, [1,0.5] right.
-via:[[x,y],...] are page points an elbow passes through, in order, turning as needed; one is often enough to get around a shape. They stay put as shapes move. via:[] clears them.
-straight:"h" or "v" on an arrow with from and to runs it level where both shapes share height (or width), and keeps it so in later applies as they move or grow. at, 0 to 1, picks where: 0.25 and 0.75 for a pair. straight:"off" or fromAt,toAt end it.
+via:[[x,y],...] are page points an elbow passes through, in order; one is often enough to get around a shape. They follow when both ends move alike, else stay put. via:[] clears them.
+straight:"h" or "v" on an arrow with from and to runs it level where both shapes share height (or width), and keeps it so as they move or grow. at, 0 to 1, picks where: 0.25 and 0.75 for a pair. straight:"off" or fromAt,toAt end it.
 label:"above" takes an arrow's label off its line; "center" puts it back.
-Warnings tell of an arrow through a box or along its edge, and of two sharing a line. A tree's arrows may share a trunk on purpose.
+Warnings tell of an arrow through a box, along its edge or over a frame's name, of a route crossing itself, and of arrows sharing a line. From one anchor, that's a trunk a tree may mean.
 Example: [{"add":"card","id":"a","title":"A","x":0,"y":0},{"add":"card","id":"m","title":"M","right":"a"},{"add":"card","id":"b","title":"B","right":"m"},{"add":"arrow","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[400,-60]]}]`,
 
 	"paths": `d is an SVG path: M L H V C S Q T A Z, absolute or relative. "M0 0 C40 80 80 -80 120 0"
@@ -77,7 +77,7 @@ Curves are cheap: prefer C and A to many L. Example: [{"add":"draw","id":"blob",
 	"edit": `Each op has one verb. A list of ids or one id both work.
 {"set":IDS,...} changes any field the shape takes: styles, text, name, w h, x y, dx dy, rot, in (empty leaves the frame), locked, d, and an arrow's ends (empty from or to frees it). Styles on a group reach what it holds.
 One x or y lines several shapes up. {"del":IDS} deletes, {"del":"*"} clears the page.
-{"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default.
+{"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default. A copied arrow stays bound only to what is copied with it.
 {"group":IDS,"id":"g"} {"ungroup":IDS}
 {"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + `
 {"order":IDS,"how":HOW} ` + strings.Join(verbHows["order"], " ") + `

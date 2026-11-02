@@ -21,6 +21,7 @@ type readArgs struct {
 	Find   string `json:"find"`
 	Offset int    `json:"offset"`
 	Limit  int    `json:"limit"`
+	Check  bool   `json:"check"`
 }
 
 const (
@@ -48,11 +49,53 @@ func onPage(e *editor.Editor, name string, fn func() (string, error)) (string, e
 // read describes the canvas: the whole of it, or in full what ids name.
 func read(e *editor.Editor, a readArgs, title, otherDocs string) (string, error) {
 	return onPage(e, a.Page, func() (string, error) {
+		if a.Check {
+			if len(a.IDs) > 0 || a.Find != "" {
+				return "", errors.New("check looks at the whole page, so it takes neither ids nor find")
+			}
+			return checkReport(e, a), nil
+		}
 		if len(a.IDs) > 0 {
 			return details(e, a.IDs)
 		}
 		return overview(e, a, title, otherDocs), nil
 	})
+}
+
+// checkReport lists the warnings of the whole page.
+func checkReport(e *editor.Editor, a readArgs) string {
+	list := checkWholePage(e)
+	name := e.Doc.Page(e.Page).Name
+	if len(list) == 0 {
+		return fmt.Sprintf("no warnings on page %q", name)
+	}
+	first, end, more := window(a, len(list))
+	if first >= len(list) {
+		return fmt.Sprintf("warnings: %d", len(list))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "warnings %d-%d of %d on page %q:\n", first+1, end, len(list), name)
+	for _, w := range list[first:end] {
+		b.WriteString(w)
+		b.WriteByte('\n')
+	}
+	b.WriteString(more)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// window works out which of n lines a read shows, and how to ask for the rest.
+func window(a readArgs, n int) (first, end int, more string) {
+	limit := a.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	limit = min(limit, maxLimit)
+	first = min(max(a.Offset, 0), n)
+	end = min(first+limit, n)
+	if end < n {
+		more = fmt.Sprintf("more: offset %d\n", end)
+	}
+	return first, end, more
 }
 
 func overview(e *editor.Editor, a readArgs, title, otherDocs string) string {
@@ -92,13 +135,7 @@ func overview(e *editor.Editor, a readArgs, title, otherDocs string) string {
 	} else {
 		list = e.Children(e.Page)
 	}
-	limit := a.Limit
-	if limit <= 0 {
-		limit = defaultLimit
-	}
-	limit = min(limit, maxLimit)
-	offset := max(a.Offset, 0)
-	end := min(offset+limit, len(list))
+	offset, end, more := window(a, len(list))
 	if offset >= len(list) {
 		fmt.Fprintf(&b, "shapes: %d", len(list))
 		return b.String()
@@ -110,9 +147,7 @@ func overview(e *editor.Editor, a readArgs, title, otherDocs string) string {
 		b.WriteString(line(e, id))
 		b.WriteByte('\n')
 	}
-	if end < len(list) {
-		fmt.Fprintf(&b, "more: offset %d\n", end)
-	}
+	b.WriteString(more)
 	return strings.TrimRight(b.String(), "\n")
 }
 
