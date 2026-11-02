@@ -184,8 +184,8 @@ var (
 		"valign":     {"start", "middle", "end"},
 		"spline":     {"line", "cubic"},
 		"kind":       {"arc", "elbow"},
-		"head":       {"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"},
-		"tail":       {"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"},
+		"head":       editor.ArrowHeads,
+		"tail":       editor.ArrowHeads,
 		"straight":   {"h", "v", "off"},
 		"label":      {"center", "above"},
 	}

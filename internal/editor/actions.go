@@ -1447,6 +1447,9 @@ func (e *Editor) Nudge(d geo.Vec) {
 	})
 }
 
+// ArrowHeads are the ends an arrow can have.
+var ArrowHeads = []string{"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"}
+
 // GeoKinds lists the geo shapes, in the order the toolbar shows them.
 var GeoKinds = []string{
 	"rectangle", "ellipse", "triangle", "diamond", "pentagon",
