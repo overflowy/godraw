@@ -442,8 +442,8 @@ func (a *App) topLeft(c *ui.Context) {
 		}
 		del.OnClick(func() { e.Delete(); a.refocus(c) })
 		dup.OnClick(func() { e.Duplicate(); a.refocus(c) })
-		iconButton(c, "more", "ellipsis", "More", false).PopoverMenuButton(a.moreMenu)
 		a.mcpButton(c)
+		iconButton(c, "more", "ellipsis", "More", false).PopoverMenuButton(a.moreMenu)
 	})
 }
 
