@@ -25,13 +25,17 @@ type scene struct {
 	// shrink is the scale of a picture of the page that comes out smaller than
 	// the page: see pixel.
 	shrink float64
-	// lightInk draws hand-inked strokes as lines rather than filled masks:
-	// see atlasBudget.
+	// lightInk draws opaque strokes as lines rather than masks: see atlasBudget.
 	lightInk bool
-	only     []doc.ID // what an export draws; all of the page without it
-	path     ui.Path
-	segment  [2][2]float32
-	transp   bool
+	// small says that the shape being painted is well within one mask, for those
+	// of a page's many that are not to be measured path by path.
+	small bool
+	// turned counts the turned frames being painted: see spansLarge.
+	turned  int
+	only    []doc.ID // what an export draws; all of the page without it
+	path    ui.Path
+	segment [2][2]float32
+	transp  bool
 }
 
 func toUI(c editor.Color) ui.Color {
@@ -80,34 +84,44 @@ func (a *App) paintCanvas(p *ui.Painter, r ui.Rect) {
 	if e.Grid {
 		s.grid(r)
 	}
-	s.lightInk = s.maskArea(e.Page) > atlasBudget
+	s.lightInk = s.maskArea(e.Children(e.Page), float64(p.Scale()), false) > atlasBudget
 	s.children(e.Page)
 	s.overlays()
 }
 
-// atlasBudget is how many device pixels of masks a frame may ask for. Paths
-// rasterize to a mask of their bounding box, in a 4096² atlas that also holds
-// the window's icons and text, and a frame that overflows it loses whatever
-// paints last. A long diagonal stroke costs its whole box however thin it is,
-// so a page dense with strokes gets there quickly; past this budget strokes
-// draw as lines, which take no room in it.
+// atlasBudget is how many device pixels of masks a frame may ask for: a frame
+// that overflows the atlas loses whatever paints last. Past it the window's
+// strokes draw as lines, which take no room in it, and a picture of the page
+// paints in smaller tiles.
 const atlasBudget = 6_000_000
 
-// maskArea estimates the device pixels of masks the shapes in view ask for.
-func (s *scene) maskArea(parent doc.ID) float64 {
-	k := s.cam.Z * float64(s.p.Scale())
+// maskArea estimates the device pixels of masks the shapes in view ask for,
+// stopping once it's past the budget. k is device pixels per unit painted.
+func (s *scene) maskArea(ids []doc.ID, k float64, turned bool) float64 {
 	var area float64
-	for _, id := range s.e.Children(parent) {
-		sh := s.e.Doc.Shapes[id]
-		if sh.Type == doc.TypeGroup || sh.Type == doc.TypeFrame {
-			area += s.maskArea(id)
-			if sh.Type == doc.TypeGroup {
-				continue
-			}
+	for _, id := range ids {
+		if area > atlasBudget {
+			break
 		}
-		b := s.e.PageBounds(id)
-		if s.view.Overlaps(b) {
-			area += (b.W*k + 8) * (b.H*k + 8)
+		sh := s.e.Doc.Shapes[id]
+		switch sh.Type {
+		case doc.TypeGroup:
+			area += s.maskArea(s.e.Children(id), k, turned)
+			continue
+		case doc.TypeFrame:
+			inner := turned || math.Abs(s.e.PageMat(id).Rotation()) >= 1e-4
+			area += s.maskArea(s.e.Children(id), k, inner)
+		}
+		if s.culled(sh) {
+			continue
+		}
+		if b := s.e.PageBounds(id); s.isSmall(b, k) {
+			area += (b.W*s.cam.Z*k + 8) * (b.H*s.cam.Z*k + 8)
+			continue
+		}
+		m := s.camMat().Mul(s.e.PageMat(id))
+		for _, pr := range s.e.Display(sh, s.pal) {
+			area += s.primMaskArea(pr, m, k, turned)
 		}
 	}
 	return area
@@ -207,12 +221,20 @@ func (s *scene) shape(sh *doc.Shape) {
 	}
 	m := s.camMat().Mul(s.e.PageMat(sh.ID))
 	o := s.opacityOf(sh)
+	s.small = s.isSmall(s.e.PageBounds(sh.ID), float64(s.p.Scale()))
 	for _, pr := range s.e.Display(sh, s.pal) {
 		if pr.Label && sh.ID == s.e.Editing && !s.export {
 			continue
 		}
 		s.prim(pr, m, o, sh)
 	}
+	s.small = false
+}
+
+// isSmall says whether a box in the page is well within one mask, whatever its
+// stroke or ink adds. k is device pixels per unit painted.
+func (s *scene) isSmall(b geo.Box, k float64) bool {
+	return b.W*s.cam.Z*k <= wholeMask/2 && b.H*s.cam.Z*k <= wholeMask/2
 }
 
 func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
@@ -223,21 +245,13 @@ func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
 			s.inkLine(pr, m)
 			return
 		}
-		s.p.FillPath(s.buildPath(pr.Path, m), toUI(pr.Color.Alpha(o)))
+		s.fill(pr.Path, m, toUI(pr.Color.Alpha(o)))
 	case editor.PrimStroke:
-		path := s.buildPath(pr.Path, m)
-		if pr.Butt {
-			path.Cap(ui.ButtCap).Join(ui.MiterJoin)
+		if s.lightInk && !pr.Butt && len(pr.Dash) < 2 && pr.Color.A*o >= 1 {
+			s.lightLines(pr, m)
+			return
 		}
-		if len(pr.Dash) >= 2 {
-			z := s.cam.Z
-			path.Dash(0, float32(pr.Dash[0]*z), float32(pr.Dash[1]*z))
-		}
-		w := float32(pr.Width * s.cam.Z)
-		if pr.Butt {
-			w = max(w, s.pixel())
-		}
-		s.p.StrokePath(path, w, toUI(pr.Color.Alpha(o)))
+		s.strokePrim(pr, m, toUI(pr.Color.Alpha(o)))
 	case editor.PrimText:
 		s.text(pr, m, o)
 	case editor.PrimImage:
@@ -377,11 +391,13 @@ func (s *scene) frame(sh *doc.Shape) {
 		deg := float32(rot * 180 / math.Pi)
 		// The clip turns with the frame; the transform inside it undoes the
 		// turn, as what the frame holds has it in its own transform.
+		s.turned++
 		s.p.Transform(ui.Rotation(deg), clip.X, clip.Y, func() {
 			s.p.Clip(clip, 0, func() {
 				s.p.Transform(ui.Rotation(-deg), clip.X, clip.Y, inside)
 			})
 		})
+		s.turned--
 	}
 	s.frameHeading(sh, origin, rot)
 }
@@ -433,9 +449,7 @@ func (s *scene) outline(id doc.ID, width float32, c ui.Color) {
 	}
 	g := s.e.Geometry(sh)
 	m := s.camMat().Mul(s.e.PageMat(id))
-	path := (&geo.Path{}).Poly(g.Outline, g.Closed)
-	s.buildPath(path, m)
-	s.p.StrokePath(&s.path, width, c)
+	s.stroke((&geo.Path{}).Poly(g.Outline, g.Closed), m, stroke{width: width, color: c})
 }
 
 func (s *scene) overlays() {
@@ -463,8 +477,7 @@ func (s *scene) overlays() {
 	}
 	for _, l := range e.Snaps {
 		a, b := e.ToScreen(l.A), e.ToScreen(l.B)
-		s.buildPath((&geo.Path{}).Move(a.Add(s.origin)).Line(b.Add(s.origin)), geo.Identity)
-		s.p.StrokePath(&s.path, 1, toUI(s.pal.Snap))
+		s.stroke((&geo.Path{}).Move(a.Add(s.origin)).Line(b.Add(s.origin)), geo.Identity, stroke{width: 1, color: toUI(s.pal.Snap)})
 	}
 }
 
@@ -513,8 +526,7 @@ func (s *scene) selection(c ui.Color) {
 	for i, p := range corners {
 		screen[i] = e.ToScreen(p).Add(s.origin)
 	}
-	s.buildPath((&geo.Path{}).Poly(screen, true), geo.Identity)
-	s.p.StrokePath(s.path.Cap(ui.ButtCap).Join(ui.MiterJoin), 1.5, c)
+	s.stroke((&geo.Path{}).Poly(screen, true), geo.Identity, stroke{width: 1.5, color: c, butt: true})
 	if gesturing && !isResizing(e) {
 		return
 	}
@@ -566,8 +578,7 @@ func (s *scene) outlineBox(id doc.ID, c ui.Color) {
 	g := s.e.Geometry(sh)
 	cs := g.Bounds.Corners()
 	m := s.camMat().Mul(s.e.PageMat(id))
-	s.buildPath((&geo.Path{}).Poly(cs[:], true), m)
-	s.p.StrokePath(&s.path, 1, c.Alpha(0.6))
+	s.stroke((&geo.Path{}).Poly(cs[:], true), m, stroke{width: 1, color: c.Alpha(0.6)})
 }
 
 func (s *scene) linearHandles(c ui.Color) {

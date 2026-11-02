@@ -99,3 +99,43 @@ func TestElbowPassesThroughVia(t *testing.T) {
 		t.Errorf("got %v, want %v", pts, want)
 	}
 }
+
+// An anchor just inside the edge it's on, as rounding leaves it, ends the arrow on
+// that edge rather than on the far side of the shape.
+func TestElbowMeetsTheNearEdge(t *testing.T) {
+	outline := []geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 80), geo.V(0, 80)}
+	for _, c := range []struct {
+		from, out, want geo.Vec
+	}{
+		{geo.V(50, 79.999), geo.V(0, 1), geo.V(50, 80)},
+		{geo.V(50, 80), geo.V(0, 1), geo.V(50, 80)},
+		{geo.V(50, 80.5), geo.V(0, 1), geo.V(50, 80)},
+		{geo.V(50, 0.001), geo.V(0, -1), geo.V(50, 0)},
+		{geo.V(99.2, 40), geo.V(1, 0), geo.V(100, 40)},
+		{geo.V(0.8, 40), geo.V(-1, 0), geo.V(0, 40)},
+	} {
+		pts := meetOutline([]geo.Vec{c.from, c.from.Add(c.out.Mul(50))}, c.out, outline)
+		if pts[0].Dist(c.want) > 1e-6 {
+			t.Errorf("from %v going %v: met at %v, not %v", c.from, c.out, pts[0], c.want)
+		}
+	}
+}
+
+// A hexagon and an octagon have a point at the top, as tldraw draws them.
+func TestPolygonsHaveAPointOnTop(t *testing.T) {
+	for _, kind := range []string{"pentagon", "hexagon", "octagon"} {
+		pts := geoOutline(kind, 100, 100, "")
+		if pts[0].Dist(geo.V(50, 0)) > 1e-6 {
+			t.Errorf("%s starts at %v, not the top", kind, pts[0])
+		}
+		top := 0
+		for _, p := range pts {
+			if p.Y < 1e-6 {
+				top++
+			}
+		}
+		if top != 1 {
+			t.Errorf("%s has %d points on top", kind, top)
+		}
+	}
+}

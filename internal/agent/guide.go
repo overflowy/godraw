@@ -17,6 +17,7 @@ Each apply is one undo step, and an error in it changes nothing. It answers with
 Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops, from the same page. "quiet":true leaves out each shape's box.
 With several drawings open, read lists them; pass doc to pick one, or get the frontmost.
 read says if the window is light or dark; view can show either.
+tldraw opens these files, but routes arrows its own way and ignores via and label:"above". If a drawing is for tldraw, check it there.
 Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish. Quitting keeps unsaved drawings for the next launch.
 Read only the topics you need: shapes (kinds and their fields), styles (colors, fills, fonts), place (positions), layout (text sizes, warnings, cards, containers), arrows (ends, elbows, routes), paths (curves, free forms), edit (changing what exists).`,
 
@@ -76,12 +77,12 @@ Curves are cheap: prefer C and A to many L. Example: [{"add":"draw","id":"blob",
 
 	"edit": `Each op has one verb. A list of ids or one id both work.
 {"set":IDS,...} changes any field the shape takes: styles, text, name, w h, x y, dx dy, rot, in (empty leaves the frame), locked, d, and an arrow's ends (empty from or to frees it). Styles on a group reach what it holds.
-One x or y lines several shapes up. {"del":IDS} deletes, {"del":"*"} clears the page.
+One x or y lines several shapes up. {"del":IDS} deletes, with what those hold, {"del":"*"} clears the page. An arrow bound to what goes stays, with that end free.
 {"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default. A copied arrow stays bound only to what is copied with it.
 {"group":IDS,"id":"g"} {"ungroup":IDS}
 {"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + `
 {"order":IDS,"how":HOW} ` + strings.Join(verbHows["order"], " ") + `
-{"flip":IDS,"how":"h"} or "v"
+{"flip":IDS,"how":"h"} or "v". An arrow only turns if what it joins flips with it.
 {"page":"Name"} goes to that page, making it if new; add "name" to rename it. {"delPage":"Name"}
 {"camera":"fit"} or {"camera":IDS} moves the view. New shapes out of view bring it along otherwise.
 Example: [{"add":"star","id":"t","x":0,"y":0,"w":40,"h":40,"color":"yellow","fill":"fill"},{"dup":"t","dx":60,"n":4},{"set":"t","rot":20}]`,

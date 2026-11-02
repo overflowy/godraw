@@ -51,25 +51,45 @@ func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA 
 	}
 	pal := e.Palette()
 	// In tiles, each a frame with a mask atlas of its own: a whole page of
-	// strokes wouldn't fit one. Tiles are whole device pixels apart, so that
-	// nothing shows where they meet.
-	const tile = 1024
+	// strokes wouldn't fit one, and a tile that wouldn't fit it splits. Tiles are
+	// whole device pixels apart, so that nothing shows where they meet.
+	const tile, smallest = 1024, 128
 	w, h := int(math.Ceil(box.W*scale)), int(math.Ceil(box.H*scale))
 	out := image.NewRGBA(image.Rect(0, 0, w, h))
-	side := int(math.Ceil(tile / scale))
+	sceneAt := func(p *ui.Painter, tx, ty, size int) *scene {
+		at := geo.V(box.X+float64(tx)/scale, box.Y+float64(ty)/scale)
+		side := math.Ceil(float64(size) / scale)
+		s := &scene{a: a, e: e, p: p, pal: pal, export: true, shrink: math.Min(scale, 1)}
+		s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
+		s.view = geo.Box{X: at.X, Y: at.Y, W: side, H: side}
+		return s
+	}
+	var render func(tx, ty, size int)
+	render = func(tx, ty, size int) {
+		if tx >= w || ty >= h {
+			return
+		}
+		if size > smallest && sceneAt(nil, tx, ty, size).maskArea(ids, scale, false) > atlasBudget {
+			half := size / 2
+			render(tx, ty, half)
+			render(tx+half, ty, half)
+			render(tx, ty+half, half)
+			render(tx+half, ty+half, half)
+			return
+		}
+		side := int(math.Ceil(float64(size) / scale))
+		img := ui.Render(func(c *ui.Context) {
+			ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
+				s := sceneAt(p, tx, ty, size)
+				p.Fill(r, toUI(pal.Background), 0)
+				s.paint(ids)
+			})
+		}, side, side, float32(scale))
+		draw.Draw(out, image.Rect(tx, ty, tx+size, ty+size), img, image.Point{}, draw.Src)
+	}
 	for ty := 0; ty < h; ty += tile {
 		for tx := 0; tx < w; tx += tile {
-			at := geo.V(box.X+float64(tx)/scale, box.Y+float64(ty)/scale)
-			img := ui.Render(func(c *ui.Context) {
-				ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
-					s := &scene{a: a, e: e, p: p, pal: pal, export: true, shrink: math.Min(scale, 1)}
-					s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
-					s.view = geo.Box{X: at.X, Y: at.Y, W: float64(side), H: float64(side)}
-					p.Fill(r, toUI(pal.Background), 0)
-					s.paint(ids)
-				})
-			}, side, side, float32(scale))
-			draw.Draw(out, image.Rect(tx, ty, tx+tile, ty+tile), img, image.Point{}, draw.Src)
+			render(tx, ty, tile)
 		}
 	}
 	return out

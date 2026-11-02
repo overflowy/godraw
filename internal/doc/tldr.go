@@ -130,6 +130,33 @@ func Read(r io.Reader) (*Drawing, error) {
 	return d, nil
 }
 
+// imagesInUse returns what says whether anything refers to an image. A deleted
+// image's asset stays in the drawing for undo to bring it back, but has no place
+// in the file, where it would be kept for good at the size of the image. What this
+// app leaves alone may refer to one too, which only its raw text can tell.
+func imagesInUse(d *Drawing) func(ID) bool {
+	used := map[ID]bool{}
+	for _, s := range d.Shapes {
+		if s.AssetID != "" {
+			used[s.AssetID] = true
+		}
+	}
+	return func(id ID) bool {
+		if used[id] {
+			return true
+		}
+		name := []byte(id)
+		for _, s := range d.Shapes {
+			for _, raw := range s.Raw {
+				if bytes.Contains(raw, name) {
+					return true
+				}
+			}
+		}
+		return slices.ContainsFunc(d.Others, func(raw json.RawMessage) bool { return bytes.Contains(raw, name) })
+	}
+}
+
 // Write writes a .tldr file.
 func Write(w io.Writer, d *Drawing) error {
 	records := make([]any, 0, len(d.Shapes)+len(d.Pages)+4)
@@ -166,8 +193,11 @@ func Write(w io.Writer, d *Drawing) error {
 		records = append(records, bindingRecord(d.Bindings[id]))
 	}
 	ids = ids[:0]
-	for id := range d.Assets {
-		ids = append(ids, id)
+	inUse := imagesInUse(d)
+	for id, a := range d.Assets {
+		if a.Type != "image" || inUse(id) {
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids)
 	for _, id := range ids {

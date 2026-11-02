@@ -64,7 +64,7 @@ func read(e *editor.Editor, a readArgs, title, otherDocs string) (string, error)
 
 // checkReport lists the warnings of the whole page.
 func checkReport(e *editor.Editor, a readArgs) string {
-	list := checkWholePage(e)
+	list, capped := checkWholePage(e)
 	name := e.Doc.Page(e.Page).Name
 	if len(list) == 0 {
 		return fmt.Sprintf("no warnings on page %q", name)
@@ -74,7 +74,11 @@ func checkReport(e *editor.Editor, a readArgs) string {
 		return fmt.Sprintf("warnings: %d", len(list))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "warnings %d-%d of %d on page %q:\n", first+1, end, len(list), name)
+	total := strconv.Itoa(len(list))
+	if capped {
+		total = "at least " + total
+	}
+	fmt.Fprintf(&b, "warnings %d-%d of %s on page %q:\n", first+1, end, total, name)
 	for _, w := range list[first:end] {
 		b.WriteString(w)
 		b.WriteByte('\n')
@@ -128,7 +132,7 @@ func overview(e *editor.Editor, a readArgs, title, otherDocs string) string {
 	if a.Find != "" {
 		q := strings.ToLower(a.Find)
 		for _, id := range e.Descendants(e.Page) {
-			if matches(e.Doc.Shapes[id], q) {
+			if matches(e.Doc.Shapes[id], q) || (q == cardKind && cardOf(e, id) != nil) {
 				list = append(list, id)
 			}
 		}

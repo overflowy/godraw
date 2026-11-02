@@ -216,9 +216,9 @@ func geoOutline(kind string, w, h float64, seed string) []geo.Vec {
 	case "pentagon":
 		return regular(5, w, h, -math.Pi/2)
 	case "hexagon":
-		return regular(6, w, h, 0)
+		return regular(6, w, h, -math.Pi/2)
 	case "octagon":
-		return regular(8, w, h, math.Pi/8)
+		return regular(8, w, h, -math.Pi/2)
 	case "star":
 		return star(w, h)
 	case "rhombus":

@@ -10,6 +10,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -31,9 +32,14 @@ const (
 	maxSubpaths = 500
 	maxPoints   = 20000
 	maxImage    = 20 << 20
-	sampleStep  = 4.0
-	defaultGap  = 120.0 // room for an arrow with a short label
-	copyGap     = 20.0
+	// How far a number can reach. It's far more than a drawing needs, and it keeps
+	// what's worked out from numbers finite, which a file has to be.
+	maxNumber = 1e7
+	// How far numbers can take a shape, moved and copied.
+	maxReached = 1e12
+	sampleStep = 4.0
+	defaultGap = 120.0 // room for an arrow with a short label
+	copyGap    = 20.0
 )
 
 // names is one id or several, as an agent finds it shortest to say.
@@ -339,6 +345,13 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 		if err != nil {
 			return nil, err
 		}
+		for _, seg := range p.Segs {
+			for _, v := range seg.P {
+				if !inReach(v.X) || !inReach(v.Y) {
+					return nil, fmt.Errorf("d must be numbers from %s to %s", num(-maxNumber), num(maxNumber))
+				}
+			}
+		}
 		o.path = p
 	}
 	return o, nil
@@ -363,8 +376,8 @@ func checkValues(f *fields) error {
 				return fmt.Errorf("%s %q: use %s", name, *s, strings.Join(enum, ", "))
 			}
 		}
-		if n, ok := field.Interface().(*float64); ok && (math.IsNaN(*n) || math.IsInf(*n, 0)) {
-			return fmt.Errorf("%s must be a finite number", name)
+		if n, ok := field.Interface().(*float64); ok && !inReach(*n) {
+			return fmt.Errorf("%s must be a number from %s to %s", name, num(-maxNumber), num(maxNumber))
 		}
 	}
 	if f.Opacity != nil && (*f.Opacity < 0 || *f.Opacity > 1) {
@@ -389,8 +402,11 @@ func checkValues(f *fields) error {
 			return fmt.Errorf("via takes up to %d points", maxVia)
 		}
 		for _, p := range *f.Via {
-			if len(p) != 2 || math.IsNaN(p[0]) || math.IsInf(p[0], 0) || math.IsNaN(p[1]) || math.IsInf(p[1], 0) {
+			if len(p) != 2 {
 				return errors.New(viaHelp)
+			}
+			if !inReach(p[0]) || !inReach(p[1]) {
+				return fmt.Errorf("via must be numbers from %s to %s", num(-maxNumber), num(maxNumber))
 			}
 		}
 	}
@@ -409,6 +425,9 @@ func checkValues(f *fields) error {
 	}
 	return nil
 }
+
+// inReach says whether a number is one to take: finite, and within maxNumber.
+func inReach(n float64) bool { return math.Abs(n) <= maxNumber }
 
 // maxVia is more points than a route should need, and keeps a mistake from
 // costing every frame.
@@ -514,8 +533,10 @@ type run struct {
 	added   []doc.ID
 	changed map[doc.ID]bool
 	deleted int
-	nextID  int
-	camera  bool
+	// deletedInside is how many of those were held by what was asked to go.
+	deletedInside int
+	nextID        int
+	camera        bool
 	// before is how tall a card was, which may grow as it fits new text.
 	before map[doc.ID]float64
 	grown  map[doc.ID]*growth
@@ -523,8 +544,11 @@ type run struct {
 	quiet  bool
 	// asked is the height a box was asked to have, or had before the batch.
 	asked map[doc.ID]float64
-	// routes is where arrows' via points were before the batch.
+	// warnings is all that's told, once the checks are done. found is what they
+	// found, by how much it matters, and capped says that they stopped short.
 	warnings []string
+	found    [ranks][]string
+	capped   bool
 	// What is told after other warnings, for it not to crowd them out.
 	shared, trunks []string
 }
@@ -551,6 +575,9 @@ func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 		}
 		r.followRoutes()
 		r.settleArrows()
+		if err := r.checkReach(); err != nil {
+			return err
+		}
 		r.checkLayout()
 		report = r.report()
 		if dry {
@@ -566,6 +593,20 @@ func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 	}
 	r.reveal()
 	return report, nil
+}
+
+// checkReach refuses a batch that worked out a place no file can hold, as many
+// copies far apart can come to, for what can't be saved not to get in.
+func (r *run) checkReach() error {
+	for id := range r.touched() {
+		b := r.e.PageBounds(id)
+		for _, n := range []float64{b.X, b.Y, b.W, b.H} {
+			if math.IsNaN(n) || math.Abs(n) > maxReached {
+				return fmt.Errorf("%s would end up too far out, at %s; nothing was changed", shortID(id), boxText(b))
+			}
+		}
+	}
+	return nil
 }
 
 func (r *run) do(o *op) error {
@@ -610,6 +651,7 @@ func (r *run) do(o *op) error {
 		if err != nil {
 			return err
 		}
+		r.warnHeldArrows(ids)
 		r.e.Select(ids...)
 		r.e.Flip(*o.How == "h")
 		r.markChanged(ids)
@@ -1746,21 +1788,50 @@ func (r *run) setPath(s *doc.Shape, o *op) error {
 }
 
 func (r *run) del(o *op) error {
+	var ids []doc.ID
 	if len(o.Del) == 1 && o.Del[0] == "*" {
 		r.e.SelectNone()
 		r.e.SelectAll()
-		r.deleted += len(r.e.Selection())
-		r.e.Delete()
-		return nil
+		ids = slices.Clone(r.e.Selection())
+	} else {
+		var err error
+		if ids, err = r.mutable(o.Del); err != nil {
+			return err
+		}
 	}
-	ids, err := r.mutable(o.Del)
-	if err != nil {
-		return err
-	}
-	r.deleted += len(ids)
+	before := len(r.e.Doc.Shapes)
+	r.warnLostBindings(ids)
 	r.e.Select(ids...)
 	r.e.Delete()
+	// What they held went with them, and groups that were left with too little.
+	gone := before - len(r.e.Doc.Shapes)
+	r.deleted += gone
+	r.deletedInside += max(gone-len(ids), 0)
 	return nil
+}
+
+// warnLostBindings tells of arrows about to lose an end, staying where they are
+// with it free, because what it's bound to is going.
+func (r *run) warnLostBindings(ids []doc.ID) {
+	going := map[doc.ID]bool{}
+	for _, id := range ids {
+		going[id] = true
+		for _, k := range r.e.Descendants(id) {
+			going[k] = true
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(going)) {
+		for _, b := range r.e.BindingsTo(id) {
+			if going[b.From] {
+				continue
+			}
+			end := "from"
+			if b.Terminal == "end" {
+				end = "to"
+			}
+			r.warn("%s lost its %s, as what it joined was deleted; its end stays where it was, free", shortID(ownerOf(r.e, b.From)), end)
+		}
+	}
 }
 
 func (r *run) dup(o *op) error {
@@ -1801,6 +1872,28 @@ func (r *run) dup(o *op) error {
 		r.added = append(r.added, r.e.DuplicateAs(d.Mul(float64(i)), r.autoID)...)
 	}
 	return nil
+}
+
+// warnHeldArrows tells of arrows a flip can't turn, as what holds both their ends
+// isn't flipping with them.
+func (r *run) warnHeldArrows(ids []doc.ID) {
+	flipping := map[doc.ID]bool{}
+	var all []doc.ID
+	for _, id := range ids {
+		all = append(append(all, id), r.e.Descendants(id)...)
+	}
+	for _, id := range all {
+		flipping[id] = true
+	}
+	for _, id := range all {
+		if r.e.Doc.Shapes[id].Type != doc.TypeArrow {
+			continue
+		}
+		bs, be := r.e.BindingOf(id, "start"), r.e.BindingOf(id, "end")
+		if bs != nil && be != nil && !flipping[bs.To] && !flipping[be.To] {
+			r.warn("%s stayed as it was: what it joins wasn't flipped; flip that too", shortID(id))
+		}
+	}
 }
 
 // warnLostEnds tells of arrows about to be copied without what they join: a copy
@@ -1976,7 +2069,11 @@ func (r *run) report() string {
 		fmt.Fprintf(&b, "changed %d\n", len(changed))
 	}
 	if r.deleted > 0 {
-		fmt.Fprintf(&b, "deleted %d\n", r.deleted)
+		if r.deletedInside > 0 {
+			fmt.Fprintf(&b, "deleted %d, %d of them inside what you named\n", r.deleted, r.deletedInside)
+		} else {
+			fmt.Fprintf(&b, "deleted %d\n", r.deleted)
+		}
 	}
 	if box, ok := r.e.ContentBounds(); ok {
 		fmt.Fprintf(&b, "page bounds %s\n", boxText(box))
@@ -1985,7 +2082,11 @@ func (r *run) report() string {
 		b.WriteString("warnings:\n")
 		for i, w := range r.warnings {
 			if i == maxWarnings {
-				fmt.Fprintf(&b, "and %d more; read with check lists the page's\n", len(r.warnings)-maxWarnings)
+				more := strconv.Itoa(len(r.warnings) - maxWarnings)
+				if r.capped {
+					more = "at least " + more
+				}
+				fmt.Fprintf(&b, "and %s more; read with check lists the page's\n", more)
 				break
 			}
 			b.WriteString(w)

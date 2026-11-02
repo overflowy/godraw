@@ -140,7 +140,12 @@ func (r *run) addCard(o *op) error {
 		}
 		return pid, nil
 	}
-	spot := r.freeSpot(parent, "")
+	// Before its parts join what the parent holds, and only if it's needed, for a
+	// page's worth of cards not to measure the page each time.
+	var spot geo.Vec
+	if f.Right == nil && f.Left == nil && f.Above == nil && f.Below == nil && (f.X == nil || f.Y == nil) {
+		spot = r.freeSpot(parent, "")
+	}
 
 	boxID, err := part("box")
 	if err != nil {

@@ -74,7 +74,8 @@ Known differences:
   IBM Plex falls back to others.
 - Elbow waypoints, a frame's heading size and font, and labels above an arrow are this app's
   own. tldraw keeps them in the file but doesn't show them, and it doesn't update waypoints
-  when shapes move.
+  when shapes move. An elbow arrow from a shape back to itself runs through the shape in
+  tldraw, and a long label above an arrow wraps there as tldraw's labels do.
 - Not implemented: cropping images, note "clone" handles, video playback, multiplayer.
 
 ## Drawing from an agent

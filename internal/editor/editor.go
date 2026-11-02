@@ -423,7 +423,39 @@ func (e *Editor) put(s *doc.Shape) {
 	}
 	e.Doc.Shapes[s.ID] = s
 	if before == nil || before.Parent != s.Parent || before.Index != s.Index {
-		e.kids = nil
+		e.moveKid(before, s)
+	}
+}
+
+// moveKid keeps what children returns up to date as a shape comes or goes, or
+// changes its place, for a batch that adds many not to sort them all each time.
+// The lists are new: what Children returned before stays as it was, for what is
+// going through it. s is nil, or before is, if there's no such shape.
+func (e *Editor) moveKid(before, s *doc.Shape) {
+	if e.kids == nil {
+		return
+	}
+	if before != nil {
+		id := before.ID
+		list := e.kids[before.Parent]
+		if i := slices.Index(list, id); i >= 0 {
+			list = slices.Delete(slices.Clone(list), i, i+1)
+			if len(list) == 0 {
+				delete(e.kids, before.Parent)
+			} else {
+				e.kids[before.Parent] = list
+			}
+		}
+	}
+	if s != nil {
+		list := e.kids[s.Parent]
+		i, _ := slices.BinarySearchFunc(list, s, func(a doc.ID, s *doc.Shape) int {
+			if c := strings.Compare(e.Doc.Shapes[a].Index, s.Index); c != 0 {
+				return c
+			}
+			return strings.Compare(string(a), string(s.ID))
+		})
+		e.kids[s.Parent] = slices.Insert(slices.Clone(list), i, s.ID)
 	}
 }
 
@@ -451,7 +483,7 @@ func (e *Editor) removeShape(id doc.ID) {
 		e.tx.shapes[id] = change[doc.Shape]{before, nil}
 	}
 	delete(e.Doc.Shapes, id)
-	e.kids = nil
+	e.moveKid(before, nil)
 }
 
 func (e *Editor) putBinding(b *doc.Binding) {
@@ -690,6 +722,17 @@ func (e *Editor) topSelected() []doc.ID {
 
 // sorted returns ids in the order they paint.
 func (e *Editor) sorted(ids []doc.ID) []doc.ID {
+	// Under one parent their indexes say, with no need to go through the page.
+	if e.oneParent(ids) {
+		out := slices.Clone(ids)
+		slices.SortStableFunc(out, func(a, b doc.ID) int {
+			if c := strings.Compare(e.Doc.Shapes[a].Index, e.Doc.Shapes[b].Index); c != 0 {
+				return c
+			}
+			return strings.Compare(string(a), string(b))
+		})
+		return out
+	}
 	order := map[doc.ID]int{}
 	n := 0
 	var walk func(doc.ID)
@@ -704,6 +747,17 @@ func (e *Editor) sorted(ids []doc.ID) []doc.ID {
 	out := slices.Clone(ids)
 	slices.SortStableFunc(out, func(a, b doc.ID) int { return order[a] - order[b] })
 	return out
+}
+
+// oneParent says whether all of ids are shapes under one parent.
+func (e *Editor) oneParent(ids []doc.ID) bool {
+	for _, id := range ids {
+		s := e.Doc.Shapes[id]
+		if s == nil || s.Parent != e.Doc.Shapes[ids[0]].Parent {
+			return false
+		}
+	}
+	return len(ids) > 0
 }
 
 func firstOr(ids []doc.ID, def doc.ID) doc.ID {

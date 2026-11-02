@@ -248,3 +248,40 @@ func TestMetaKeepsTheRest(t *testing.T) {
 		t.Errorf("read back %v from %s", at, empty.Meta)
 	}
 }
+
+// A file holds only the images something shows, or might: an unknown shape's
+// reference counts, and other kinds of asset are left alone.
+func TestWriteDropsUnusedImages(t *testing.T) {
+	d := New()
+	for _, a := range []*Asset{
+		{ID: "asset:used", Type: "image", Src: "data:,"},
+		{ID: "asset:gone", Type: "image", Src: "data:,"},
+		{ID: "asset:raw", Type: "image", Src: "data:,"},
+		{ID: "asset:video", Type: "video", Src: "data:,"},
+	} {
+		d.Assets[a.ID] = a
+	}
+	s := NewShape("shape:i", TypeImage)
+	s.Parent, s.Index, s.AssetID = "page:page", FirstIndex, "asset:used"
+	d.Shapes[s.ID] = s
+	o := NewShape("shape:o", "embed")
+	o.Parent, o.Index = "page:page", IndexBetween(FirstIndex, "")
+	o.Raw = map[string]json.RawMessage{"assetId": json.RawMessage(`"asset:raw"`)}
+	d.Shapes[o.ID] = o
+	var buf bytes.Buffer
+	if err := Write(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Assets["asset:gone"] == nil {
+		t.Error("writing changed the drawing")
+	}
+	back, err := Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[ID]bool{"asset:used": true, "asset:gone": false, "asset:raw": true, "asset:video": true} {
+		if (back.Assets[id] != nil) != want {
+			t.Errorf("%s in the file: %v", id, back.Assets[id] != nil)
+		}
+	}
+}

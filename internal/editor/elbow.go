@@ -137,13 +137,16 @@ func squared(d geo.Vec) geo.Vec {
 
 // meetOutline brings the start of a route to the shape it leaves. Out of a side,
 // that's along the way it leaves, as the outline of an ellipse is within its
-// box. From within the shape, it's where the route crosses the outline.
+// box. The search starts outside it, as an anchor can fall just inside the edge
+// it's on, and rounding in a frame's coordinates puts one there. From within the
+// shape, it's where the route crosses the outline.
 func meetOutline(pts []geo.Vec, out geo.Vec, outline []geo.Vec) []geo.Vec {
 	if out != (geo.Vec{}) {
 		box := geo.BoxOf(outline)
 		from := pts[0]
+		far := out.Mul(box.W + box.H)
 		near := math.Inf(1)
-		for _, p := range geo.SegmentPolyline(from, from.Sub(out.Mul(box.W+box.H)), outline, true) {
+		for _, p := range geo.SegmentPolyline(from.Add(far), from.Sub(far), outline, true) {
 			if d := p.Dist(from); d < near {
 				pts[0], near = p, d
 			}

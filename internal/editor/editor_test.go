@@ -3,7 +3,9 @@ package editor
 import (
 	"bytes"
 	"math"
+	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1074,5 +1076,66 @@ func TestShapeDrawnInAFrameStaysUnderThePointer(t *testing.T) {
 	}
 	if b := h.PageBounds(stroke.ID); !near(b.X, 400) || !near(b.Y, 450) {
 		t.Errorf("stroke at %+v", b)
+	}
+}
+
+// What keeps the list of children up to date comes to what building it anew does,
+// and leaves lists already handed out as they were.
+func TestChildrenStayRight(t *testing.T) {
+	e := New(doc.New(), fakeMeasure)
+	rng := rand.New(rand.NewPCG(1, 2))
+	parents := []doc.ID{e.Page}
+	var ids []doc.ID
+	check := func(step int) {
+		t.Helper()
+		got := e.children()
+		e.kids = nil
+		want := e.children()
+		if len(got) != len(want) {
+			t.Fatalf("step %d: %d parents, want %d", step, len(got), len(want))
+		}
+		for p, list := range want {
+			if !slices.Equal(got[p], list) {
+				t.Fatalf("step %d: children of %s are %v, want %v", step, p, got[p], list)
+			}
+		}
+		e.kids = got
+	}
+	e.children()
+	for step := range 2000 {
+		switch n := rng.IntN(10); {
+		case n < 5 || len(ids) == 0:
+			s := doc.NewShape(doc.NewID("shape"), doc.TypeGeo)
+			s.Parent = parents[rng.IntN(len(parents))]
+			s.Index = e.TopIndex(s.Parent)
+			if rng.IntN(2) == 0 {
+				s.Type = doc.TypeFrame
+				parents = append(parents, s.ID)
+			}
+			e.put(s)
+			ids = append(ids, s.ID)
+		case n < 8:
+			id := ids[rng.IntN(len(ids))]
+			if slices.Contains(parents, id) {
+				continue
+			}
+			held := slices.Clone(e.Children(e.Doc.Shapes[id].Parent))
+			was := e.Children(e.Doc.Shapes[id].Parent)
+			e.update(id, func(c *doc.Shape) {
+				c.Parent = parents[rng.IntN(len(parents))]
+				c.Index = doc.IndexBetween("", e.TopIndex(c.Parent))
+			})
+			if !slices.Equal(was, held) {
+				t.Fatalf("step %d: a list handed out changed", step)
+			}
+		default:
+			i := rng.IntN(len(ids))
+			if slices.Contains(parents, ids[i]) {
+				continue
+			}
+			e.removeShape(ids[i])
+			ids = slices.Delete(ids, i, i+1)
+		}
+		check(step)
 	}
 }

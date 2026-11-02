@@ -37,17 +37,53 @@ const (
 	minSharedAt = 48.0
 )
 
-func (r *run) warn(format string, args ...any) {
-	if w := fmt.Sprintf(format, args...); !slices.Contains(r.warnings, w) {
-		r.warnings = append(r.warnings, w)
+// How much a warning matters, the most first: an answer shows few, so what's
+// wrong comes before what may be meant. Each has its own room, for many of one
+// not to keep a check from finding the rest.
+const (
+	rankBroken = iota // what doesn't show or goes through what it shouldn't
+	rankText          // what makes text hard to read
+	rankLayout        // what may well be meant
+	rankGrowth        // a box that fits its text
+	ranks
+)
+
+func (r *run) warn(format string, args ...any) { r.warnAt(rankBroken, format, args...) }
+
+func (r *run) warnAt(rank int, format string, args ...any) {
+	w := fmt.Sprintf(format, args...)
+	if slices.Contains(r.found[rank], w) {
+		return
 	}
+	if len(r.found[rank]) >= maxFound {
+		r.capped = true
+		return
+	}
+	r.found[rank] = append(r.found[rank], w)
+}
+
+// allWarnings returns what was found, in the order an answer tells it.
+func (r *run) allWarnings() []string {
+	var out []string
+	for _, list := range r.found {
+		out = append(out, list...)
+	}
+	return slices.Concat(out, r.shared, r.trunks)
 }
 
 // name is what warnings call a shape: the id an agent chose, not a card's part.
 func (r *run) name(id doc.ID) string { return shortID(ownerOf(r.e, id)) }
 
-// warned says that a check has found all it looks for.
-func (r *run) warned() bool { return len(r.warnings) >= maxFound }
+// warned says that a check has found all it looks for, of every rank.
+func (r *run) warned() bool {
+	for _, list := range r.found[:rankGrowth] {
+		if len(list) < maxFound {
+			return false
+		}
+	}
+	r.capped = true
+	return true
+}
 
 // touched returns what the batch added or changed, with all that those hold.
 func (r *run) touched() map[doc.ID]bool {
@@ -188,7 +224,7 @@ func (r *run) checkLayout() {
 		r.checkPage(ids, touched)
 	}
 	r.reportGrowth()
-	r.warnings = slices.Concat(r.warnings, r.shared, r.trunks)
+	r.warnings = r.allWarnings()
 }
 
 func (r *run) checkPage(ids []doc.ID, touched map[doc.ID]bool) {
@@ -202,8 +238,8 @@ func (r *run) checkPage(ids []doc.ID, touched map[doc.ID]bool) {
 
 // checkWholePage warns of all there is on the current page, as if a batch had
 // touched it all. It changes nothing, so it only asks whether straight arrows can
-// stay level.
-func checkWholePage(e *editor.Editor) []string {
+// stay level. capped says that there are more than it lists.
+func checkWholePage(e *editor.Editor) (list []string, capped bool) {
 	r := &run{e: e}
 	ids := e.Descendants(e.Page)
 	touched := make(map[doc.ID]bool, len(ids))
@@ -218,7 +254,7 @@ func checkWholePage(e *editor.Editor) []string {
 		}
 	}
 	r.checkPage(ids, touched)
-	return slices.Concat(r.warnings, r.shared, r.trunks)
+	return r.allWarnings(), r.capped
 }
 
 // growth is a box that came out taller than it was.
@@ -252,7 +288,7 @@ func (r *run) checkGrowth() {
 	}
 }
 
-// reportGrowth puts first the growth no clash has told of.
+// reportGrowth tells of the growth no clash has told of.
 func (r *run) reportGrowth() {
 	var lines []string
 	for id, g := range r.grown {
@@ -261,7 +297,9 @@ func (r *run) reportGrowth() {
 		}
 	}
 	slices.Sort(lines)
-	r.warnings = slices.Insert(r.warnings, 0, lines...)
+	for _, line := range lines {
+		r.warnAt(rankGrowth, "%s", line)
+	}
 }
 
 func (r *run) items(ids []doc.ID, touched map[doc.ID]bool) []*item {
@@ -335,9 +373,14 @@ func (r *run) checkOverlaps(items []*item) {
 	slices.SortStableFunc(byX, func(a, b *item) int { return cmp.Compare(a.box.X, b.box.X) })
 	clashes := map[[2]doc.ID]*clash{}
 	var order [][2]doc.ID
+scan:
 	for i, a := range byX {
 		for _, b := range byX[i+1:] {
-			if b.box.X >= a.box.MaxX() || len(order) >= maxFound {
+			if len(order) >= maxFound {
+				r.capped = true
+				break scan
+			}
+			if b.box.X >= a.box.MaxX() {
 				break
 			}
 			if !a.touched && !b.touched {
@@ -394,7 +437,7 @@ func (r *run) tellClash(c *clash) {
 		return shortID(it.owner)
 	}
 	if c.kind == clashSticksOut {
-		r.warn("%s's text sticks out of %s by %s", name(c.up), name(c.low), num(past(c.up.box, c.low.box)))
+		r.warnAt(rankText, "%s's text sticks out of %s by %s", name(c.up), name(c.low), num(past(c.up.box, c.low.box)))
 		return
 	}
 	subject, other := c.up, c.low
@@ -410,11 +453,11 @@ func (r *run) tellClash(c *clash) {
 	}
 	switch {
 	case c.kind == clashOverlap:
-		r.warn("%s overlaps %s by %sx%s", lead, name(other), num(c.w), num(c.h))
+		r.warnAt(rankLayout, "%s overlaps %s by %sx%s", lead, name(other), num(c.w), num(c.h))
 	case subject == c.up:
-		r.warn("%s covers %s's text", lead, name(other))
+		r.warnAt(rankText, "%s covers %s's text", lead, name(other))
 	default:
-		r.warn("%s goes under %s, which hides its text", lead, name(other))
+		r.warnAt(rankText, "%s goes under %s, which hides its text", lead, name(other))
 	}
 }
 
@@ -502,7 +545,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 				}
 			}
 			if shown := length * float64(steps-in) / steps; shown < minShownLine {
-				r.warn(`%s's label leaves %s of its %s-long line showing; widen the gap or use label:"above"`, name, num(shown), num(length))
+				r.warnAt(rankText, `%s's label leaves %s of its %s-long line showing; widen the gap or use label:"above"`, name, num(shown), num(length))
 			}
 			page := m.BoundsOf(*lb)
 			for _, it := range items {
@@ -510,7 +553,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 					continue
 				}
 				if w, h := depth(page, *it.text); w > 1 && h > 1 {
-					r.warn("%s's label covers %s's text", name, shortID(it.owner))
+					r.warnAt(rankText, "%s's label covers %s's text", name, shortID(it.owner))
 				}
 			}
 		}
@@ -521,21 +564,25 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 		dx, dy := math.Abs(d.X), math.Abs(d.Y)
 		switch {
 		case dy > 0.5 && dy <= maxSlant && dx >= minSlantRun:
-			r.warn(`%s is %s off level; straight:"h" levels it`, name, num(dy))
+			r.warnAt(rankLayout, `%s is %s off level; straight:"h" levels it`, name, num(dy))
 		case dx > 0.5 && dx <= maxSlant && dy >= minSlantRun:
-			r.warn(`%s is %s off plumb; straight:"v" levels it`, name, num(dx))
+			r.warnAt(rankLayout, `%s is %s off plumb; straight:"v" levels it`, name, num(dx))
 		}
 	}
-	if n := r.e.NeedlessVia(s); n > 0 {
-		r.warn("%s's via adds %d turns, and the way without it is clear; via:[] clears it", name, n)
-	} else if d := r.e.ViaDetour(s); d > 0 {
-		r.warn("%s's via takes it %s out of its way, and the way without it is clear; via:[] clears it", name, num(d))
-	} else if s.Kind == "elbow" && crossesItself(pts) {
+	// A knot says more than that the way without it is shorter.
+	if s.Kind == "elbow" && crossesItself(pts) {
 		if len(s.Via()) > 0 {
 			r.warn("%s's route crosses itself; its via may be out of place: set via again, or via:[] clears it", name)
 		} else {
 			r.warn("%s's route crosses itself; another side or via reroutes it", name)
 		}
+	} else if n := r.e.NeedlessVia(s); n > 0 {
+		r.warnAt(rankLayout, "%s's via adds %d turns, and the way without it is clear; via:[] clears it", name, n)
+	} else if d := r.e.ViaDetour(s); d > 0 {
+		r.warnAt(rankLayout, "%s's via takes it %s out of its way, and the way without it is clear; via:[] clears it", name, num(d))
+	}
+	if s.Kind == "elbow" && bs != nil && be != nil && bs.To == be.To {
+		r.warnAt(rankLayout, "%s loops back to %s; tldraw routes a loop like this through the shape", name, r.name(bs.To))
 	}
 	r.checkCrossings(s, name, m, info, pts, bs, be, items)
 }
@@ -586,26 +633,70 @@ func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.
 		if !line.Overlaps(it.box) || r.warned() {
 			continue
 		}
-		inside := it.box.Contains(rawStart) || it.box.Contains(rawEnd)
+		outline := r.trueOutline(it)
+		within := func(p geo.Vec) bool {
+			if outline != nil {
+				return geo.PointInPolygon(p, outline)
+			}
+			return it.box.Contains(p)
+		}
+		through := func() bool {
+			if outline == nil {
+				return crosses(it.box)
+			}
+			for i := 1; i < len(pts); i++ {
+				if len(geo.SegmentPolyline(pts[i-1], pts[i], outline, true)) > 0 {
+					return true
+				}
+			}
+			return false
+		}
+		inside := within(rawStart) || within(rawEnd)
 		if it.content && it.s.Type != doc.TypeFrame && !joins(it, bs) && !joins(it, be) {
-			if !inside && crosses(it.box) {
+			if !inside && through() {
 				r.warn("%s runs through %s%s", name, shortID(it.owner), hint)
 				continue
 			}
 			if inside && it.text != nil && crosses(*it.text) {
-				r.warn("%s runs over %s's text%s", name, shortID(it.owner), hint)
+				r.warnAt(rankText, "%s runs over %s's text%s", name, shortID(it.owner), hint)
 				continue
 			}
 		}
 		// A text shape has no edge to run along, and those of a card's text are
 		// inside its box.
-		if it.s.Type == doc.TypeText {
+		if it.s.Type == doc.TypeText || outline != nil {
 			continue
 		}
 		if edge, run := runAlong(pts, it.box); run >= minAlong {
-			r.warn("%s runs along %s's %s edge for %s%s", name, shortID(it.owner), edge, num(run), hint)
+			r.warnAt(rankLayout, "%s runs along %s's %s edge for %s%s", name, shortID(it.owner), edge, num(run), hint)
 		}
 	}
+}
+
+// trueOutline returns in the page, a little inside, the outline of a shape that
+// doesn't fill its box, as a diamond doesn't, or nothing for one that does.
+func (r *run) trueOutline(it *item) []geo.Vec {
+	if it.s.Type != doc.TypeGeo {
+		return nil
+	}
+	switch it.s.Geo {
+	case "rectangle", "x-box", "check-box":
+		return nil
+	}
+	const inset = 2.0
+	if it.box.W <= 2*inset || it.box.H <= 2*inset {
+		return nil
+	}
+	m := r.e.PageMat(it.s.ID)
+	c := it.box.Center()
+	kx, ky := (it.box.W-2*inset)/it.box.W, (it.box.H-2*inset)/it.box.H
+	pts := r.e.Geometry(it.s).Outline
+	out := make([]geo.Vec, len(pts))
+	for i, p := range pts {
+		q := m.Apply(p)
+		out[i] = geo.V(c.X+(q.X-c.X)*kx, c.Y+(q.Y-c.Y)*ky)
+	}
+	return out
 }
 
 // runAlong returns the edge of a box that a line keeps closest to, and for how
@@ -820,14 +911,15 @@ func (r *run) checkHeadings(ids []doc.ID, items []*item, touched map[doc.ID]bool
 			continue
 		}
 		for _, it := range items {
-			if it.s.ID == id || r.e.IsAncestor(id, it.s.ID) || !it.content {
+			// A frame's name is meant to sit on what holds the frame.
+			if it.s.ID == id || r.e.IsAncestor(id, it.s.ID) || r.e.IsAncestor(it.s.ID, id) || !it.content {
 				continue
 			}
 			if !it.touched && !touched[id] {
 				continue
 			}
 			if w, h := depth(box, it.box); w > 1 && h > 1 {
-				r.warn("frame %s's name runs into %s", shortID(id), shortID(it.owner))
+				r.warnAt(rankLayout, "frame %s's name runs into %s", shortID(id), shortID(it.owner))
 			}
 		}
 	}
@@ -851,7 +943,7 @@ func (r *run) checkHeadingArrows(f *doc.Shape, box geo.Box, ids []doc.ID, touche
 		if s.Kind == "elbow" {
 			hint = "; another side or via routes it around"
 		}
-		r.warn("%s crosses frame %s's name%s", shortID(id), shortID(f.ID), hint)
+		r.warnAt(rankText, "%s crosses frame %s's name%s", shortID(id), shortID(f.ID), hint)
 	}
 }
 

@@ -104,6 +104,8 @@ func Handler(h Host, version string) http.Handler {
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{
 			Stateless: true, JSONResponse: true,
+			// Images come in requests, as data: URLs. The SDK's own limit is 4 MiB.
+			MaxRequestBodyBytes: maxRequest,
 			// Web pages may not reach it, directly or by rebinding a name to
 			// this machine; the handler checks the Host header by default.
 			CrossOriginProtection: http.NewCrossOriginProtection(),

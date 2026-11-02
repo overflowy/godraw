@@ -1078,6 +1078,8 @@ type resizeItem struct {
 	rel float64
 	// bounds is its box in the selection's frame.
 	bounds geo.Box
+	// held says that an arrow has an end bound to what isn't resizing with it.
+	held bool
 }
 
 type resizeGesture struct {
@@ -1121,6 +1123,20 @@ func newResize(e *Editor, h Handle) *resizeGesture {
 	}
 	for _, id := range e.topSelected() {
 		add(id)
+	}
+	moving := map[doc.ID]bool{}
+	for _, id := range e.topSelected() {
+		moving[id] = true
+		for _, k := range e.Descendants(id) {
+			moving[k] = true
+		}
+	}
+	for i := range g.items {
+		for _, term := range []string{"start", "end"} {
+			if b := e.bindingOf(g.items[i].id, term); b != nil && !moving[b.To] {
+				g.items[i].held = true
+			}
+		}
 	}
 	return g
 }
@@ -1246,7 +1262,7 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	case doc.TypeArrow:
 		c.Start = geo.V(init.Start.X*lx, init.Start.Y*ly)
 		c.End = geo.V(init.End.X*lx, init.End.Y*ly)
-		if via := init.Via(); via != nil {
+		if via := init.Via(); via != nil && !it.held {
 			for i, p := range via {
 				via[i] = geo.V(p.X*lx, p.Y*ly)
 			}
@@ -1266,6 +1282,14 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	inP := e.parentMat(init.Parent).Invert().Apply(page)
 	c.X, c.Y = inP.X, inP.Y
 	e.put(c)
+	// With an end held where it is, points that moved would no longer lie between
+	// its ends, and a route through them would tie a knot: they stay in the page.
+	if via := init.Via(); via != nil && it.held {
+		for i, p := range via {
+			via[i] = it.mat.Apply(p)
+		}
+		e.put(e.withVia(e.Doc.Shapes[it.id], via))
+	}
 }
 
 // boxFlipOffset returns how far from the scaled origin a box w×h lies on

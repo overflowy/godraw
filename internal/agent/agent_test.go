@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -2279,5 +2280,210 @@ func TestMoveTakesAnElbowAround(t *testing.T) {
 	out = ops(t, e, `[{"add":"rectangle","id":"a","x":100,"y":100,"w":120,"h":60},{"add":"rectangle","id":"in","text":"In the way","x":90,"y":220,"w":140,"h":60},{"add":"rectangle","id":"b","x":120,"y":340,"w":80,"h":45},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0]}]`)
 	if !strings.Contains(out, "s runs through in") || strings.Contains(viaOf(t, e, "s"), "via") {
 		t.Errorf("%s\n%s", out, viaOf(t, e, "s"))
+	}
+}
+
+// Numbers past what a drawing needs are refused, as they'd end up in a file that
+// can't hold what's worked out from them.
+func TestRefusesHugeNumbers(t *testing.T) {
+	for _, list := range []string{
+		`[{"add":"rectangle","x":1e308,"y":0}]`,
+		`[{"add":"rectangle","x":0,"y":0,"rot":1e308}]`,
+		`[{"add":"rectangle","id":"a","x":0,"y":0},{"dup":"a","dx":1e308}]`,
+		`[{"add":"rectangle","id":"a","x":0,"y":0},{"set":"a","dx":1e308}]`,
+		`[{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":300,"y":0},{"add":"arrow","from":"a","to":"b","kind":"elbow","via":[[1e308,0]]}]`,
+		`[{"add":"draw","d":"M0 0L1e308 0"}]`,
+	} {
+		e := newEditor()
+		if _, err := tryOps(e, list); err == nil {
+			t.Errorf("%s: no error", list)
+		}
+		if len(e.Doc.Shapes) != 0 {
+			t.Errorf("%s: left %d shapes", list, len(e.Doc.Shapes))
+		}
+		var buf bytes.Buffer
+		if err := doc.Write(&buf, e.Doc); err != nil {
+			t.Errorf("%s: can't save: %v", list, err)
+		}
+	}
+	// Many steps within reach add up to what's still a file, or to a refusal.
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0},{"dup":"a","dx":1e7,"n":500}]`)
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Errorf("can't save: %v", err)
+	}
+}
+
+// A serious warning isn't crowded out of a check, or of an answer, by a great many
+// lesser ones, and a list that stopped short says so.
+func TestSeriousWarningsComeFirst(t *testing.T) {
+	var list strings.Builder
+	list.WriteString(`[`)
+	for i := range 200 {
+		fmt.Fprintf(&list, `{"add":"rectangle","id":"o%d","x":%d,"y":0,"w":400,"h":100,"text":"t"},`, i, i*2)
+	}
+	list.WriteString(`{"add":"rectangle","id":"a","x":0,"y":1000,"w":80,"h":80},{"add":"rectangle","id":"m","x":200,"y":1000,"w":80,"h":80,"text":"m"},{"add":"rectangle","id":"b","x":400,"y":1000,"w":80,"h":80},{"add":"arrow","id":"realbug","from":"a","to":"b"}]`)
+	e := newEditor()
+	out := ops(t, e, list.String())
+	_, warnings, found := strings.Cut(out, "warnings:\n")
+	if !found || !strings.HasPrefix(warnings, "realbug runs through m") {
+		t.Errorf("apply doesn't lead with the arrow:\n%s", warnings)
+	}
+	report, capped := checkWholePage(e)
+	if !capped {
+		t.Error("the check doesn't say it stopped short")
+	}
+	if len(report) == 0 || !strings.HasPrefix(report[0], "realbug runs through m") {
+		t.Errorf("the check doesn't lead with the arrow: %d warnings", len(report))
+	}
+	text, err := read(e, readArgs{Check: true, Limit: 2000}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "of at least") {
+		t.Errorf("the check's header claims a total: %s", text[:80])
+	}
+}
+
+// Growth comes after what's wrong.
+func TestGrowthComesAfterClashes(t *testing.T) {
+	e := newEditor()
+	var list strings.Builder
+	list.WriteString(`[`)
+	for i := range 20 {
+		fmt.Fprintf(&list, `{"add":"rectangle","id":"g%d","x":%d,"y":0,"w":100,"h":40,"text":"one\ntwo\nthree\nfour\nfive"},`, i, i*400)
+	}
+	list.WriteString(`{"add":"rectangle","id":"a","x":0,"y":1000,"w":80,"h":80},{"add":"rectangle","id":"m","x":200,"y":1000,"w":80,"h":80,"text":"m"},{"add":"rectangle","id":"b","x":400,"y":1000,"w":80,"h":80},{"add":"arrow","id":"bad","from":"a","to":"b"}]`)
+	out := ops(t, e, list.String())
+	_, warnings, _ := strings.Cut(out, "warnings:\n")
+	if !strings.HasPrefix(warnings, "bad runs through m") {
+		t.Errorf("growth came first:\n%s", warnings)
+	}
+}
+
+// A frame's name sits on what holds the frame, as it's meant to.
+func TestNestedFrameNameIsNoClash(t *testing.T) {
+	e := newEditor()
+	out := ops(t, e, `[{"add":"frame","id":"outer","x":0,"y":0,"w":800,"h":600,"name":"Outer","size":"l"},{"add":"frame","id":"inner","in":"outer","x":100,"y":100,"w":300,"h":200,"name":"Inner","size":"l"}]`)
+	if strings.Contains(out, "name runs into") {
+		t.Errorf("false warning:\n%s", out)
+	}
+	report, _ := checkWholePage(e)
+	for _, w := range report {
+		if strings.Contains(w, "name runs into") {
+			t.Errorf("false warning: %s", w)
+		}
+	}
+}
+
+// A line through the corner of a diamond's box clears the diamond; through the
+// diamond it doesn't. Neither runs along an edge it hasn't got.
+func TestCrossingsUseTheTrueOutline(t *testing.T) {
+	const d = `{"add":"diamond","id":"d","x":200,"y":0,"w":200,"h":200,"text":"d"}`
+	clear := ops(t, newEditor(), `[`+d+`,{"add":"arrow","id":"over","x1":195,"y1":50,"x2":250,"y2":-5}]`)
+	if strings.Contains(clear, "runs through d") {
+		t.Errorf("clear of the diamond, but:\n%s", clear)
+	}
+	hit := ops(t, newEditor(), `[`+d+`,{"add":"arrow","id":"over","x1":100,"y1":100,"x2":500,"y2":120}]`)
+	if !strings.Contains(hit, "over runs through d") {
+		t.Errorf("through the diamond, but:\n%s", hit)
+	}
+	along := ops(t, newEditor(), `[`+d+`,{"add":"arrow","id":"over","x1":200,"y1":1,"x2":290,"y2":1}]`)
+	if strings.Contains(along, "runs along d") {
+		t.Errorf("a diamond has no top edge, but:\n%s", along)
+	}
+}
+
+// Deleting says what went, and of what it left with a free end.
+func TestDeleteSaysWhatItTook(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":300},{"add":"rectangle","id":"a","in":"f","x":20,"y":20},{"add":"rectangle","id":"b","in":"f","x":250,"y":20},{"add":"rectangle","id":"c","x":800,"y":20},{"add":"arrow","id":"x","from":"a","to":"c"}]`)
+	out := ops(t, e, `[{"del":"f"}]`)
+	if !strings.Contains(out, "deleted 3, 2 of them inside what you named") {
+		t.Errorf("no count of what it held:\n%s", out)
+	}
+	if !strings.Contains(out, "x lost its from") {
+		t.Errorf("no word of the arrow:\n%s", out)
+	}
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":400,"y":0},{"add":"arrow","id":"x","from":"a","to":"b"}]`)
+	out = ops(t, e, `[{"del":"b"}]`)
+	if !strings.Contains(out, "deleted 1\n") && !strings.HasSuffix(out, "deleted 1") {
+		t.Errorf("a plain delete: %s", out)
+	}
+	if !strings.Contains(out, "x lost its to") {
+		t.Errorf("no word of the arrow:\n%s", out)
+	}
+}
+
+// Flipping an arrow whose ends are held leaves its route as it was.
+func TestFlipLeavesHeldArrowAlone(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"x","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,300]]}]`)
+	before := viaOf(t, e, "x")
+	out := ops(t, e, `[{"flip":"x","how":"h"}]`)
+	if got := viaOf(t, e, "x"); got != before {
+		t.Errorf("via went from %s to %s", before, got)
+	}
+	if !strings.Contains(out, "x stayed as it was") {
+		t.Errorf("no word of it:\n%s", out)
+	}
+	if strings.Contains(out, "crosses itself") {
+		t.Errorf("tied a knot:\n%s", out)
+	}
+	// With what it joins, it all turns.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"x","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[200,300]]}]`)
+	before = viaOf(t, e, "x")
+	ops(t, e, `[{"flip":["a","b","x"],"how":"h"}]`)
+	if got := viaOf(t, e, "x"); got == before {
+		t.Errorf("via stayed at %s", got)
+	}
+}
+
+// find:"card" finds what read calls a card.
+func TestFindCards(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"card","id":"c","title":"Hello","x":0,"y":0},{"add":"rectangle","id":"r","x":400,"y":0}]`)
+	out, err := read(e, readArgs{Find: "card"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\nc card") || strings.Contains(out, "\nr ") {
+		t.Errorf("find card:\n%s", out)
+	}
+}
+
+// An elbow arrow from a shape back to itself says it won't look the same in tldraw.
+func TestSelfLoopWarns(t *testing.T) {
+	out := ops(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":200,"h":100},{"add":"arrow","id":"x","from":"a","to":"a","kind":"elbow","fromAt":[1,0.5],"toAt":[0.5,0]}]`)
+	if !strings.Contains(out, "x loops back to a; tldraw") {
+		t.Errorf("no word of it:\n%s", out)
+	}
+}
+
+// An image as big as the limit gets through as a data: URL.
+func TestLargeRequestGetsThrough(t *testing.T) {
+	if maxRequest < maxImage*4/3+1024 {
+		t.Fatalf("a request of %d bytes can't hold an image of %d", maxRequest, maxImage)
+	}
+	h := &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: newEditor()}}}
+	s := connect(t, h)
+	img := image.NewRGBA(image.Rect(0, 0, 2000, 2000))
+	for i := range img.Pix {
+		img.Pix[i] = byte(i * 2654435761 >> 13)
+	}
+	var buf bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.NoCompression}).Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() < 5<<20 {
+		t.Fatalf("only %d bytes", buf.Len())
+	}
+	src := "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+	r := call(t, s, "apply", map[string]any{"ops": []map[string]any{{"add": "image", "src": src, "x": 0, "y": 0}}})
+	if r.IsError {
+		t.Fatal(textOf(r))
 	}
 }
