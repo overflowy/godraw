@@ -443,6 +443,7 @@ func (a *App) topLeft(c *ui.Context) {
 		del.OnClick(func() { e.Delete(); a.refocus(c) })
 		dup.OnClick(func() { e.Duplicate(); a.refocus(c) })
 		iconButton(c, "more", "ellipsis", "More", false).PopoverMenuButton(a.moreMenu)
+		a.mcpButton(c)
 	})
 }
 
@@ -480,6 +481,9 @@ func (a *App) moreMenu(m *ui.Menu) {
 		}
 	})
 	m.Separator()
+	if a.MCP != nil && m.Item("MCP Server…").Chosen() {
+		a.ShowMCP()
+	}
 	if m.Item("Keyboard Shortcuts").Shortcut(ui.Shift, ui.KeySlash).Chosen() {
 		a.helpOpen = true
 	}

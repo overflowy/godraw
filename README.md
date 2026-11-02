@@ -73,15 +73,61 @@ Known differences:
 - SVG export names its fonts instead of embedding them.
 - Not implemented: cropping images, note "clone" handles, video playback, multiplayer.
 
+## Drawing from an agent
+
+While godraw runs, it serves [MCP](https://modelcontextprotocol.io) at
+`http://127.0.0.1:7463/mcp`. The server lives in the app's process, so it starts when you
+launch godraw and is gone when you quit. The **MCP** button at the top left shows its
+state, and opens a dialog with the command and URL to copy. MCP Server… in the File menu and
+in the ⋯ menu opens the same dialog. Connect any MCP client to that URL:
+
+```sh
+claude mcp add --scope project --transport http godraw http://127.0.0.1:7463/mcp
+```
+
+Run that in your project's folder. It writes the project's `.mcp.json`, and Claude Code asks
+you to approve the server in the next session there. This repository already has that file. A client that only
+speaks stdio can use `npx -y mcp-remote http://127.0.0.1:7463/mcp`. A client connected
+before you launched godraw has to reconnect (`/mcp` in Claude Code). Set `GODRAW_MCP_PORT`
+to use another port.
+
+| Tool | What it does |
+| --- | --- |
+| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing |
+| `read` | The canvas as compact text, one line per shape, paged and searchable |
+| `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default |
+| `guide` | The reference for `apply`, a topic at a time |
+
+```json
+[{"add":"rectangle","id":"a","text":"API","color":"blue","fill":"solid"},
+ {"add":"cloud","id":"b","text":"Store","right":"a"},
+ {"add":"arrow","from":"a","to":"b","text":"writes"},
+ {"add":"draw","d":"M0 200 C80 120 160 280 240 200","dash":"solid"}]
+```
+
+The four tool definitions come to about 500 tokens, and a test holds them to a budget. The
+rest is on demand: `guide` by topic, `read` by page of results, and errors that list the
+valid values. `d` takes an SVG path, so an agent can draw any outline with few tokens.
+
+Agents work on the frontmost drawing unless they pass `doc`, and they wait while you drag
+or type. Their shapes are ordinary shapes: you can select, edit and undo them, and they save
+to `.tldr` like the rest.
+
+The server listens on this machine only and refuses requests from web pages, but it has no
+login, so other programs on the machine can use it. `src` on an image reads PNG, JPEG and
+GIF files by path.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `main.go` | Documents, menus and the window |
+| `agent.go` | Starts the MCP server and gives it the open windows |
 | `internal/geo` | Vectors, matrices, paths, hit tests; no dependencies |
 | `internal/doc` | Records, fractional indices, and the `.tldr` format |
 | `internal/editor` | Camera, selection, tools and gestures, undo, and what each shape draws; no UI dependency, so it is tested without a window |
 | `internal/app` | The native UI: canvas painter, panels, keyboard, export |
+| `internal/agent` | The MCP server and what its tools do |
 | `internal/assets` | Embedded font and icons |
 | `e2e.go` | With `-tags e2e`, lets another process drive the app over MyGo's automation socket |
 

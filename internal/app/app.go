@@ -36,6 +36,9 @@ type Host interface {
 
 // App is one window's state.
 type App struct {
+	// MCP tells how the app's MCP server is doing; nil shows nothing of it.
+	MCP func() MCPStatus
+
 	ed   *editor.Editor
 	host Host
 	meas *measurer
@@ -65,6 +68,10 @@ type App struct {
 	dark    bool
 
 	sizeBadge bool
+
+	mcpOpen   bool
+	mcpCopied string // the field that says it copied
+	mcpCopies int    // how many times it has, for a timer to know its own
 }
 
 // New returns the state of a window showing a drawing.
@@ -163,6 +170,7 @@ func (a *App) View(c *ui.Context) {
 		}
 	})
 	a.helpDialog(c)
+	a.mcpDialog(c)
 }
 
 func (a *App) applyTheme(c *ui.Context) {

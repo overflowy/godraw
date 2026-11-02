@@ -809,7 +809,7 @@ func (g *translateGesture) setCloned(e *Editor, on bool) {
 		for _, id := range g.ids {
 			e.put(g.initial[id].Moved())
 		}
-		clones := e.cloneShapes(g.ids, geo.Vec{})
+		clones := e.cloneShapes(g.ids, geo.Vec{}, newShapeID)
 		g.cloned = clones
 		e.Select(clones...)
 		return

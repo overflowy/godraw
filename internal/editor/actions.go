@@ -478,15 +478,15 @@ func (e *Editor) cleanGroups(ids map[doc.ID]bool) {
 
 // cloneShapes copies shapes with what they hold and the bindings among them,
 // above the originals, offset by d, and returns the new top shapes.
-func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec) []doc.ID {
+func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec, fresh func() doc.ID) []doc.ID {
 	tops := map[doc.ID]string{} // the next index in each parent
 	idmap := map[doc.ID]doc.ID{}
 	var all []doc.ID
 	for _, id := range ids {
-		idmap[id] = doc.NewID("shape")
+		idmap[id] = fresh()
 		all = append(all, id)
 		for _, k := range e.Descendants(id) {
-			idmap[k] = doc.NewID("shape")
+			idmap[k] = fresh()
 			all = append(all, k)
 		}
 	}
@@ -545,9 +545,11 @@ func (e *Editor) Duplicate() {
 	}
 	e.transact(func() {
 		d := 16 / e.Cam().Z
-		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d))...)
+		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d), newShapeID)...)
 	})
 }
+
+func newShapeID() doc.ID { return doc.NewID("shape") }
 
 // ClipboardFormat is the clipboard format of copied shapes.
 const ClipboardFormat = "application/vnd.godraw.shapes+json"
@@ -753,7 +755,10 @@ func (e *Editor) InsertImage(name, mime string, data []byte, w, h float64, at *g
 // --- grouping ---
 
 // Group groups the selection.
-func (e *Editor) Group() {
+func (e *Editor) Group() { e.GroupAs(newShapeID()) }
+
+// GroupAs groups the selection, in a group of a given id.
+func (e *Editor) GroupAs(id doc.ID) {
 	ids := e.topSelected()
 	if len(ids) < 2 || e.ReadOnly {
 		return
@@ -776,7 +781,7 @@ func (e *Editor) Group() {
 				box = box.Union(b)
 			}
 		}
-		g := doc.NewShape(doc.NewID("shape"), doc.TypeGroup)
+		g := doc.NewShape(id, doc.TypeGroup)
 		g.Parent = parent
 		o := e.parentMat(parent).Invert().Apply(geo.V(box.X, box.Y))
 		g.X, g.Y = o.X, o.Y
@@ -1052,25 +1057,25 @@ func (e *Editor) Flip(horizontal bool) {
 	if len(e.sel) == 0 || e.ReadOnly {
 		return
 	}
-	e.begin()
-	h := Handle{Kind: HandleResize, Which: geo.V(1, 0.5)}
-	if !horizontal {
-		h.Which = geo.V(0.5, 1)
-	}
-	g := newResize(e, h)
-	box := g.box
-	inv := geo.Rotate(-g.rotation)
-	fwd := geo.Rotate(g.rotation)
-	sx, sy := 1.0, 1.0
-	if horizontal {
-		sx = -1
-	} else {
-		sy = -1
-	}
-	for _, it := range g.items {
-		e.resizeItem(it, sx, sy, box.Center(), fwd, inv, geo.V(0, 0))
-	}
-	e.commit()
+	e.transact(func() {
+		h := Handle{Kind: HandleResize, Which: geo.V(1, 0.5)}
+		if !horizontal {
+			h.Which = geo.V(0.5, 1)
+		}
+		g := newResize(e, h)
+		box := g.box
+		inv := geo.Rotate(-g.rotation)
+		fwd := geo.Rotate(g.rotation)
+		sx, sy := 1.0, 1.0
+		if horizontal {
+			sx = -1
+		} else {
+			sy = -1
+		}
+		for _, it := range g.items {
+			e.resizeItem(it, sx, sy, box.Center(), fwd, inv, geo.V(0, 0))
+		}
+	})
 }
 
 // --- locks ---

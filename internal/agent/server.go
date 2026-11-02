@@ -1,0 +1,319 @@
+// Package agent lets agents draw: an MCP server, which lives only as long as
+// the app that runs it, over the canvases of its open windows.
+//
+// Its tools are few and cheap to carry. What each can do is told when asked
+// for (guide), by what it answers, and by its errors, which say what would
+// have been right.
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"image"
+	"image/png"
+	"log"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"godraw/internal/doc"
+	"godraw/internal/editor"
+	"godraw/internal/geo"
+)
+
+// Canvas is a drawing open in a window.
+type Canvas interface {
+	// ID names the canvas for as long as it is open.
+	ID() string
+	// Title returns what its window is called.
+	Title() string
+	// Editor returns its editor, which belongs to the main thread.
+	Editor() *editor.Editor
+	// Render draws shapes in a box of the page, on the main thread.
+	Render(box geo.Box, ids []doc.ID, scale float64) *image.RGBA
+	// Run runs fn on the main thread, and draws a frame after it.
+	Run(fn func())
+}
+
+// Host is what holds the canvases.
+type Host interface {
+	// Canvases returns the open canvases, the frontmost first.
+	Canvases() []Canvas
+	// New opens a new drawing and returns its canvas.
+	New() (Canvas, error)
+}
+
+const (
+	instructions = "Draw on the godraw canvas open on this machine: guide explains how, view shows the result."
+	endpoint     = "/mcp"
+
+	// How long a batch waits out a gesture or typing, and how long any call
+	// waits for the main thread.
+	busyWait = 4 * time.Second
+	mainWait = 30 * time.Second
+
+	maxRequest = 64 << 20
+)
+
+// The tools, as agents see them on every turn: kept to what it takes to start.
+const (
+	guideDesc = "How to use apply. No topic: overview and topics."
+	readDesc  = "What is on the canvas, as compact text. ids: full detail of those shapes. find: search by text or kind."
+	applyDesc = `Change the canvas: ops run in order as one undo step, and an error changes nothing. E.g. {"add":"rectangle","id":"a","x":0,"y":0,"text":"Hi","color":"blue"} {"add":"arrow","from":"a","to":"b"} {"add":"draw","d":"M0 0C50 80 100 -80 150 0"} {"set":"a","fill":"solid"} {"del":"a"}. Every shape, style and verb: guide.`
+	viewDesc  = "See the page, some shapes or a box as a PNG, to check your work. Answers with the page box it shows."
+
+	docProp    = `"doc":{"type":"string"}`
+	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","paths","edit"]}}}`
+	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}}`
+	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}}},"required":["ops"]}`
+	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."}}}`
+)
+
+// Handler returns the MCP server over HTTP.
+func Handler(h Host, version string) http.Handler {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "godraw", Version: version}, &mcp.ServerOptions{Instructions: instructions})
+	s := &server{host: h}
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
+	tool := func(name, desc, input string, ann *mcp.ToolAnnotations, fn func(context.Context, json.RawMessage) ([]mcp.Content, error)) {
+		srv.AddTool(&mcp.Tool{Name: name, Description: desc, InputSchema: json.RawMessage(input), Annotations: ann},
+			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				content, err := fn(ctx, req.Params.Arguments)
+				if err != nil {
+					// An agent reads a tool's error and corrects itself.
+					return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
+				}
+				return &mcp.CallToolResult{Content: content}, nil
+			})
+	}
+	tool("guide", guideDesc, guideInput, readOnly, s.guide)
+	tool("read", readDesc, readInput, readOnly, s.read)
+	tool("apply", applyDesc, applyInput, nil, s.apply)
+	tool("view", viewDesc, viewInput, readOnly, s.view)
+
+	mux := http.NewServeMux()
+	mux.Handle(endpoint, http.MaxBytesHandler(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{
+			Stateless: true, JSONResponse: true,
+			// Web pages may not reach it, directly or by rebinding a name to
+			// this machine; the handler checks the Host header by default.
+			CrossOriginProtection: http.NewCrossOriginProtection(),
+		},
+	), maxRequest))
+	return mux
+}
+
+// Start listens on addr and serves until the process ends, so that the server
+// is up exactly while the app is. It returns the server's URL.
+func Start(addr string, h Host, version string) (string, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return "", err
+	}
+	url := "http://" + l.Addr().String() + endpoint
+	log.Printf("godraw: MCP server at %s", url)
+	s := &http.Server{Handler: Handler(h, version), ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := s.Serve(l); err != nil {
+			log.Printf("godraw: MCP server stopped: %v", err)
+		}
+	}()
+	return url, nil
+}
+
+type server struct{ host Host }
+
+// strict decodes tool arguments, refusing what it doesn't know.
+func strict(raw json.RawMessage, into any) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(into); err != nil {
+		return errors.New(strings.TrimPrefix(err.Error(), "json: "))
+	}
+	return nil
+}
+
+func text(s string) []mcp.Content { return []mcp.Content{&mcp.TextContent{Text: s}} }
+
+// canvas finds the canvas asked for.
+func (s *server) canvas(name string) (Canvas, error) {
+	all := s.host.Canvases()
+	if len(all) == 0 {
+		return nil, errors.New("no drawing is open in godraw; apply opens a new one")
+	}
+	if name == "" {
+		return all[0], nil
+	}
+	var known []string
+	for _, c := range all {
+		if c.ID() == name {
+			return c, nil
+		}
+		known = append(known, c.ID())
+	}
+	return nil, fmt.Errorf("no drawing %q; open: %s", name, strings.Join(known, ", "))
+}
+
+// onMain runs fn on the canvas's main thread and waits for it. A panic in what
+// an agent asked for fails the call, not the app.
+func onMain(ctx context.Context, c Canvas, fn func() error) error {
+	done := make(chan error, 1)
+	c.Run(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("internal error: %v", r)
+			}
+		}()
+		done <- fn()
+	})
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(mainWait):
+		return errors.New("godraw didn't answer in time; check with read before trying again")
+	}
+}
+
+func (s *server) guide(_ context.Context, raw json.RawMessage) ([]mcp.Content, error) {
+	var a struct {
+		Topic string `json:"topic"`
+	}
+	if err := strict(raw, &a); err != nil {
+		return nil, err
+	}
+	t, err := guide(a.Topic)
+	if err != nil {
+		return nil, err
+	}
+	return text(t), nil
+}
+
+func (s *server) read(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {
+	var a readArgs
+	if err := strict(raw, &a); err != nil {
+		return nil, err
+	}
+	c, err := s.canvas(a.Doc)
+	if err != nil {
+		return nil, err
+	}
+	others := ""
+	if all := s.host.Canvases(); len(all) > 1 {
+		var open []string
+		for _, o := range all {
+			open = append(open, fmt.Sprintf("%s=%q", o.ID(), o.Title()))
+		}
+		others = " of " + strings.Join(open, " ")
+	}
+	title := c.Title()
+	var out string
+	err = onMain(ctx, c, func() error {
+		var err error
+		out, err = read(c.Editor(), a, title, others)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return text(out), nil
+}
+
+func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {
+	var a struct {
+		Doc string          `json:"doc"`
+		Ops json.RawMessage `json:"ops"`
+	}
+	if err := strict(raw, &a); err != nil {
+		return nil, err
+	}
+	if len(a.Ops) == 0 {
+		return nil, errors.New("apply needs ops")
+	}
+	// Paths and images are done with before the window is held up.
+	ops, err := decodeOps(a.Ops)
+	if err != nil {
+		return nil, err
+	}
+	var c Canvas
+	if a.Doc == "" && len(s.host.Canvases()) == 0 {
+		if c, err = s.host.New(); err != nil {
+			return nil, err
+		}
+	} else if c, err = s.canvas(a.Doc); err != nil {
+		return nil, err
+	}
+	var out string
+	deadline := time.Now().Add(busyWait)
+	for {
+		err = onMain(ctx, c, func() error {
+			var err error
+			out, err = apply(c.Editor(), ops)
+			return err
+		})
+		if !errors.Is(err, editor.ErrBusy) {
+			break
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("the user is drawing or typing on the canvas; nothing was changed, try again shortly")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return text(out), nil
+}
+
+func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {
+	var a viewArgs
+	if err := strict(raw, &a); err != nil {
+		return nil, err
+	}
+	c, err := s.canvas(a.Doc)
+	if err != nil {
+		return nil, err
+	}
+	var img *image.RGBA
+	var box geo.Box
+	var scale float64
+	err = onMain(ctx, c, func() error {
+		e := c.Editor()
+		_, err := onPage(e, a.Page, func() (string, error) {
+			b, ids, k, err := viewPlan(e, a)
+			if err != nil {
+				return "", err
+			}
+			box, scale = b, k
+			img = c.Render(b, ids, k)
+			return "", nil
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	caption := fmt.Sprintf("shows page box %s at %s px per unit", boxText(box), num(scale))
+	return []mcp.Content{
+		&mcp.ImageContent{MIMEType: "image/png", Data: buf.Bytes()},
+		&mcp.TextContent{Text: caption},
+	}, nil
+}

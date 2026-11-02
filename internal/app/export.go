@@ -7,11 +7,13 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
+	"godraw/internal/doc"
 	"godraw/internal/editor"
 	"godraw/internal/geo"
 )
@@ -19,12 +21,29 @@ import (
 // RenderPNG draws what export draws (the selection, else the page) at a
 // scale, and encodes it.
 func (a *App) RenderPNG(scale float64) ([]byte, bool) {
-	e := a.ed
-	box, ids, ok := e.ExportBounds()
+	box, ids, ok := a.ed.ExportBounds()
 	if !ok {
 		return nil, false
 	}
-	box = box.Expand(32)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, a.RenderImage(box.Expand(32), ids, scale)); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// RenderImage draws shapes in a box of the page, at a scale, and images that
+// are not decoded yet come out as they will show.
+func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA {
+	e := a.ed
+	for id, asset := range e.Doc.Assets {
+		if a.decoded[id] != asset.Src && strings.HasPrefix(asset.Src, "data:") {
+			if b := decodeDataURL(asset.Src); b != nil {
+				a.bitmaps[id] = b
+			}
+			a.decoded[id] = asset.Src
+		}
+	}
 	// Very large pages come out at a size a file can hold.
 	const maxSide = 8192.0
 	if k := maxSide / (math.Max(box.W, box.H) * scale); k < 1 {
@@ -64,11 +83,7 @@ func (a *App) RenderPNG(scale float64) ([]byte, bool) {
 			draw.Draw(out, image.Rect(tx, ty, tx+tile, ty+tile), img, image.Point{}, draw.Src)
 		}
 	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, out); err != nil {
-		return nil, false
-	}
-	return buf.Bytes(), true
+	return out
 }
 
 func (a *App) exportName(ext string) string {
