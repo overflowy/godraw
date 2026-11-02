@@ -63,7 +63,7 @@ A group binds by the shape that is most of it, as a path's main stroke; if none 
 fromAt,toAt are [x,y], 0 to 1 across the shape; the default is its center.
 kind:"arc", the default, curves by bend, px off straight. kind:"elbow" runs in right angles, and takes no bend.
 An elbow's anchor on an edge sets the side it leaves or arrives by: [0.5,0] top, [0.5,1] bottom, [0,0.5] left, [1,0.5] right.
-via:[[x,y],...] are page points an elbow passes through; one often gets around a shape. They follow when both ends move alike; else they stay, or go if they only add turns to a clear route. via:[] clears them.
+via:[[x,y],...] are page points an elbow passes through. They follow when both ends move alike; else they stay, unless a clear route has fewer turns. Moved into a shape, an elbow goes around it. via:[] clears them.
 straight:"h" or "v" on an arrow with from and to runs it level where both shapes share height (or width), and keeps it so as they move or grow. at, 0 to 1, picks where: 0.25 and 0.75 for a pair. straight:"off" or fromAt,toAt end it.
 label:"above" takes an arrow's label off its line; "center" puts it back.
 Warnings tell of an arrow through a box, along its edge or over a frame's name, of a route crossing itself, and of arrows sharing a line; from one anchor, a trunk a tree may mean.

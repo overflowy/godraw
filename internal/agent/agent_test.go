@@ -1926,10 +1926,9 @@ func mustOps(t *testing.T, list string) []*op {
 
 // The reported case: only the target moved, past a waypoint that was in its way.
 func TestWarnsOfARouteCrossingItself(t *testing.T) {
-	e := newEditor()
 	// What's in the way of the route without it keeps the via there.
-	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m","x":250,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m2","x":110,"y":150,"w":80,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`)
-	out := wantWarnings(t, e, `[{"set":"b","x":200,"y":300}]`, "s's route crosses itself; its via may be out of place")
+	e := newEditor()
+	out := wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m2","x":110,"y":150,"w":80,"h":100},{"add":"rectangle","id":"b","x":200,"y":300,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`, "s's route crosses itself; its via may be out of place")
 	if !crossesItself(arrowLine(e, "s")) {
 		t.Errorf("no crossing in %v:\n%s", arrowLine(e, "s"), out)
 	}
@@ -2175,12 +2174,24 @@ func TestViaGoesWhenItsEndMovesAway(t *testing.T) {
 		t.Errorf("undo didn't bring it back: %s", got)
 	}
 
-	// The way without it would run through something, so it's there for a reason.
+	// The way without it would run through something, but another is clear, with
+	// fewer turns. It takes that one.
 	e = newEditor()
 	ops(t, e, `[`+pair+`{"add":"rectangle","id":"in","x":60,"y":280,"w":120,"h":60},`+arrow+`]`)
-	ops(t, e, `[{"set":"b","x":201.2,"y":392.1}]`)
-	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[320,320]]") {
-		t.Errorf("via went, with something in the way: %s", got)
+	out = wantWarnings(t, e, `[{"set":"b","x":201.2,"y":392.1}]`, "s's via was replaced")
+	if line := arrowLine(e, "s"); len(line) != 4 {
+		t.Errorf("%d legs: %v\n%s", len(line)-1, line, out)
+	}
+	if strings.Contains(out, "runs through") {
+		t.Errorf("still in the way: %s", out)
+	}
+
+	// With no better way, it stays where it is: it was put there for a reason.
+	e = newEditor()
+	ops(t, e, `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`)
+	ops(t, e, `[{"set":"b","dx":50}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[300,-40]]") {
+		t.Errorf("via went, with no better way: %s", got)
 	}
 
 	// Nor does it go when it parts the arrow from another, which is what the
@@ -2252,4 +2263,21 @@ func TestWarnsOfAViaThatGoesFarOutOfTheWay(t *testing.T) {
 	// Over what's in the way is what it's for, however far.
 	e = newEditor()
 	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"tall","x":250,"y":-300,"w":100,"h":500},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-340]]}]`)
+}
+
+// An elbow with no via goes around what a move takes it through, and says so.
+func TestMoveTakesAnElbowAround(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":100,"y":100,"w":120,"h":60},{"add":"rectangle","id":"in","text":"In the way","x":90,"y":290,"w":140,"h":62},{"add":"rectangle","id":"b","x":400,"y":400,"w":80,"h":45},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0]}]`)
+	out := wantWarnings(t, e, `[{"set":"b","x":120}]`, "s now goes around what's in its way")
+	if strings.Contains(out, "runs through") {
+		t.Errorf("still in the way: %s", out)
+	}
+
+	// Added where it runs through something, it's only told of: nothing moved.
+	e = newEditor()
+	out = ops(t, e, `[{"add":"rectangle","id":"a","x":100,"y":100,"w":120,"h":60},{"add":"rectangle","id":"in","text":"In the way","x":90,"y":220,"w":140,"h":60},{"add":"rectangle","id":"b","x":120,"y":340,"w":80,"h":45},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0]}]`)
+	if !strings.Contains(out, "s runs through in") || strings.Contains(viaOf(t, e, "s"), "via") {
+		t.Errorf("%s\n%s", out, viaOf(t, e, "s"))
+	}
 }

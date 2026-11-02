@@ -155,6 +155,7 @@ const (
 	MetaCard       = "godrawCard"       // box, head or body: a card's part
 	MetaCardH      = "godrawCardH"      // the height asked of a card's box
 	MetaVia        = "godrawVia"        // what an elbow arrow passes through
+	MetaViaAuto    = "godrawViaAuto"    // that the app chose it, to go around something
 	MetaFrameSize  = "godrawFrameSize"  // a frame's size style, for its heading and border
 	MetaFrameFont  = "godrawFrameFont"  // the font of a frame's heading
 )
@@ -208,6 +209,7 @@ func (s *Shape) Via() []geo.Vec {
 
 // SetVia sets the points an elbow arrow passes through, in its own space.
 func (s *Shape) SetVia(via []geo.Vec) {
+	s.SetMeta(MetaViaAuto, nil)
 	if len(via) == 0 {
 		s.SetMeta(MetaVia, nil)
 		return

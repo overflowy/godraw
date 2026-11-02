@@ -133,6 +133,7 @@ type Editor struct {
 	undo, redo []*entry
 	tx         *entry
 	routes     map[doc.ID]*viaRoute // as they were when tx began
+	pageShapes map[doc.ID][]routeShape
 
 	kids     map[doc.ID][]doc.ID
 	arrows   map[doc.ID]*arrowMemo

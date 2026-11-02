@@ -159,8 +159,9 @@ func meetOutline(pts []geo.Vec, out geo.Vec, outline []geo.Vec) []geo.Vec {
 }
 
 // routeElbow joins stops with right angles. out and in are the ways out of the
-// sides of the shapes at its ends, if they have them.
-func routeElbow(stops []geo.Vec, out, in geo.Vec, mid float64, avoid []geo.Box) []geo.Vec {
+// sides of the shapes at its ends, if they have them. It keeps out of avoid, and can
+// run along the edges of lanes as well as a little way off what it avoids.
+func routeElbow(stops []geo.Vec, out, in geo.Vec, mid float64, avoid []geo.Box, lanes ...geo.Box) []geo.Vec {
 	pts := []geo.Vec{stops[0]}
 	heading := out
 	for i := 1; i < len(stops); i++ {
@@ -173,7 +174,7 @@ func routeElbow(stops []geo.Vec, out, in geo.Vec, mid float64, avoid []geo.Box) 
 		} else {
 			then = squared(stops[i+1].Sub(stops[i]))
 		}
-		pts = append(pts, elbowLeg(stops[i-1], stops[i], heading, i == 1 && out != (geo.Vec{}), arrive, then, mid, avoid)[1:]...)
+		pts = append(pts, elbowLeg(stops[i-1], stops[i], heading, i == 1 && out != (geo.Vec{}), arrive, then, mid, avoid, lanes)[1:]...)
 		pts = tidyRoute(pts)
 		if n := len(pts); n >= 2 && pts[n-1] != pts[n-2] {
 			heading = pts[n-1].Sub(pts[n-2]).Uni()
@@ -190,12 +191,16 @@ func routeElbow(stops []geo.Vec, out, in geo.Vec, mid float64, avoid []geo.Box) 
 // it's going at a, which is a rule if side says it leaves a shape's side; in is
 // the way out of the side of the shape at b, and then the way it would like to
 // be going there.
-func elbowLeg(a, b, heading geo.Vec, side bool, in, then geo.Vec, mid float64, avoid []geo.Box) []geo.Vec {
+func elbowLeg(a, b, heading geo.Vec, side bool, in, then geo.Vec, mid float64, avoid, lanes []geo.Box) []geo.Vec {
 	xs := []float64{a.X + (b.X-a.X)*mid}
 	ys := []float64{a.Y + (b.Y-a.Y)*mid}
 	for _, box := range avoid {
 		xs = append(xs, box.X-elbowStub, box.MaxX()+elbowStub)
 		ys = append(ys, box.Y-elbowStub, box.MaxY()+elbowStub)
+	}
+	for _, box := range lanes {
+		xs = append(xs, box.X, box.MaxX())
+		ys = append(ys, box.Y, box.MaxY())
 	}
 	starts := [][]geo.Vec{{a}}
 	if side {

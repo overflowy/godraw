@@ -1304,16 +1304,21 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 	return nil
 }
 
-// followRoutes keeps via points with what their arrows join, and tells of those
-// that are gone.
+// followRoutes keeps routes right for what their arrows join, and tells of what
+// that did to them beyond going along.
 func (r *run) followRoutes() {
-	moved, cleared := r.e.SettleRoutes()
-	for _, id := range moved {
+	c := r.e.SettleRoutes()
+	for _, id := range slices.Concat(c.Moved, c.Cleared, c.Replaced, c.Around) {
 		r.changed[id] = true
 	}
-	for _, id := range cleared {
-		r.changed[id] = true
+	for _, id := range c.Cleared {
 		r.warn("%s's via was cleared: what it joins moved, and the way without it is clear with fewer turns; via sets it again", shortID(id))
+	}
+	for _, id := range c.Replaced {
+		r.warn("%s's via was replaced: what it joins moved, and this way is clear with fewer turns; via sets it again", shortID(id))
+	}
+	for _, id := range c.Around {
+		r.warn("%s now goes around what's in its way, by a via; via sets another", shortID(id))
 	}
 }
 
