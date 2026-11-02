@@ -524,7 +524,6 @@ type run struct {
 	// asked is the height a box was asked to have, or had before the batch.
 	asked map[doc.ID]float64
 	// routes is where arrows' via points were before the batch.
-	routes   map[doc.ID]route
 	warnings []string
 	// What is told after other warnings, for it not to crowd them out.
 	shared, trunks []string
@@ -543,7 +542,6 @@ type applyMode struct {
 func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 	dry := mode.dry
 	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, before: map[doc.ID]float64{}, grown: map[doc.ID]*growth{}, dry: dry, quiet: mode.quiet}
-	r.routes = r.routesNow()
 	var report string
 	err := e.Batch(func() error {
 		for i, o := range ops {
@@ -1282,7 +1280,6 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 	}
 	via := s.Via()
 	if f.Via != nil {
-		delete(r.routes, id) // it goes where it was just told to
 		m := r.e.PageMat(id).Invert()
 		via = via[:0]
 		for _, p := range *f.Via {
@@ -1307,69 +1304,16 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 	return nil
 }
 
-// route is a bound arrow's via points and where its ends are anchored, in the
-// page.
-type route struct {
-	from, to   doc.ID
-	start, end geo.Vec
-	via        []geo.Vec
-}
-
-// anchorPoint returns where a binding holds on to its shape, in the page.
-func (r *run) anchorPoint(b *doc.Binding) geo.Vec {
-	box := r.e.Geometry(r.e.Doc.Shapes[b.To]).Bounds
-	a := anchorX(b)
-	return r.e.PageMat(b.To).Apply(geo.V(box.X+a.X*box.W, box.Y+a.Y*box.H))
-}
-
-// routesNow takes down the routes of arrows bound at both ends.
-func (r *run) routesNow() map[doc.ID]route {
-	out := map[doc.ID]route{}
-	for id, s := range r.e.Doc.Shapes {
-		if s.Type != doc.TypeArrow || len(s.Via()) == 0 {
-			continue
-		}
-		bs, be := r.e.BindingOf(id, "start"), r.e.BindingOf(id, "end")
-		if bs == nil || be == nil {
-			continue
-		}
-		m := r.e.PageMat(id)
-		via := s.Via()
-		for i, p := range via {
-			via[i] = m.Apply(p)
-		}
-		out[id] = route{from: bs.To, to: be.To, start: r.anchorPoint(bs), end: r.anchorPoint(be), via: via}
-	}
-	return out
-}
-
-// followRoutes takes along the via points of an arrow whose ends both moved by
-// the same amount, as when a whole row moves. A route isn't the arrow's to keep
-// when only one end moves: nothing says where its points should go then.
+// followRoutes keeps via points with what their arrows join, and tells of those
+// that are gone.
 func (r *run) followRoutes() {
-	for id, was := range r.routes {
-		s := r.e.Doc.Shapes[id]
-		if s == nil || len(s.Via()) == 0 {
-			continue
-		}
-		bs, be := r.e.BindingOf(id, "start"), r.e.BindingOf(id, "end")
-		if bs == nil || be == nil || bs.To != was.from || be.To != was.to {
-			continue
-		}
-		const still = 0.01
-		d := r.anchorPoint(bs).Sub(was.start)
-		if d.Len() < still || r.anchorPoint(be).Sub(was.end).Dist(d) > still {
-			continue
-		}
-		m := r.e.PageMat(id).Invert()
-		via := make([]geo.Vec, len(was.via))
-		for i, p := range was.via {
-			via[i] = m.Apply(p.Add(d))
-		}
-		c := s.Clone()
-		c.SetVia(via)
-		r.e.Put(c)
+	moved, cleared := r.e.SettleRoutes()
+	for _, id := range moved {
 		r.changed[id] = true
+	}
+	for _, id := range cleared {
+		r.changed[id] = true
+		r.warn("%s's via was cleared: what it joins moved, and the way without it is clear with fewer turns; via sets it again", shortID(id))
 	}
 }
 

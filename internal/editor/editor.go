@@ -132,6 +132,7 @@ type Editor struct {
 
 	undo, redo []*entry
 	tx         *entry
+	routes     map[doc.ID]*viaRoute // as they were when tx began
 
 	kids     map[doc.ID][]doc.ID
 	arrows   map[doc.ID]*arrowMemo
@@ -248,6 +249,7 @@ func (e *Editor) begin() {
 		selBefore:  slices.Clone(e.sel),
 		pageBefore: e.Page,
 	}
+	e.routes = e.routesNow()
 }
 
 // commit ends the transaction, which becomes a step of undo.
@@ -256,7 +258,8 @@ func (e *Editor) commit() {
 	if x == nil {
 		return
 	}
-	e.tx = nil
+	e.SettleRoutes()
+	e.tx, e.routes = nil, nil
 	// What changed and changed back is no change.
 	for id, c := range x.shapes {
 		if c.before == c.after {
@@ -294,7 +297,7 @@ func (e *Editor) rollback() {
 	if x == nil {
 		return
 	}
-	e.tx = nil
+	e.tx, e.routes = nil, nil
 	e.apply(x, true)
 }
 

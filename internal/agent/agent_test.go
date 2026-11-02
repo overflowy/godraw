@@ -1927,7 +1927,8 @@ func mustOps(t *testing.T, list string) []*op {
 // The reported case: only the target moved, past a waypoint that was in its way.
 func TestWarnsOfARouteCrossingItself(t *testing.T) {
 	e := newEditor()
-	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`)
+	// What's in the way of the route without it keeps the via there.
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m","x":250,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m2","x":110,"y":150,"w":80,"h":100},{"add":"rectangle","id":"b","x":500,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`)
 	out := wantWarnings(t, e, `[{"set":"b","x":200,"y":300}]`, "s's route crosses itself; its via may be out of place")
 	if !crossesItself(arrowLine(e, "s")) {
 		t.Errorf("no crossing in %v:\n%s", arrowLine(e, "s"), out)
@@ -2148,4 +2149,73 @@ func TestCardBodySmallerAtSizeS(t *testing.T) {
 	if got := back.Shapes["shape:c-body"].Scale; got != cardSmallBody {
 		t.Errorf("saved as %v", got)
 	}
+}
+
+// A via left behind by an end that moved makes turns nothing needs: the route
+// runs past what it's going to and comes back. So it goes, unless the way
+// without it runs through something.
+func TestViaGoesWhenItsEndMovesAway(t *testing.T) {
+	const pair = `{"add":"note","id":"a","x":20,"y":20},{"add":"rectangle","id":"b","x":300,"y":392,"w":80,"h":45},`
+	const arrow = `{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0],"via":[[320,320]]}`
+
+	e := newEditor()
+	ops(t, e, `[`+pair+arrow+`]`)
+	out := ops(t, e, `[{"set":"b","x":201.2,"y":392.1}]`)
+	if got := viaOf(t, e, "s"); strings.Contains(got, "via") {
+		t.Errorf("via stayed: %s", got)
+	}
+	if !strings.Contains(out, "s's via was cleared") {
+		t.Errorf("not told: %s", out)
+	}
+	if line := arrowLine(e, "s"); len(line) != 4 {
+		t.Errorf("%d legs: %v", len(line)-1, line)
+	}
+	e.Undo()
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[320,320]]") {
+		t.Errorf("undo didn't bring it back: %s", got)
+	}
+
+	// The way without it would run through something, so it's there for a reason.
+	e = newEditor()
+	ops(t, e, `[`+pair+`{"add":"rectangle","id":"in","x":60,"y":280,"w":120,"h":60},`+arrow+`]`)
+	ops(t, e, `[{"set":"b","x":201.2,"y":392.1}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[320,320]]") {
+		t.Errorf("via went, with something in the way: %s", got)
+	}
+
+	// Nor does it go when it parts the arrow from another, which is what the
+	// warning of arrows sharing a line says to do.
+	e = newEditor()
+	ops(t, e, `[`+pair+arrow+`,{"add":"arrow","id":"o","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0]}]`)
+	ops(t, e, `[{"set":"b","x":201.2,"y":392.1}]`)
+	if got := viaOf(t, e, "s"); !strings.Contains(got, "via [[320,320]]") {
+		t.Errorf("via went, though it parts two arrows: %s", got)
+	}
+
+	// A dry run tells of it, and changes nothing.
+	e = newEditor()
+	ops(t, e, `[`+pair+arrow+`]`)
+	got, err := apply(e, mustOps(t, `[{"set":"b","x":201.2}]`), applyMode{dry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "s's via was cleared") || !strings.Contains(viaOf(t, e, "s"), "via [[320,320]]") {
+		t.Errorf("dry: %s\n%s", got, viaOf(t, e, "s"))
+	}
+}
+
+// A via that adds turns nothing needs is told of, wherever it came from.
+func TestWarnsOfANeedlessVia(t *testing.T) {
+	e := newEditor()
+	out := ops(t, e, `[{"add":"note","id":"a","x":20,"y":20},{"add":"rectangle","id":"b","x":201.2,"y":392.1,"w":80,"h":45},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,1],"toAt":[0.5,0],"via":[[320,320]]}]`)
+	if !strings.Contains(out, "s's via adds 2 turns") {
+		t.Errorf("apply: %s", out)
+	}
+	if got, _ := read(e, readArgs{Check: true}, "", ""); !strings.Contains(got, "s's via adds 2 turns") {
+		t.Errorf("check: %s", got)
+	}
+	// One turn more is only another shape of route.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`)
+	// Going around something is what it's for.
+	wantWarnings(t, newEditor(), `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`)
 }

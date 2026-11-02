@@ -123,6 +123,7 @@ func (e *Editor) PointerMove(x, y float64, m Mods, t float64) {
 	e.Now = t
 	if e.gesture != nil {
 		e.gesture.move(e)
+		e.SettleRoutes()
 		return
 	}
 	e.updateHover()

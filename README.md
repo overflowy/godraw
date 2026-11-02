@@ -127,7 +127,9 @@ a rectangle and two text shapes, so it needs nothing special to open elsewhere.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
 elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the
-way. A frame's `size` and `font` set its name to match the cards it sits among. All of these
+way. Those points move with the arrow when both its ends move alike, by an agent or a drag.
+When only one end moves they stay, unless they add turns to a route that's clear without
+them: then they're cleared, and undo brings them back. A frame's `size` and `font` set its name to match the cards it sits among. All of these
 and `label:"above"` are kept in the shape's `meta`, so tldraw opens the file and shows the
 arrow with its saved anchors and its own routing, and the frame with its usual heading.
 

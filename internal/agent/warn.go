@@ -526,7 +526,9 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 			r.warn(`%s is %s off plumb; straight:"v" levels it`, name, num(dx))
 		}
 	}
-	if s.Kind == "elbow" && crossesItself(pts) {
+	if n := r.e.NeedlessVia(s); n > 0 {
+		r.warn("%s's via adds %d turns, and the way without it is clear; via:[] clears it", name, n)
+	} else if s.Kind == "elbow" && crossesItself(pts) {
 		if len(s.Via()) > 0 {
 			r.warn("%s's route crosses itself; its via may be out of place: set via again, or via:[] clears it", name)
 		} else {
