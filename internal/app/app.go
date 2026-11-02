@@ -53,6 +53,7 @@ type App struct {
 	geoOpen, pagesOpen, menuOpen, helpOpen, moreOpen bool
 	headsOpen                                        bool
 	minimap                                          bool
+	layouts                                          map[measureKey]*ui.TextLayout
 	renamingPage                                     doc.ID
 	renameText                                       string
 	editKey                                          int

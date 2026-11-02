@@ -311,7 +311,7 @@ func (s *scene) text(pr editor.Prim, m geo.Mat, o float64) {
 	drop := (float32(pr.Block.Line*z) - nat) / 2
 	rot := m.Rotation()
 	draw := func(q geo.Vec, text string) {
-		s.p.RichText(float32(q.X), float32(q.Y)+drop, 0, ui.Span{Text: text, Font: font, Size: size, Color: c})
+		s.p.TextLayout(s.a.shaped(text, font, size, 0), float32(q.X), float32(q.Y)+drop, c)
 	}
 	if math.Abs(rot) < 1e-4 {
 		for _, l := range pr.Block.Lines {
@@ -423,15 +423,17 @@ func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 	page, font := editor.FrameHeading(sh)
 	floor := float32(editor.FrameHeadingFloor) * s.pixel()
 	size := max(float32(page*s.cam.Z), floor)
-	span := ui.Span{Text: name, Size: size, Color: toUI(s.pal.Text.Alpha(0.65))}
-	if font != "" {
-		span.Font = family(font)
-	}
+	color := toUI(s.pal.Text.Alpha(0.65))
 	if page > 0 {
-		span.Color = toUI(s.pal.Swatch(sh.Color).Solid)
+		color = toUI(s.pal.Swatch(sh.Color).Solid)
+	}
+	face := s.p.Theme().Font
+	if font != "" {
+		face = family(font)
 	}
 	draw := func() {
-		s.p.RichText(float32(origin.X), float32(origin.Y)-size*1.6, float32(max(sh.W*s.cam.Z, 40)), span)
+		l := s.a.shaped(name, face, size, float32(max(sh.W*s.cam.Z, 40)))
+		s.p.TextLayout(l, float32(origin.X), float32(origin.Y)-size*1.6, color)
 	}
 	if math.Abs(rot) < 1e-4 {
 		draw()

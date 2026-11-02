@@ -103,6 +103,23 @@ func layoutBlock(text, font string, size, width float64) editor.TextBlock {
 	return out
 }
 
+// shaped returns text laid out in a font alone, keeping what it laid out. Painting
+// it from there, rather than with Painter.RichText, matters when zoomed out: a rich
+// text's lines are at least as tall as the theme's font, and its glyphs stand as
+// far down them, so that small text falls away from where it's meant to be.
+func (a *App) shaped(text, face string, size, width float32) *ui.TextLayout {
+	k := measureKey{text, face, size, width}
+	if l, ok := a.layouts[k]; ok {
+		return l
+	}
+	if a.layouts == nil || len(a.layouts) > 4096 {
+		a.layouts = map[measureKey]*ui.TextLayout{}
+	}
+	l := ui.ShapeText(text, ui.Font{Family: face, Size: size}, width)
+	a.layouts[k] = l
+	return l
+}
+
 // naturalHeight returns the height a font's line takes, in its size, without
 // a set line height: text draws in it, centered in its line.
 var naturalHeights sync.Map
