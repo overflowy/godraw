@@ -391,7 +391,7 @@ func (a *App) headRow(c *ui.Context, label string, prop editor.StyleProp, cur st
 	heads := []string{"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar"}
 	ui.Row(c.Key("head-" + label)).Gap(6).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, label).FontSize(12).Width(32).TextColor(c.Theme().TextMuted)
-		ui.Select(c.Key("sel-"+label), &cur, heads).Grow(1).Label(label + " arrowhead").OnChange(func() {
+		ui.Select(c.Key("sel-"+label), &cur, heads).Grow(1).MinWidth(0).Label(label + " arrowhead").OnChange(func() {
 			e.SetStyle(prop, cur)
 			a.refocus(c)
 		})
