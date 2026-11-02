@@ -1,0 +1,9 @@
+{
+  "name": "godraw",
+  "identifier": "com.example.godraw",
+  "version": "0.1.0",
+  "out": "build",
+  "fileAssociations": [
+    { "ext": ["tldr"], "name": "tldraw Drawing", "mimeType": "application/vnd.tldraw+json" }
+  ]
+}
