@@ -1526,6 +1526,61 @@ func TestWebPagesCantReachIt(t *testing.T) {
 	}
 }
 
+// A method nobody knows is something a client can skip, not the server failing;
+// every other refusal stays what it was. This also holds notHandled to the SDK's
+// wording, if an upgrade changes it.
+func TestUnknownMethodsAreAnsweredInJSONRPC(t *testing.T) {
+	srv := httptest.NewServer(Handler(&fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: newEditor()}}}, "test"))
+	defer srv.Close()
+	const notFound = `"code":-32601`
+	for _, c := range []struct {
+		name, version, accept, body string
+		code                        int
+		has                         string
+	}{
+		{name: "no version", body: `{"jsonrpc":"2.0","id":7,"method":"made/up"}`, code: 200, has: `"id":7`},
+		{name: "string id", body: `{"jsonrpc":"2.0","id":"x","method":"made/up"}`, code: 200, has: `"id":"x"`},
+		{name: "older version", version: "2025-06-18", body: `{"jsonrpc":"2.0","id":7,"method":"made/up"}`, code: 200, has: notFound},
+		{name: "the SDK's own answer", version: "2026-07-28", body: `{"jsonrpc":"2.0","id":7,"method":"made/up"}`, code: 404, has: notFound},
+		{name: "notification", body: `{"jsonrpc":"2.0","method":"notifications/made_up"}`, code: 202},
+		{name: "known but unoffered", body: `{"jsonrpc":"2.0","id":7,"method":"prompts/list"}`, code: 200, has: `"prompts":[]`},
+		{name: "known", body: `{"jsonrpc":"2.0","id":7,"method":"ping"}`, code: 200, has: `"result":{}`},
+		{name: "malformed", body: `{"jsonrpc":`, code: 400, has: "malformed"},
+		{name: "known without its id", body: `{"jsonrpc":"2.0","method":"ping"}`, code: 400, has: "missing id"},
+		{name: "batch", body: `[{"jsonrpc":"2.0","id":7,"method":"made/up"}]`, code: 400, has: notHandled},
+		{name: "accept without a stream", accept: "application/json", body: `{"jsonrpc":"2.0","id":7,"method":"made/up"}`, code: 400, has: "Accept must"},
+		{name: "accept reordered, with weights", accept: "text/event-stream;q=0.5, application/json;q=0.9", body: `{"jsonrpc":"2.0","id":7,"method":"ping"}`, code: 200, has: `"result":{}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req, _ := http.NewRequest("POST", srv.URL+endpoint, strings.NewReader(c.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			if c.accept != "" {
+				req.Header.Set("Accept", c.accept)
+			}
+			if c.version != "" {
+				req.Header.Set("Mcp-Protocol-Version", c.version)
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			var got bytes.Buffer
+			got.ReadFrom(res.Body)
+			if res.StatusCode != c.code || !strings.Contains(got.String(), c.has) {
+				t.Fatalf("got %d %q, want %d with %q", res.StatusCode, got.String(), c.code, c.has)
+			}
+			if c.code == 202 && got.Len() != 0 {
+				t.Errorf("a notification was answered: %q", got.String())
+			}
+			if c.code == 200 && res.Header.Get("Content-Type") != "application/json" {
+				t.Errorf("content type %q", res.Header.Get("Content-Type"))
+			}
+		})
+	}
+}
+
 // arrowLine returns the corners of an arrow, in the page.
 func arrowLine(e *editor.Editor, id string) []geo.Vec {
 	s := e.Doc.Shapes[shapeID(id)]

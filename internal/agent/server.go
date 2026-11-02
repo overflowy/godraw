@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"godraw/internal/doc"
@@ -75,7 +77,7 @@ const (
 	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","layout","arrows","paths","edit"]}}}`
 	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"check":{"type":"boolean","description":"Warnings of the whole page."}}}`
 	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
-	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
+	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
 )
 
 // Handler returns the MCP server over HTTP.
@@ -100,7 +102,7 @@ func Handler(h Host, version string) http.Handler {
 	tool("view", viewDesc, viewInput, readOnly, s.view)
 
 	mux := http.NewServeMux()
-	mux.Handle(endpoint, http.MaxBytesHandler(mcp.NewStreamableHTTPHandler(
+	mux.Handle(endpoint, http.MaxBytesHandler(answerUnknown(mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{
 			Stateless: true, JSONResponse: true,
@@ -110,9 +112,78 @@ func Handler(h Host, version string) http.Handler {
 			// this machine; the handler checks the Host header by default.
 			CrossOriginProtection: http.NewCrossOriginProtection(),
 		},
-	), maxRequest))
+	)), maxRequest))
 	return mux
 }
+
+// notHandled begins what the SDK says when it refuses a method it doesn't know.
+const notHandled = "JSON RPC not handled"
+
+// answerUnknown answers a method nobody knows as JSON-RPC says to, which the
+// SDK does only from protocol 2026-07-28: before it, a call gets a plain 400,
+// which a client can take for the server failing rather than for a feature to
+// skip. A notification gets no answer, so it is accepted and dropped.
+//
+// It steps in after the SDK, so that what the SDK checks first still comes
+// first, and what it knows needn't be listed here too. A batch stays refused.
+func answerUnknown(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var sent bytes.Buffer
+		r.Body = io.NopCloser(io.TeeReader(r.Body, &sent))
+		held := &heldRefusal{ResponseWriter: w}
+		next.ServeHTTP(held, r)
+		if !held.refused {
+			return
+		}
+		msg, err := jsonrpc.DecodeMessage(sent.Bytes())
+		req, isReq := msg.(*jsonrpc.Request)
+		if err != nil || !isReq || !bytes.HasPrefix(held.body.Bytes(), []byte(notHandled)) {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write(held.body.Bytes())
+			return
+		}
+		if !req.IsCall() {
+			w.Header().Del("Content-Type")
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		out, err := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("method not found: %q", req.Method),
+		}})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
+	})
+}
+
+// heldRefusal holds back a 400 until it is known what to answer instead.
+type heldRefusal struct {
+	http.ResponseWriter
+	refused bool
+	body    bytes.Buffer
+}
+
+func (w *heldRefusal) WriteHeader(code int) {
+	if code == http.StatusBadRequest {
+		w.refused = true
+		return
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *heldRefusal) Write(b []byte) (int, error) {
+	if w.refused {
+		return w.body.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap lets the SDK flush a stream through it.
+func (w *heldRefusal) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Start listens on addr and serves until the process ends, so that the server
 // is up exactly while the app is. It returns the server's URL.
