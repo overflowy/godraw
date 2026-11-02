@@ -69,10 +69,10 @@ const (
 	viewDesc  = "See the page, some shapes or a box as a PNG, to check your work. Answers with the page box it shows."
 
 	docProp    = `"doc":{"type":"string"}`
-	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","paths","edit"]}}}`
+	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","layout","paths","edit"]}}}`
 	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}}`
-	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}}},"required":["ops"]}`
-	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."}}}`
+	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything."}},"required":["ops"]}`
+	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
 )
 
 // Handler returns the MCP server over HTTP.
@@ -233,6 +233,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	var a struct {
 		Doc string          `json:"doc"`
 		Ops json.RawMessage `json:"ops"`
+		Dry bool            `json:"dry"`
 	}
 	if err := strict(raw, &a); err != nil {
 		return nil, err
@@ -246,7 +247,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		return nil, err
 	}
 	var c Canvas
-	if a.Doc == "" && len(s.host.Canvases()) == 0 {
+	if a.Doc == "" && !a.Dry && len(s.host.Canvases()) == 0 {
 		if c, err = s.host.New(); err != nil {
 			return nil, err
 		}
@@ -258,7 +259,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	for {
 		err = onMain(ctx, c, func() error {
 			var err error
-			out, err = apply(c.Editor(), ops)
+			out, err = apply(c.Editor(), ops, a.Dry)
 			return err
 		})
 		if !errors.Is(err, editor.ErrBusy) {
@@ -284,6 +285,9 @@ func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 	if err := strict(raw, &a); err != nil {
 		return nil, err
 	}
+	if a.Theme != "" && a.Theme != "light" && a.Theme != "dark" {
+		return nil, fmt.Errorf("theme %q: use light, dark", a.Theme)
+	}
 	c, err := s.canvas(a.Doc)
 	if err != nil {
 		return nil, err
@@ -291,8 +295,16 @@ func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 	var img *image.RGBA
 	var box geo.Box
 	var scale float64
+	var theme string
 	err = onMain(ctx, c, func() error {
 		e := c.Editor()
+		// For this picture only: no frame comes before it goes back.
+		was := e.DarkMode
+		defer func() { e.DarkMode = was }()
+		if a.Theme != "" {
+			e.DarkMode = a.Theme == "dark"
+		}
+		theme = themeName(e)
 		_, err := onPage(e, a.Page, func() (string, error) {
 			b, ids, k, err := viewPlan(e, a)
 			if err != nil {
@@ -311,7 +323,7 @@ func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 	if err := png.Encode(&buf, img); err != nil {
 		return nil, err
 	}
-	caption := fmt.Sprintf("shows page box %s at %s px per unit", boxText(box), num(scale))
+	caption := fmt.Sprintf("shows page box %s at %s px per unit, %s theme", boxText(box), num(scale), theme)
 	return []mcp.Content{
 		&mcp.ImageContent{MIMEType: "image/png", Data: buf.Bytes()},
 		&mcp.TextContent{Text: caption},

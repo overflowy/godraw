@@ -12,8 +12,17 @@ import (
 // LabelPadding is the room around the labels of shapes.
 const LabelPadding = labelPadding
 
+// NoteSize is the side of a note, before it grows.
+const NoteSize = noteSize
+
 // LabelSize returns the font size of labels at a size style.
 func LabelSize(size string) float64 { return labelSizeOf(size) }
+
+// TextSize returns the font size of text shapes at a size style.
+func TextSize(size string) float64 { return fontSizeOf(size) }
+
+// ArrowLabelSize returns the font size of arrows' labels at a size style.
+func ArrowLabelSize(size string) float64 { return arrowLabelSizeOf(size) }
 
 // ErrBusy says that someone at the canvas is in the middle of a gesture or of
 // typing, whose edits a batch must not mix with.
@@ -78,6 +87,15 @@ func (e *Editor) VisualBounds(id doc.ID) geo.Box { return e.visualBounds(id) }
 func (e *Editor) BindingOf(arrow doc.ID, terminal string) *doc.Binding {
 	return e.bindingOf(arrow, terminal)
 }
+
+// BindingsTo returns the arrows' bindings to a shape.
+func (e *Editor) BindingsTo(id doc.ID) []*doc.Binding { return e.bindingsTo(id) }
+
+// ArrowLabelBox returns the box of an arrow's label, in the arrow's space.
+func (e *Editor) ArrowLabelBox(s *doc.Shape) *geo.Box { return e.arrowLabelBox(s) }
+
+// At returns the point a part of the way along the arrow, from 0 to 1.
+func (i *ArrowInfo) At(t float64) geo.Vec { return i.at(t) }
 
 // Bind ties an end of an arrow to a shape, at an anchor given as fractions of
 // the shape's box.

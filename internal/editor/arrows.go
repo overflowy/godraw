@@ -367,7 +367,29 @@ func (e *Editor) arrowLabelBox(s *doc.Shape) *geo.Box {
 	}
 	c := info.at(pos)
 	pad := 4.25 * s.Scale
+	var side string
+	if s.MetaValue(doc.MetaLabel, &side) && side == "above" {
+		c = c.Add(info.clearOfLine(pos, b.W/2+pad, b.H/2+pad, strokeWidthOf(s)/2+3*s.Scale))
+	}
 	return &geo.Box{X: c.X - b.W/2 - pad, Y: c.Y - b.H/2 - pad, W: b.W + 2*pad, H: b.H + 2*pad}
+}
+
+// clearOfLine returns how far to move a box of half sizes hw and hh off a part
+// of the arrow's way along, so that it clears the line: up, or to the right of
+// a line that runs up and down.
+func (i *ArrowInfo) clearOfLine(pos, hw, hh, gap float64) geo.Vec {
+	t := i.at(math.Min(pos+0.02, 1)).Sub(i.at(math.Max(pos-0.02, 0)))
+	if t.X == 0 && t.Y == 0 {
+		return geo.Vec{}
+	}
+	n := t.Uni().Per()
+	if n.Y > 0 {
+		n = n.Mul(-1)
+	}
+	if math.Abs(n.Y) < 0.2 && n.X < 0 {
+		n = n.Mul(-1)
+	}
+	return n.Mul(math.Abs(n.X)*hw + math.Abs(n.Y)*hh + gap)
 }
 
 // bendFromPoint returns the bend of an arrow whose middle is near p.

@@ -32,7 +32,7 @@ const (
 	maxPoints   = 20000
 	maxImage    = 20 << 20
 	sampleStep  = 4.0
-	defaultGap  = 80.0 // room for an arrow's label
+	defaultGap  = 120.0 // room for an arrow with a short label
 	copyGap     = 20.0
 )
 
@@ -106,6 +106,10 @@ type fields struct {
 	Head   *string    `json:"head"`
 	Tail   *string    `json:"tail"`
 
+	Straight *string  `json:"straight"`
+	At       *float64 `json:"at"`
+	Label    *string  `json:"label"`
+
 	How *string `json:"how"`
 	N   *int    `json:"n"`
 }
@@ -150,7 +154,7 @@ var (
 		doc.TypeDraw:      "d w h color fill dash size",
 		doc.TypeHighlight: "d w h color size",
 		doc.TypeLine:      "d w h color dash size spline",
-		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend head tail",
+		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend head tail straight at label",
 	}
 	placeFields = "id in x y rot opacity locked right left above below gap"
 	verbFields  = map[string]string{
@@ -172,6 +176,8 @@ var (
 		"kind":       {"arc", "elbow"},
 		"head":       {"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"},
 		"tail":       {"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"},
+		"straight":   {"h", "v", "off"},
+		"label":      {"center", "above"},
 	}
 	verbHows = map[string][]string{
 		"arrange": {"left", "center-h", "right", "top", "center-v", "bottom", "distribute-h", "distribute-v"},
@@ -276,6 +282,12 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 					return nil, fmt.Errorf(`an arrow is placed by its ends: use from/to or x1,y1,x2,y2, not %q`, name)
 				}
 			}
+			if o.Straight != nil && *o.Straight != "off" && (o.From == nil || o.To == nil) {
+				return nil, errors.New(`straight needs from and to; for free ends, give y1 and y2 the same value`)
+			}
+			if o.At != nil && (o.Straight == nil || *o.Straight == "off") {
+				return nil, errors.New(`at goes with straight:"h" or "v"`)
+			}
 		}
 		if kind == doc.TypeImage {
 			if o.Src == nil {
@@ -318,7 +330,7 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 
 func isStyleField(name string) bool {
 	_, enum := styleEnums[name]
-	return (enum && name != "head" && name != "tail" && name != "kind") || name == "opacity"
+	return (enum && !slices.Contains([]string{"head", "tail", "kind", "straight", "label"}, name)) || name == "opacity"
 }
 
 // checkValues checks each value against what its field can hold.
@@ -341,6 +353,17 @@ func checkValues(f *fields) error {
 	}
 	if f.Opacity != nil && (*f.Opacity < 0 || *f.Opacity > 1) {
 		return errors.New("opacity must be between 0 and 1")
+	}
+	if f.At != nil && (*f.At < 0 || *f.At > 1) {
+		return errors.New("at must be between 0 and 1, across the height or width both ends share")
+	}
+	if f.Straight != nil && *f.Straight != "off" {
+		if f.FromAt != nil || f.ToAt != nil {
+			return errors.New("straight works out the anchors itself, so it can't take fromAt or toAt; use at to place it")
+		}
+		if f.Bend != nil && *f.Bend != 0 {
+			return errors.New("a straight arrow can't bend")
+		}
 	}
 	if f.Scale != nil && *f.Scale <= 0 {
 		return errors.New("scale must be above 0")
@@ -421,11 +444,19 @@ type run struct {
 	deleted int
 	nextID  int
 	camera  bool
+	dry     bool
+	// asked is the height a box was asked to have, or had before the batch.
+	asked    map[doc.ID]float64
+	warnings []string
 }
 
-// apply runs ops as one step of undo, and says what came of them.
-func apply(e *editor.Editor, ops []*op) (string, error) {
-	r := &run{e: e, changed: map[doc.ID]bool{}}
+// errDry ends a dry run, whose batch rolls back like one that failed.
+var errDry = errors.New("dry run")
+
+// apply runs ops as one step of undo, and says what came of them. A dry run
+// says the same, and leaves everything as it was.
+func apply(e *editor.Editor, ops []*op, dry bool) (string, error) {
+	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, dry: dry}
 	var report string
 	err := e.Batch(func() error {
 		for i, o := range ops {
@@ -433,9 +464,17 @@ func apply(e *editor.Editor, ops []*op) (string, error) {
 				return fmt.Errorf("ops[%d]: %w; nothing was changed", i, err)
 			}
 		}
+		r.settleArrows()
+		r.checkLayout()
 		report = r.report()
+		if dry {
+			return errDry
+		}
 		return nil
 	})
+	if errors.Is(err, errDry) {
+		return report, nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -647,6 +686,11 @@ func (r *run) add(o *op) error {
 	switch kind {
 	case doc.TypeGeo:
 		r.sizeGeo(s, &o.fields)
+		if o.H != nil {
+			r.asked[id] = *o.H
+		}
+	case doc.TypeNote:
+		r.asked[id] = editor.NoteSize * s.Scale
 	case doc.TypeFrame:
 		s.W, s.H = 400, 300
 		if o.W != nil {
@@ -729,6 +773,23 @@ func assign(s *doc.Shape, f *fields) {
 	if s.Type == doc.TypeText && f.W != nil {
 		s.AutoSize = false
 		s.W = *f.W / s.Scale
+	}
+	if f.Label != nil {
+		if *f.Label == "center" {
+			s.SetMeta(doc.MetaLabel, nil)
+		} else {
+			s.SetMeta(doc.MetaLabel, *f.Label)
+		}
+	}
+	// Anchors asked for take over from straight.
+	if (f.Straight != nil && *f.Straight == "off") || f.FromAt != nil || f.ToAt != nil {
+		s.SetMeta(doc.MetaStraight, nil)
+		s.SetMeta(doc.MetaStraightAt, nil)
+	} else if f.Straight != nil {
+		s.SetMeta(doc.MetaStraight, *f.Straight)
+	}
+	if f.At != nil {
+		s.SetMeta(doc.MetaStraightAt, *f.At)
 	}
 }
 
@@ -1136,6 +1197,11 @@ func (r *run) arrowParent(o *op) (doc.ID, error) {
 // setEnds binds or frees the ends of an arrow, as fields say.
 func (r *run) setEnds(id doc.ID, f *fields) error {
 	end := func(term string, target *string, at *[]float64, x, y *float64) error {
+		// An anchor alone moves it on the shape it is bound to.
+		if b := r.e.BindingOf(id, term); at != nil && target == nil && b != nil {
+			name := shortID(b.To)
+			target = &name
+		}
 		if at != nil && (target == nil || *target == "") {
 			return fmt.Errorf("the anchor of the arrow's %s needs a shape to bind to", term)
 		}
@@ -1147,6 +1213,9 @@ func (r *run) setEnds(id doc.ID, f *fields) error {
 			}
 			switch t.Type {
 			case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight, doc.TypeGroup:
+				if t.Type == doc.TypeGroup {
+					return fmt.Errorf("arrows can't bind to a group (%s); bind to a shape in it", *target)
+				}
 				return fmt.Errorf("arrows can't bind to a %s (%s)", t.Type, *target)
 			}
 			if t.ID == id {
@@ -1266,6 +1335,9 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	}
 	// Styles reach through a group to what it holds.
 	for _, leaf := range r.leaves(id) {
+		if _, ok := r.asked[leaf.ID]; !ok && (leaf.Type == doc.TypeGeo || leaf.Type == doc.TypeNote) {
+			r.asked[leaf.ID] = r.e.Geometry(leaf).Bounds.H
+		}
 		c := leaf.Clone()
 		if leaf.ID == id {
 			assign(c, f)
@@ -1286,6 +1358,14 @@ func (r *run) setOne(id doc.ID, o *op) error {
 			if err := r.setEnds(id, f); err != nil {
 				return err
 			}
+		}
+		var axis string
+		straight := r.e.Doc.Shapes[id].MetaValue(doc.MetaStraight, &axis)
+		if f.At != nil && !straight {
+			return errors.New(`at goes with straight:"h" or "v"`)
+		}
+		if f.Straight != nil && straight && (r.e.BindingOf(id, "start") == nil || r.e.BindingOf(id, "end") == nil) {
+			return errors.New("straight needs both ends bound, with from and to")
 		}
 		if f.DX != nil || f.DY != nil {
 			if r.e.BindingOf(id, "start") != nil && r.e.BindingOf(id, "end") != nil {
@@ -1310,6 +1390,9 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	}
 	if o.path == nil && s.Type != doc.TypeText && (f.W != nil || f.H != nil) {
 		r.resize(id, f)
+		if f.H != nil && s.Type != doc.TypeGroup {
+			r.asked[id] = *f.H
+		}
 	}
 	s = r.e.Doc.Shapes[id]
 	if f.X != nil || f.Y != nil || f.Right != nil || f.Left != nil || f.Above != nil || f.Below != nil {
@@ -1554,7 +1637,9 @@ func (r *run) arrange(o *op) error {
 func (r *run) setCamera(o *op) error {
 	r.camera = true
 	if len(o.Camera) == 1 && o.Camera[0] == "fit" {
-		r.e.ZoomToFit()
+		if !r.dry {
+			r.e.ZoomToFit()
+		}
 		return nil
 	}
 	if len(o.Camera) == 0 {
@@ -1572,7 +1657,9 @@ func (r *run) setCamera(o *op) error {
 			box = box.Union(r.e.PageBounds(s.ID))
 		}
 	}
-	r.e.ZoomToBox(box, 2)
+	if !r.dry {
+		r.e.ZoomToBox(box, 2)
+	}
 	return nil
 }
 
@@ -1611,14 +1698,18 @@ func (r *run) page(o *op) error {
 // report lists what was made, with where it ended up, for what comes next to
 // be placed from.
 func (r *run) report() string {
-	const maxLines = 40
+	const maxLines = 200
 	r.added = slices.DeleteFunc(r.added, func(id doc.ID) bool { return r.e.Doc.Shapes[id] == nil })
 	var b strings.Builder
 	p := r.e.Doc.Page(r.e.Page)
-	fmt.Fprintf(&b, "ok page %q\n", p.Name)
+	if r.dry {
+		fmt.Fprintf(&b, "dry run, nothing changed: page %q\n", p.Name)
+	} else {
+		fmt.Fprintf(&b, "ok page %q\n", p.Name)
+	}
 	for i, id := range r.added {
 		if i == maxLines {
-			fmt.Fprintf(&b, "+%d more\n", len(r.added)-maxLines)
+			fmt.Fprintf(&b, "+%d more, which read lists\n", len(r.added)-maxLines)
 			break
 		}
 		fmt.Fprintf(&b, "%s %s\n", shortID(id), boxText(boxOf(r.e, id)))
@@ -1631,6 +1722,17 @@ func (r *run) report() string {
 	}
 	if box, ok := r.e.ContentBounds(); ok {
 		fmt.Fprintf(&b, "page bounds %s\n", boxText(box))
+	}
+	if len(r.warnings) > 0 {
+		b.WriteString("warnings:\n")
+		for i, w := range r.warnings {
+			if i == maxWarnings {
+				b.WriteString("and more\n")
+				break
+			}
+			b.WriteString(w)
+			b.WriteByte('\n')
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -68,7 +68,7 @@ func overview(e *editor.Editor, a readArgs, title, otherDocs string) string {
 	}
 	b.WriteByte('\n')
 	view := e.ViewBox()
-	fmt.Fprintf(&b, "view %s zoom %s\n", boxText(view), num(e.Cam().Z))
+	fmt.Fprintf(&b, "view %s zoom %s theme %s\n", boxText(view), num(e.Cam().Z), themeName(e))
 	if box, ok := e.ContentBounds(); ok {
 		fmt.Fprintf(&b, "bounds %s\n", boxText(box))
 	}
@@ -224,6 +224,17 @@ func details(e *editor.Editor, list names) (string, error) {
 				kv("bend", num(s.Bend))
 			}
 			kv("font", s.Font)
+			var side, axis string
+			if s.MetaValue(doc.MetaLabel, &side) {
+				kv("label", side)
+			}
+			if s.MetaValue(doc.MetaStraight, &axis) {
+				kv("straight", axis)
+				var at float64
+				if s.MetaValue(doc.MetaStraightAt, &at) {
+					kv("at", num(at))
+				}
+			}
 		case doc.TypeLine:
 			kv("spline", s.Spline)
 			kv("vertices", strconv.Itoa(len(s.Points)))
@@ -283,13 +294,22 @@ func num(v float64) string {
 	return strconv.FormatFloat(math.Round(v*10)/10+0, 'f', -1, 64)
 }
 
+// themeName says how the canvas looks now.
+func themeName(e *editor.Editor) string {
+	if e.DarkMode {
+		return "dark"
+	}
+	return "light"
+}
+
 // viewArgs is what view asks for.
 type viewArgs struct {
-	Doc  string    `json:"doc"`
-	Page string    `json:"page"`
-	IDs  names     `json:"ids"`
-	Box  []float64 `json:"box"`
-	Px   int       `json:"px"`
+	Doc   string    `json:"doc"`
+	Page  string    `json:"page"`
+	IDs   names     `json:"ids"`
+	Box   []float64 `json:"box"`
+	Px    int       `json:"px"`
+	Theme string    `json:"theme"`
 }
 
 const (

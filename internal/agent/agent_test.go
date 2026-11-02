@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -45,7 +46,7 @@ func tryOps(e *editor.Editor, ops string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return apply(e, list)
+	return apply(e, list, false)
 }
 
 func ops(t *testing.T, e *editor.Editor, list string) string {
@@ -202,9 +203,9 @@ func TestPlacing(t *testing.T) {
 		{"add":"rectangle","id":"l","left":"a","gap":10,"w":100,"h":50},
 		{"add":"rectangle","id":"b","below":"a","w":100,"h":50},
 		{"add":"rectangle","id":"t","above":"a","gap":0,"x":0,"w":100,"h":50}]`)
-	wantBox(t, e, "r", 380, 125, 100, 50)
+	wantBox(t, e, "r", 420, 125, 100, 50)
 	wantBox(t, e, "l", -10, 125, 100, 50)
-	wantBox(t, e, "b", 150, 280, 100, 50)
+	wantBox(t, e, "b", 150, 320, 100, 50)
 	wantBox(t, e, "t", 0, 50, 100, 50)
 
 	f := newEditor()
@@ -267,6 +268,264 @@ func TestLabelsFit(t *testing.T) {
 	}
 	if s := e.Doc.Shapes["shape:c"]; s.W != 100 || s.GrowY <= 0 {
 		t.Errorf("a label too big for its box gave %v+%v", s.H, s.GrowY)
+	}
+}
+
+// wantWarnings runs ops and checks that the warnings they get include each of
+// want, and no others if none is wanted.
+func wantWarnings(t *testing.T, e *editor.Editor, list string, want ...string) string {
+	t.Helper()
+	out := ops(t, e, list)
+	_, warnings, found := strings.Cut(out, "warnings:\n")
+	if len(want) == 0 && found {
+		t.Errorf("%s: unwanted warnings:\n%s", list, warnings)
+	}
+	for _, w := range want {
+		if !strings.Contains(warnings, w) {
+			t.Errorf("%s: no warning %q in:\n%s", list, w, out)
+		}
+	}
+	return out
+}
+
+// What the feedback that led to warnings ran into: a box that grows into the
+// next one, covering it.
+func TestWarnsOfGrowth(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"keycloak","x":0,"y":0,"w":200,"h":90,"text":"one\ntwo\nthree"},{"add":"rectangle","id":"metabase","x":0,"y":110,"w":200,"h":90,"text":"bi"}]`,
+		"keycloak grew 90→121", "metabase overlaps keycloak by 200x11")
+	// Further in, it reaches the text.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"keycloak","x":0,"y":0,"w":200,"h":90,"text":"one\ntwo\nthree\nfour"},{"add":"rectangle","id":"metabase","x":0,"y":100,"w":200,"h":90,"text":"bi"}]`,
+		"metabase covers keycloak's text")
+
+	// Later changes count, and only growth does.
+	e = newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":200,"h":90,"text":"one"}]`)
+	wantWarnings(t, e, `[{"set":"a","text":"one\ntwo\nthree\nfour"}]`, "a grew 90→")
+	wantWarnings(t, e, `[{"set":"a","color":"blue"}]`)
+
+	// Without h, fitting is what was asked for.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","w":200,"text":"one\ntwo\nthree\nfour"}]`)
+}
+
+func TestWarnsOfCoveredText(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":300,"h":100,"text":"label"},{"add":"rectangle","id":"lid","x":100,"y":20,"w":100,"h":60,"fill":"solid"}]`,
+		"lid covers a's text")
+	// Painted under it, the text still shows.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"under","x":100,"y":20,"w":100,"h":60,"fill":"solid"},{"add":"rectangle","id":"a","x":0,"y":0,"w":300,"h":100,"text":"label"}]`)
+	// An outline around a label hides nothing, but a fill does.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","x":50,"y":50,"w":100,"h":80,"text":"a"},{"add":"rectangle","x":0,"y":0,"w":300,"h":300}]`)
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":50,"y":50,"w":100,"h":80,"text":"a"},{"add":"rectangle","id":"sheet","x":0,"y":0,"w":300,"h":300,"fill":"solid"}]`,
+		"sheet covers a's text")
+}
+
+// Warnings that cried wolf on every drawing would soon go unread.
+func TestWarnsOfNothingMeant(t *testing.T) {
+	// An illustration: shapes without text overlap as they like.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","x":0,"y":100,"w":200,"h":120,"fill":"solid"},{"add":"triangle","x":-20,"y":40,"w":240,"h":80,"fill":"solid"},{"add":"ellipse","x":150,"y":-30,"w":90,"h":90,"fill":"fill"}]`)
+	// A box wholly inside a container, whose title is clear of it.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"api","x":0,"y":0,"w":400,"h":300,"text":"API","valign":"start"},{"add":"rectangle","id":"h","x":40,"y":100,"w":160,"h":80,"text":"handler"}]`)
+	// A card: text on an empty box.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"b","x":0,"y":0,"w":240,"h":100},{"add":"text","id":"h","text":"Head","x":16,"y":8},{"add":"text","id":"c","text":"Body","size":"s","x":16,"y":56},{"group":["b","h","c"],"id":"card"}]`)
+	// Boxes that only touch.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","x":0,"y":0,"w":100,"h":100,"text":"a"},{"add":"rectangle","x":100,"y":0,"w":100,"h":100,"text":"b"}]`)
+	// What was there before stays the user's business.
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"b","x":80,"y":0,"w":100,"h":100,"text":"b"}]`, "b overlaps a")
+	wantWarnings(t, e, `[{"add":"rectangle","id":"c","x":500,"y":0,"w":100,"h":100,"text":"c"}]`)
+	// Turned shapes are not in the boxes they report.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":200,"h":80,"text":"a","rot":45},{"add":"rectangle","x":0,"y":-60,"w":60,"h":80,"text":"b"}]`)
+}
+
+func TestWarnsOfArrows(t *testing.T) {
+	boxes := `{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"b","x":120,"y":0,"w":100,"h":100,"text":"b"}`
+	wantWarnings(t, newEditor(), `[`+boxes+`,{"add":"arrow","id":"s","from":"a","to":"b"}]`, "s is only")
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":60,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b"}]`, "s doesn't show")
+
+	far := `{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100,"text":"a"},{"add":"rectangle","id":"b","x":200,"y":0,"w":100,"h":100,"text":"b"}`
+	wantWarnings(t, newEditor(), `[`+far+`,{"add":"arrow","id":"s","from":"a","to":"b","text":"a label longer"}]`, "s's label leaves")
+	// Off its line, it doesn't hide it.
+	e := newEditor()
+	wantWarnings(t, e, `[`+far+`,{"add":"arrow","id":"s","from":"a","to":"b","text":"a label longer","label":"above"}]`)
+	lb := e.ArrowLabelBox(e.Doc.Shapes["shape:s"])
+	if lb.MaxY() >= 50-1 {
+		t.Errorf("label above the line at y 50 ends at %v", lb.MaxY())
+	}
+
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":300,"h":100,"text":"a label that reaches the edge"},{"add":"rectangle","id":"b","x":340,"y":0,"w":100,"h":100,"text":"b"},{"add":"arrow","id":"s","from":"a","to":"b","text":"a label too wide for the gap"}]`, "s's label covers a's text")
+
+	wantWarnings(t, newEditor(), `[`+far+`,{"add":"arrow","id":"s","from":"a","to":"b","fromAt":[0.5,0.5],"toAt":[0.5,0.53]}]`, "s is 1.3 off level")
+
+	// One in its way, unless it starts inside: that's leaving a container.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"c","x":200,"y":0,"w":100,"h":100,"text":"c"},{"add":"rectangle","id":"b","x":400,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b"}]`, "s runs through c")
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"api","x":0,"y":0,"w":400,"h":300,"text":"API","valign":"start"},{"add":"rectangle","id":"in","x":40,"y":100,"w":100,"h":100},{"add":"rectangle","id":"out","x":600,"y":100,"w":100,"h":100},{"add":"arrow","from":"in","to":"out"}]`)
+
+	// Moving what an arrow joins counts as touching the arrow.
+	e = newEditor()
+	wantWarnings(t, e, `[`+far+`,{"add":"arrow","id":"s","from":"a","to":"b"}]`)
+	wantWarnings(t, e, `[{"set":"b","x":120}]`, "s is only")
+}
+
+func TestWarnsOfWhatFramesClip(t *testing.T) {
+	const add = `[{"add":"frame","id":"f","x":0,"y":0,"w":200,"h":100},{"add":"rectangle","id":"a","in":"f","x":150,"y":10,"w":100,"h":50}]`
+	wantWarnings(t, newEditor(), add, "a sticks out of frame f")
+	wantWarnings(t, newEditor(), `[{"add":"frame","id":"f","x":0,"y":0,"w":200,"h":100},{"add":"rectangle","id":"a","in":"f","x":50,"y":10,"w":100,"h":50}]`)
+	// An arrow in and out of a frame goes on the page, where nothing clips it.
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"frame","id":"f","x":200,"y":0,"w":200,"h":100},{"add":"rectangle","id":"a","in":"f","x":250,"y":10,"w":100,"h":50},{"add":"rectangle","id":"b","x":0,"y":10,"w":100,"h":50},{"add":"arrow","id":"s","from":"b","to":"a"}]`)
+	if got := e.Doc.Shapes["shape:s"].Parent; got != e.Page {
+		t.Errorf("arrow across a frame's edge is in %v", got)
+	}
+}
+
+func TestWarningsStayShort(t *testing.T) {
+	var list []string
+	for range 100 {
+		list = append(list, `{"add":"rectangle","x":0,"y":0,"w":100,"h":100,"text":"same"}`)
+	}
+	out := ops(t, newEditor(), "["+strings.Join(list, ",")+"]")
+	_, warnings, _ := strings.Cut(out, "warnings:\n")
+	if n := strings.Count(warnings, "\n"); n > maxWarnings+1 || !strings.HasSuffix(warnings, "and more") {
+		t.Errorf("%d warnings:\n%s", n, warnings)
+	}
+}
+
+func TestDryRun(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":90,"text":"a"}]`)
+	cam := e.Cam()
+	shapes, undo := len(e.Doc.Shapes), e.CanUndo()
+	before := e.Doc.Shapes["shape:a"]
+	list, err := decodeOps(json.RawMessage(`[{"page":"Other"},{"add":"star","id":"new"},{"page":"Page 1"},{"set":"a","text":"one\ntwo\nthree\nfour","x":500},{"camera":"fit"},{"del":"a"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := apply(e, list, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "dry run, nothing changed") || !strings.Contains(out, "new 0,0") {
+		t.Errorf("answer %q", out)
+	}
+	if len(e.Doc.Shapes) != shapes || e.Doc.Shapes["shape:a"] != before || len(e.Pages()) != 1 || e.Cam() != cam || e.CanUndo() != undo {
+		t.Error("a dry run changed the drawing")
+	}
+	e.Undo()
+	if e.Doc.Shapes["shape:a"] != nil {
+		t.Error("a dry run took a step of undo")
+	}
+
+	// It measures what it would make, warnings and all.
+	e = newEditor()
+	list, _ = decodeOps(json.RawMessage(`[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":40,"text":"one\ntwo"}]`))
+	if out, err = apply(e, list, true); err != nil || !strings.Contains(out, "a 0,0 100x") || !strings.Contains(out, "a grew 40→") {
+		t.Errorf("%q, %v", out, err)
+	}
+	if len(e.Doc.Shapes) != 0 {
+		t.Error("left shapes behind")
+	}
+}
+
+func TestStraightArrows(t *testing.T) {
+	line := func(e *editor.Editor, id string) (geo.Vec, geo.Vec) {
+		s := e.Doc.Shapes[shapeID(id)]
+		info, m := e.Arrow(s), e.PageMat(s.ID)
+		return m.Apply(info.Start), m.Apply(info.End)
+	}
+	level := func(t *testing.T, e *editor.Editor, id string, y float64) {
+		t.Helper()
+		a, b := line(e, id)
+		if !near(a.Y, b.Y) || !near(a.Y, y) {
+			t.Errorf("%s runs from %v to %v, want level at %v", id, a, b, y)
+		}
+	}
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":200},{"add":"rectangle","id":"b","x":300,"y":100,"w":100,"h":200},{"add":"arrow","id":"s","from":"a","to":"b","straight":"h"},{"add":"arrow","id":"low","from":"b","to":"a","straight":"h","at":0.75}]`)
+	level(t, e, "s", 150) // the middle of the 100 to 200 they share
+	level(t, e, "low", 175)
+
+	// A later apply moves or grows what it joins, and it stays level.
+	wantWarnings(t, e, `[{"set":"a","h":240}]`)
+	level(t, e, "s", 170)
+	wantWarnings(t, e, `[{"set":"b","text":"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine","dy":-50}]`, "b grew 200→")
+	if a, b := line(e, "s"); !near(a.Y, b.Y) {
+		t.Errorf("after growing: %v to %v", a, b)
+	}
+
+	// Its grouped target moves, and it follows.
+	wantWarnings(t, e, `[{"group":["a","low"],"id":"g"}]`)
+	wantWarnings(t, e, `[{"set":"g","dy":10}]`)
+	if a, b := line(e, "s"); !near(a.Y, b.Y) {
+		t.Errorf("after moving the group: %v to %v", a, b)
+	}
+
+	// Vertical, the same.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":200,"h":100},{"add":"rectangle","id":"b","x":100,"y":300,"w":200,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","straight":"v"}]`)
+	if a, b := line(e, "s"); !near(a.X, b.X) || !near(a.X, 150) {
+		t.Errorf("v runs from %v to %v", a, b)
+	}
+
+	// Nothing shared: it says so, and the batch still goes through.
+	e = newEditor()
+	wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":400,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","straight":"h"}]`, "s can't be level: a and b share no height")
+
+	// Saved and read back, it's still straight.
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	d, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var axis string
+	if !d.Shapes["shape:s"].MetaValue(doc.MetaStraight, &axis) || axis != "h" {
+		t.Errorf("straight back from the file is %q", axis)
+	}
+
+	// Asking for anchors, or off, ends it; so does letting an end go.
+	for _, change := range []string{`{"set":"s","straight":"off"}`, `{"set":"s","fromAt":[1,0.2]}`, `{"set":"s","to":""}`} {
+		e := newEditor()
+		ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","straight":"h"}]`)
+		ops(t, e, "["+change+"]")
+		if e.Doc.Shapes["shape:s"].MetaValue(doc.MetaStraight, &axis) {
+			t.Errorf("%s left it straight", change)
+		}
+	}
+}
+
+func TestArrowLabelSide(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":0,"y":300,"w":100,"h":100},{"add":"rectangle","id":"c","x":400,"y":0,"w":100,"h":100},{"add":"arrow","id":"down","from":"a","to":"b","text":"x","label":"above"},{"add":"arrow","id":"across","from":"a","to":"c","text":"x"}]`)
+	if lb := e.ArrowLabelBox(e.Doc.Shapes["shape:down"]); lb.X <= 50 {
+		t.Errorf("label of an arrow running down starts at %v, beside the line at 50", lb.X)
+	}
+	centered := *e.ArrowLabelBox(e.Doc.Shapes["shape:across"])
+	ops(t, e, `[{"set":"across","label":"above"}]`)
+	if lb := e.ArrowLabelBox(e.Doc.Shapes["shape:across"]); lb.MaxY() >= 50 || lb.X != centered.X {
+		t.Errorf("above is %v, centered was %v", lb, centered)
+	}
+	if out := ops(t, e, `[{"set":"across","label":"center"}]`); out == "" {
+		t.Error("no answer")
+	}
+	if lb := *e.ArrowLabelBox(e.Doc.Shapes["shape:across"]); lb != centered {
+		t.Errorf("back to center is %v, was %v", lb, centered)
+	}
+	if meta := string(e.Doc.Shapes["shape:across"].Meta); strings.Contains(meta, doc.MetaLabel) {
+		t.Errorf("meta keeps %s", meta)
+	}
+}
+
+func TestReportListsAll(t *testing.T) {
+	var list []string
+	for i := range 60 {
+		list = append(list, fmt.Sprintf(`{"add":"rectangle","id":"r%d","x":%d,"y":0,"w":100,"h":100}`, i, i*200))
+	}
+	out := ops(t, newEditor(), "["+strings.Join(list, ",")+"]")
+	if !strings.Contains(out, "r59 ") || strings.Contains(out, "more") {
+		t.Errorf("%s", out)
 	}
 }
 
@@ -768,6 +1027,41 @@ func TestNoWindowOpen(t *testing.T) {
 	}
 	if len(h.list) != 1 {
 		t.Errorf("%d canvases", len(h.list))
+	}
+}
+
+type themedCanvas struct {
+	fakeCanvas
+	dark bool
+}
+
+func (c *themedCanvas) Render(box geo.Box, ids []doc.ID, scale float64) *image.RGBA {
+	c.dark = c.e.DarkMode
+	return c.fakeCanvas.Render(box, ids, scale)
+}
+
+func TestViewTheme(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"star"}]`)
+	c := &themedCanvas{fakeCanvas: fakeCanvas{id: "d1", e: e}}
+	s := connect(t, &fakeHost{list: []Canvas{c}})
+	if got := textOf(call(t, s, "view", map[string]any{})); !strings.Contains(got, "light theme") || c.dark {
+		t.Errorf("window's theme: %q, rendered dark %v", got, c.dark)
+	}
+	if got := textOf(call(t, s, "view", map[string]any{"theme": "dark"})); !strings.Contains(got, "dark theme") || !c.dark {
+		t.Errorf("asked for dark: %q, rendered dark %v", got, c.dark)
+	}
+	if e.DarkMode {
+		t.Error("view left the window dark")
+	}
+	if got := call(t, s, "view", map[string]any{"theme": "blue"}); !got.IsError || !strings.Contains(textOf(got), "light, dark") {
+		t.Errorf("bad theme: %q", textOf(got))
+	}
+	if got := textOf(call(t, s, "read", map[string]any{})); !strings.Contains(got, "theme light") {
+		t.Errorf("read: %q", got)
+	}
+	if got := textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "x"}}})); !strings.Contains(got, "dry run") || e.Doc.Shapes["shape:x"] != nil {
+		t.Errorf("dry over the wire: %q", got)
 	}
 }
 

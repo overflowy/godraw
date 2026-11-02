@@ -225,3 +225,26 @@ func TestSnapshotsAreIndependent(t *testing.T) {
 		t.Error("undoing to the same record should compare equal")
 	}
 }
+
+func TestMetaKeepsTheRest(t *testing.T) {
+	s := NewShape("shape:a", TypeArrow)
+	s.Meta = json.RawMessage(`{"theirs":{"kept":true}}`)
+	s.SetMeta(MetaLabel, "above")
+	var v string
+	if !s.MetaValue(MetaLabel, &v) || v != "above" {
+		t.Errorf("read back %q from %s", v, s.Meta)
+	}
+	s.SetMeta(MetaLabel, nil)
+	if s.MetaValue(MetaLabel, &v) || string(s.Meta) != `{"theirs":{"kept":true}}` {
+		t.Errorf("after removing: %s", s.Meta)
+	}
+	empty := NewShape("shape:b", TypeArrow)
+	if empty.MetaValue(MetaLabel, &v) {
+		t.Error("found a key in no meta")
+	}
+	empty.SetMeta(MetaStraightAt, 0.25)
+	var at float64
+	if !empty.MetaValue(MetaStraightAt, &at) || at != 0.25 {
+		t.Errorf("read back %v from %s", at, empty.Meta)
+	}
+}

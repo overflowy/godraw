@@ -93,9 +93,9 @@ to use another port.
 
 | Tool | What it does |
 | --- | --- |
-| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing |
+| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing. It answers with each new shape's box and warnings about the layout. `dry` gives the same answer without changing anything |
 | `read` | The canvas as compact text, one line per shape, paged and searchable |
-| `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default |
+| `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default, in the window's theme or the one asked for |
 | `guide` | The reference for `apply`, a topic at a time |
 
 ```json
@@ -111,7 +111,16 @@ valid values. `d` takes an SVG path, so an agent can draw any outline with few t
 
 Agents work on the frontmost drawing unless they pass `doc`, and they wait while you drag
 or type. Their shapes are ordinary shapes: you can select, edit and undo them, and they save
-to `.tldr` like the rest.
+to `.tldr` like the rest. Agents can't save or name a drawing. That stays with you, in the
+File menu.
+
+`apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
+covers text, when an arrow is hidden, off level, buried by its label or runs through a box,
+and when a frame clips something. It only warns about what that call touched.
+
+An arrow with `straight` set stays level when an agent moves or resizes what it joins. That
+and `label:"above"` are kept in the shape's `meta`, so tldraw opens the file and shows the
+arrow with its saved anchors and its label on the line.
 
 The server listens on this machine only and refuses requests from web pages, but it has no
 login, so other programs on the machine can use it. `src` on an image reads PNG, JPEG and
