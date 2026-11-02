@@ -14,16 +14,17 @@ var guideTopics = map[string]string{
 	"": `Units are page pixels, y down. Later shapes paint over earlier ones.
 Work: apply ops, view to check, set to fix. read shows what is already there.
 Each apply is one undo step, and an error in it changes nothing. It answers with each new shape's box, to place the next from, then warnings of what looks wrong. Fix those.
-"dry":true on apply gives the same answer and changes nothing.
+Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops. "quiet":true leaves out each shape's box.
 With several drawings open, read lists them; pass doc to pick one, or get the frontmost.
 read says if the window is light or dark; view can show either.
-Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish.
+Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish. Quitting keeps unsaved drawings for the next launch.
 Read only the topics you need: shapes (kinds and their fields), styles (colors, fills, fonts), place (positions), layout (text sizes, warnings, level arrows, cards, containers), paths (curves, free forms), edit (changing what exists).`,
 
 	"shapes": `Add with {"add":KIND,...}. Fields for each kind, besides those of topic place:
 geo (` + strings.Join(editor.GeoKinds, " ") + `): w h text color labelColor fill dash size font align valign url. Without w,h it fits its text.
 text: text w(wraps) color size font align scale. Without w it stays on one line per \n.
 note: text color labelColor size font align valign scale url. 200 square, grows with its text.
+card: title body w h color labelColor fill dash size font align. Title and wrapped body in a box that fits. See layout.
 frame: name w h color. Clips what is in it. Put shapes in with "in". An arrow from inside to outside stays on the page, unclipped.
 image: src(file path or base64 data: URL; PNG, JPEG, GIF) w h alt url.
 draw: d w h color fill dash size. Any path; fill shows when it closes. See paths.
@@ -56,9 +57,9 @@ To measure exactly, apply with "dry":true: {"add":"rectangle","text":"Hi","w":20
 Warnings leave alone a box wholly inside another, unless it covers text, and overlaps of shapes without text.
 straight:"h" or "v" on an arrow with from and to runs it level where both shapes share height (or width), and keeps it so in later applies as they move or grow. at, 0 to 1, picks where: 0.25 and 0.75 for a pair. straight:"off" or fromAt,toAt end it.
 label:"above" takes an arrow's label off its line; "center" puts it back.
-A label has one style. For a heading and body, group an empty rectangle with text shapes over it. Arrows bind to the rectangle, not the group.
+A label has one style. For a title and body, add a card: color is its box and title, labelColor its body, size its title, with the body a size down. Without w it fits, up to ` + num(cardMaxW) + ` wide. Set title, body, w or h and it sizes itself again. Arrows bind to it by its id.
 To hold shapes without clipping them, group them with a rectangle behind them.
-Example: [{"add":"rectangle","id":"box","x":0,"y":0,"w":240,"h":100},{"add":"text","id":"head","text":"Auth","x":16,"y":8},{"add":"text","id":"body","text":"Sign-in","size":"s","font":"mono","x":16,"y":56},{"group":["box","head","body"],"id":"card"},{"add":"rectangle","id":"db","text":"DB","right":"card","gap":140},{"add":"arrow","from":"box","to":"db","straight":"h","label":"above","text":"reads"}]`,
+Example: [{"add":"card","id":"auth","title":"Auth","body":"Sign-in and sessions","color":"violet","x":0,"y":0},{"add":"rectangle","id":"db","text":"DB","right":"auth"},{"add":"arrow","from":"auth","to":"db","straight":"h","label":"above","text":"reads"}]`,
 
 	"paths": `d is an SVG path: M L H V C S Q T A Z, absolute or relative. "M0 0 C40 80 80 -80 120 0"
 It uses page coordinates unless x,y or a relative place moves it. w or h scales it; one of them keeps proportions.
@@ -67,7 +68,7 @@ Curves are cheap: prefer C and A to many L. Example: [{"add":"draw","id":"blob",
 
 	"edit": `Each op has one verb. A list of ids or one id both work.
 {"set":IDS,...} changes any field the shape takes: styles, text, name, w h, x y, dx dy, rot, in (empty leaves the frame), locked, d, and an arrow's ends (empty from or to frees it). Styles on a group reach what it holds.
-{"del":IDS} deletes, {"del":"*"} clears the page.
+One x or y lines several shapes up. {"del":IDS} deletes, {"del":"*"} clears the page.
 {"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default.
 {"group":IDS,"id":"g"} {"ungroup":IDS}
 {"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + `

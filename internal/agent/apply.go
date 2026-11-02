@@ -73,12 +73,14 @@ type fields struct {
 	Above *string `json:"above"`
 	Below *string `json:"below"`
 
-	Text *string `json:"text"`
-	Name *string `json:"name"`
-	URL  *string `json:"url"`
-	Alt  *string `json:"alt"`
-	Src  *string `json:"src"`
-	D    *string `json:"d"`
+	Text  *string `json:"text"`
+	Title *string `json:"title"`
+	Body  *string `json:"body"`
+	Name  *string `json:"name"`
+	URL   *string `json:"url"`
+	Alt   *string `json:"alt"`
+	Src   *string `json:"src"`
+	D     *string `json:"d"`
 
 	Color      *string  `json:"color"`
 	LabelColor *string  `json:"labelColor"`
@@ -154,6 +156,7 @@ var (
 		doc.TypeDraw:      "d w h color fill dash size",
 		doc.TypeHighlight: "d w h color size",
 		doc.TypeLine:      "d w h color dash size spline",
+		cardKind:          "title body w h color labelColor fill dash size font align",
 		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend head tail straight at label",
 	}
 	placeFields = "id in x y rot opacity locked right left above below gap"
@@ -225,6 +228,14 @@ func decodeOps(raw json.RawMessage) ([]*op, error) {
 }
 
 func decodeOp(raw json.RawMessage) (*op, error) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) == nil {
+		for _, name := range []string{"commit", "dry", "quiet", "doc"} {
+			if _, ok := keys[name]; ok {
+				return nil, fmt.Errorf("%s is an argument of apply, beside ops, not an op", name)
+			}
+		}
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	o := &op{}
@@ -389,7 +400,7 @@ func shapeKind(name string) (kind, geoKind string, err error) {
 	if _, ok := addFields[name]; ok && name != doc.TypeGeo {
 		return name, "", nil
 	}
-	return "", "", fmt.Errorf("can't add %q; use text note frame image draw highlight line arrow, or a geo shape: %s", name, strings.Join(editor.GeoKinds, " "))
+	return "", "", fmt.Errorf("can't add %q; use card text note frame image draw highlight line arrow, or a geo shape: %s", name, strings.Join(editor.GeoKinds, " "))
 }
 
 func readPicture(src string) (*picture, error) {
@@ -444,7 +455,11 @@ type run struct {
 	deleted int
 	nextID  int
 	camera  bool
-	dry     bool
+	// before is how tall a card was, which may grow as it fits new text.
+	before map[doc.ID]float64
+	grown  map[doc.ID]*growth
+	dry    bool
+	quiet  bool
 	// asked is the height a box was asked to have, or had before the batch.
 	asked    map[doc.ID]float64
 	warnings []string
@@ -453,10 +468,16 @@ type run struct {
 // errDry ends a dry run, whose batch rolls back like one that failed.
 var errDry = errors.New("dry run")
 
-// apply runs ops as one step of undo, and says what came of them. A dry run
-// says the same, and leaves everything as it was.
-func apply(e *editor.Editor, ops []*op, dry bool) (string, error) {
-	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, dry: dry}
+// applyMode says how a batch runs and answers.
+type applyMode struct {
+	dry   bool // says what would come of it, and leaves everything as it was
+	quiet bool // leaves out each shape's box
+}
+
+// apply runs ops as one step of undo, and says what came of them.
+func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
+	dry := mode.dry
+	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, before: map[doc.ID]float64{}, grown: map[doc.ID]*growth{}, dry: dry, quiet: mode.quiet}
 	var report string
 	err := e.Batch(func() error {
 		for i, o := range ops {
@@ -670,6 +691,8 @@ func (r *run) add(o *op) error {
 		return r.addStroke(o, kind)
 	case doc.TypeLine:
 		return r.addLine(o)
+	case cardKind:
+		return r.addCard(o)
 	}
 	id, err := r.freshID(o.ID)
 	if err != nil {
@@ -1211,6 +1234,9 @@ func (r *run) setEnds(id doc.ID, f *fields) error {
 			if err != nil {
 				return err
 			}
+			if c := r.cardOf(t.ID); c != nil {
+				t = c.box
+			}
 			switch t.Type {
 			case doc.TypeArrow, doc.TypeLine, doc.TypeHighlight, doc.TypeGroup:
 				if t.Type == doc.TypeGroup {
@@ -1300,8 +1326,11 @@ func (r *run) set(o *op) error {
 	if f.ID != nil || f.How != nil || f.N != nil {
 		return errors.New(`set has no "id", "how" or "n"`)
 	}
-	if len(o.Set) > 1 && (f.X != nil || f.Y != nil || f.Right != nil || f.Left != nil || f.Above != nil || f.Below != nil) {
-		return errors.New("x, y and relative places are for one shape at a time; use dx, dy for several")
+	if len(o.Set) > 1 && (f.Right != nil || f.Left != nil || f.Above != nil || f.Below != nil) {
+		return errors.New("relative places are for one shape at a time; use x, y, dx or dy for several")
+	}
+	if len(o.Set) > 1 && f.X != nil && f.Y != nil {
+		return errors.New("x and y together would stack several shapes; give one of them to line them up, or use dx, dy")
 	}
 	var ids []doc.ID
 	unlocking := f.Locked != nil && !*f.Locked
@@ -1332,6 +1361,16 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	s := r.e.Doc.Shapes[id]
 	if err := r.checkSet(s, f); err != nil {
 		return err
+	}
+	if c := r.cardOf(id); c != nil {
+		if _, ok := r.before[id]; !ok {
+			r.before[id] = r.e.Geometry(s).Bounds.H
+		}
+		rest, err := r.setCard(c, f)
+		if err != nil {
+			return err
+		}
+		f = rest
 	}
 	// Styles reach through a group to what it holds.
 	for _, leaf := range r.leaves(id) {
@@ -1436,6 +1475,9 @@ func (r *run) checkSet(s *doc.Shape, f *fields) error {
 	switch {
 	case s.Type == doc.TypeGroup:
 		list = "w h color labelColor fill dash size font align valign"
+		if r.cardOf(s.ID) != nil {
+			list = addFields[cardKind]
+		}
 	case !known:
 		list = "w h" // a type this app only keeps, as an embed
 	}
@@ -1707,15 +1749,32 @@ func (r *run) report() string {
 	} else {
 		fmt.Fprintf(&b, "ok page %q\n", p.Name)
 	}
-	for i, id := range r.added {
-		if i == maxLines {
-			fmt.Fprintf(&b, "+%d more, which read lists\n", len(r.added)-maxLines)
-			break
+	// What it made first, then what it changed, as each now is.
+	var changed []doc.ID
+	for id := range r.changed {
+		if r.e.Doc.Shapes[id] != nil && !slices.Contains(r.added, id) {
+			changed = append(changed, id)
 		}
-		fmt.Fprintf(&b, "%s %s\n", shortID(id), boxText(boxOf(r.e, id)))
 	}
-	if len(r.changed) > 0 {
-		fmt.Fprintf(&b, "changed %d\n", len(r.changed))
+	slices.Sort(changed)
+	if r.quiet {
+		if len(r.added) > 0 {
+			fmt.Fprintf(&b, "added %d\n", len(r.added))
+		}
+	} else if list := slices.Concat(r.added, changed); len(list) > 0 {
+		for i, id := range list {
+			if i == maxLines {
+				fmt.Fprintf(&b, "+%d more, which read lists\n", len(list)-maxLines)
+				break
+			}
+			if i == len(r.added) {
+				b.WriteString("changed:\n")
+			}
+			fmt.Fprintf(&b, "%s %s\n", shortID(id), boxText(boxOf(r.e, id)))
+		}
+	}
+	if len(changed) > 0 && r.quiet {
+		fmt.Fprintf(&b, "changed %d\n", len(changed))
 	}
 	if r.deleted > 0 {
 		fmt.Fprintf(&b, "deleted %d\n", r.deleted)

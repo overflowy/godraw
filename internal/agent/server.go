@@ -17,7 +17,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -71,7 +74,7 @@ const (
 	docProp    = `"doc":{"type":"string"}`
 	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","layout","paths","edit"]}}}`
 	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}}`
-	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything."}},"required":["ops"]}`
+	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
 	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
 )
 
@@ -127,7 +130,52 @@ func Start(addr string, h Host, version string) (string, error) {
 	return url, nil
 }
 
-type server struct{ host Host }
+type server struct {
+	host Host
+
+	mu    sync.Mutex
+	dries []*dryRun // the latest, the oldest first
+	nDry  int
+}
+
+// dryRun is what a dry run was asked, kept for an agent to apply it without
+// sending it all again.
+type dryRun struct {
+	token, doc string
+	ops        []*op
+}
+
+// How many dry runs stay to be committed: ops can hold images.
+const keptDries = 4
+
+func (s *server) keepDry(doc string, ops []*op) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nDry++
+	d := &dryRun{token: "d" + strconv.Itoa(s.nDry), doc: doc, ops: ops}
+	s.dries = append(s.dries, d)
+	if len(s.dries) > keptDries {
+		s.dries = slices.Delete(s.dries, 0, len(s.dries)-keptDries)
+	}
+	return d.token
+}
+
+func (s *server) findDry(token string) *dryRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dries {
+		if d.token == token {
+			return d
+		}
+	}
+	return nil
+}
+
+func (s *server) dropDry(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dries = slices.DeleteFunc(s.dries, func(d *dryRun) bool { return d.token == token })
+}
 
 // strict decodes tool arguments, refusing what it doesn't know.
 func strict(raw json.RawMessage, into any) error {
@@ -231,20 +279,35 @@ func (s *server) read(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 
 func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {
 	var a struct {
-		Doc string          `json:"doc"`
-		Ops json.RawMessage `json:"ops"`
-		Dry bool            `json:"dry"`
+		Doc    string          `json:"doc"`
+		Ops    json.RawMessage `json:"ops"`
+		Dry    bool            `json:"dry"`
+		Commit string          `json:"commit"`
+		Quiet  bool            `json:"quiet"`
 	}
 	if err := strict(raw, &a); err != nil {
 		return nil, err
 	}
-	if len(a.Ops) == 0 {
-		return nil, errors.New("apply needs ops")
-	}
-	// Paths and images are done with before the window is held up.
-	ops, err := decodeOps(a.Ops)
-	if err != nil {
-		return nil, err
+	var ops []*op
+	var err error
+	switch {
+	case a.Commit != "":
+		// A client that still has ops down as required sends an empty list.
+		if !noOps(a.Ops) || a.Dry {
+			return nil, errors.New("commit applies a dry run's ops, so it takes neither ops nor dry")
+		}
+		d := s.findDry(a.Commit)
+		if d == nil {
+			return nil, fmt.Errorf("no dry run %q to commit: only the latest %d are kept, and each commits once; send ops again", a.Commit, keptDries)
+		}
+		ops, a.Doc = d.ops, d.doc
+	case len(a.Ops) == 0:
+		return nil, errors.New(`apply needs ops, or {"commit":TOKEN} from a dry run in place of them`)
+	default:
+		// Paths and images are done with before the window is held up.
+		if ops, err = decodeOps(a.Ops); err != nil {
+			return nil, err
+		}
 	}
 	var c Canvas
 	if a.Doc == "" && !a.Dry && len(s.host.Canvases()) == 0 {
@@ -259,7 +322,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	for {
 		err = onMain(ctx, c, func() error {
 			var err error
-			out, err = apply(c.Editor(), ops, a.Dry)
+			out, err = apply(c.Editor(), ops, applyMode{dry: a.Dry, quiet: a.Quiet})
 			return err
 		})
 		if !errors.Is(err, editor.ErrBusy) {
@@ -277,7 +340,19 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	if err != nil {
 		return nil, err
 	}
+	switch {
+	case a.Dry:
+		out += fmt.Sprintf("\nto apply this, call apply with commit %q and no ops", s.keepDry(c.ID(), ops))
+	case a.Commit != "":
+		s.dropDry(a.Commit)
+	}
 	return text(out), nil
+}
+
+// noOps says whether ops were left out, or sent empty.
+func noOps(raw json.RawMessage) bool {
+	var list []json.RawMessage
+	return len(raw) == 0 || (json.Unmarshal(raw, &list) == nil && len(list) == 0)
 }
 
 func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {

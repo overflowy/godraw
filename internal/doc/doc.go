@@ -152,6 +152,8 @@ const (
 	MetaStraight   = "godrawStraight"   // h or v
 	MetaStraightAt = "godrawStraightAt" // 0 to 1 across what both ends share
 	MetaLabel      = "godrawLabel"      // above
+	MetaCard       = "godrawCard"       // box, head or body: a card's part
+	MetaCardH      = "godrawCardH"      // the height asked of a card's box
 )
 
 // MetaValue reads a key of the shape's meta into v, and says whether it could.

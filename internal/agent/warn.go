@@ -28,8 +28,13 @@ const (
 )
 
 func (r *run) warn(format string, args ...any) {
-	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
+	if w := fmt.Sprintf(format, args...); !slices.Contains(r.warnings, w) {
+		r.warnings = append(r.warnings, w)
+	}
 }
+
+// name is what warnings call a shape: the id an agent chose, not a card's part.
+func (r *run) name(id doc.ID) string { return shortID(ownerOf(r.e, id)) }
 
 // warned says that there are more warnings than the answer will show.
 func (r *run) warned() bool { return len(r.warnings) > maxWarnings }
@@ -108,7 +113,7 @@ func (r *run) level(s *doc.Shape, axis string) {
 	if axis == "h" {
 		lo, hi := math.Max(a.Y, b.Y), math.Min(a.MaxY(), b.MaxY())
 		if hi < lo {
-			r.warn("%s can't be level: %s and %s share no height", name, shortID(bs.To), shortID(be.To))
+			r.warn("%s can't be level: %s and %s share no height", name, r.name(bs.To), r.name(be.To))
 			return
 		}
 		y := lo + (hi-lo)*at
@@ -116,7 +121,7 @@ func (r *run) level(s *doc.Shape, axis string) {
 	} else {
 		lo, hi := math.Max(a.X, b.X), math.Min(a.MaxX(), b.MaxX())
 		if hi < lo {
-			r.warn("%s can't be level: %s and %s share no width", name, shortID(bs.To), shortID(be.To))
+			r.warn("%s can't be level: %s and %s share no width", name, r.name(bs.To), r.name(be.To))
 			return
 		}
 		x := lo + (hi-lo)*at
@@ -142,12 +147,14 @@ func turned(e *editor.Editor, id doc.ID) bool {
 
 // item is a shape with a box of its own, in the page, as far as warnings go.
 type item struct {
-	s       *doc.Shape
-	box     geo.Box
-	text    *geo.Box // what its text covers
-	content bool     // worth keeping in sight: it has text, or is an image
-	order   int      // later ones paint over earlier ones
-	touched bool
+	s        *doc.Shape
+	owner    doc.ID // the card it's part of, or the shape itself
+	box      geo.Box
+	ownerBox geo.Box
+	text     *geo.Box // what its text covers
+	content  bool     // worth keeping in sight: it has text, or is an image
+	order    int      // later ones paint over earlier ones
+	touched  bool
 }
 
 func (r *run) checkLayout() {
@@ -163,24 +170,50 @@ func (r *run) checkLayout() {
 		r.checkArrows(ids, items, touched)
 		r.checkFrames(ids, touched)
 	}
+	r.reportGrowth()
 }
 
-// checkGrowth tells of boxes that came out taller than they were asked to be.
+// growth is a box that came out taller than it was.
+type growth struct {
+	from, to float64
+	// told says that a clash already blamed it. Asked says it was asked to be
+	// shorter: a card that fits new text only matters if it runs into something.
+	told, asked bool
+}
+
+func (g *growth) String() string { return "grew " + num(g.from) + "→" + num(g.to) }
+
+// checkGrowth finds boxes that came out taller than they were asked to be, and
+// cards taller than they were.
 func (r *run) checkGrowth() {
-	ids := make([]doc.ID, 0, len(r.asked))
-	for id := range r.asked {
-		ids = append(ids, id)
+	for id, from := range r.asked {
+		if s := r.e.Doc.Shapes[id]; s != nil {
+			if h := r.e.Geometry(s).Bounds.H; h > from+0.5 {
+				r.grown[ownerOf(r.e, id)] = &growth{from: from, to: h, asked: true}
+			}
+		}
 	}
-	slices.Sort(ids)
-	for _, id := range ids {
+	for id, from := range r.before {
 		s := r.e.Doc.Shapes[id]
-		if s == nil {
+		if s == nil || r.grown[id] != nil {
 			continue
 		}
-		if h := r.e.Geometry(s).Bounds.H; h > r.asked[id]+0.5 {
-			r.warn("%s grew %s→%s to hold its text", shortID(id), num(r.asked[id]), num(h))
+		if h := r.e.Geometry(s).Bounds.H; h > from+0.5 {
+			r.grown[id] = &growth{from: from, to: h}
 		}
 	}
+}
+
+// reportGrowth puts first the growth no clash has told of.
+func (r *run) reportGrowth() {
+	var lines []string
+	for id, g := range r.grown {
+		if g.asked && !g.told {
+			lines = append(lines, shortID(id)+" "+g.String()+" to hold its text")
+		}
+	}
+	slices.Sort(lines)
+	r.warnings = slices.Insert(r.warnings, 0, lines...)
 }
 
 func (r *run) items(ids []doc.ID, touched map[doc.ID]bool) []*item {
@@ -194,9 +227,10 @@ func (r *run) items(ids []doc.ID, touched map[doc.ID]bool) []*item {
 		if turned(r.e, id) { // its box in the page says too little of it
 			continue
 		}
-		it := &item{s: s, box: r.e.PageBounds(id), order: order, touched: touched[id]}
+		it := &item{s: s, owner: ownerOf(r.e, id), box: r.e.PageBounds(id), order: order, touched: touched[id]}
+		it.ownerBox = r.e.PageBounds(it.owner)
 		it.text = r.textBox(s)
-		it.content = s.Text != "" || (s.Type != doc.TypeGeo && s.Type != doc.TypeText)
+		it.content = s.Text != "" || it.owner != id || (s.Type != doc.TypeGeo && s.Type != doc.TypeText)
 		out = append(out, it)
 	}
 	return out
@@ -234,12 +268,28 @@ func depth(a, b geo.Box) (w, h float64) {
 	return math.Min(a.MaxX(), b.MaxX()) - math.Max(a.X, b.X), math.Min(a.MaxY(), b.MaxY()) - math.Max(a.Y, b.Y)
 }
 
+// A clash is what two shapes do to each other. Those of a card count as one, so
+// that a card running into another is told once, and of the cards.
+type clash struct {
+	kind    int
+	up, low *item
+	w, h    float64
+}
+
+const (
+	clashOverlap = iota
+	clashSticksOut
+	clashCovers
+)
+
 func (r *run) checkOverlaps(items []*item) {
 	byX := slices.Clone(items)
 	slices.SortStableFunc(byX, func(a, b *item) int { return cmp.Compare(a.box.X, b.box.X) })
+	clashes := map[[2]doc.ID]*clash{}
+	var order [][2]doc.ID
 	for i, a := range byX {
 		for _, b := range byX[i+1:] {
-			if b.box.X >= a.box.MaxX() || r.warned() {
+			if b.box.X >= a.box.MaxX() || len(order) > maxWarnings {
 				break
 			}
 			if !a.touched && !b.touched {
@@ -253,16 +303,76 @@ func (r *run) checkOverlaps(items []*item) {
 			if a.order > b.order {
 				low, up = b, a
 			}
-			lowID, upID := shortID(low.s.ID), shortID(up.s.ID)
-			inside := a.box.ContainsBox(b.box) || b.box.ContainsBox(a.box)
+			same := a.owner == b.owner
+			boxA, boxB := a.ownerBox, b.ownerBox
+			if same {
+				boxA, boxB = a.box, b.box
+			}
+			c := &clash{up: up, low: low}
+			c.w, c.h = depth(boxA, boxB)
 			switch {
 			case covers(up, low):
-				r.warn("%s covers %s's text", upID, lowID)
-			case !inside && a.content && b.content:
-				r.warn("%s overlaps %s by %sx%s", upID, lowID, num(w), num(h))
+				c.kind = clashCovers
+			case up.s.Type == doc.TypeText && low.s.Type != doc.TypeText && up.owner == up.s.ID && past(up.box, low.box) > 1 && !low.box.ContainsBox(up.box) && !up.box.ContainsBox(low.box):
+				c.kind = clashSticksOut
+			case boxA.ContainsBox(boxB) || boxB.ContainsBox(boxA) || !a.content || !b.content:
+				continue
+			}
+			key := [2]doc.ID{min(a.owner, b.owner), max(a.owner, b.owner)}
+			if same {
+				key = [2]doc.ID{min(a.s.ID, b.s.ID), max(a.s.ID, b.s.ID)}
+			}
+			if was := clashes[key]; was == nil {
+				order = append(order, key)
+				clashes[key] = c
+			} else if c.kind > was.kind {
+				clashes[key] = c
 			}
 		}
 	}
+	for _, key := range order {
+		r.tellClash(clashes[key])
+	}
+}
+
+// tellClash says what went wrong, starting from what caused it: what grew, or
+// else what the batch moved.
+func (r *run) tellClash(c *clash) {
+	same := c.up.owner == c.low.owner
+	name := func(it *item) string {
+		if same {
+			return shortID(it.s.ID)
+		}
+		return shortID(it.owner)
+	}
+	if c.kind == clashSticksOut {
+		r.warn("%s's text sticks out of %s by %s", name(c.up), name(c.low), num(past(c.up.box, c.low.box)))
+		return
+	}
+	subject, other := c.up, c.low
+	switch {
+	case r.grown[c.up.owner] != nil:
+	case r.grown[c.low.owner] != nil, c.low.touched && !c.up.touched:
+		subject, other = c.low, c.up
+	}
+	lead := name(subject)
+	if g := r.grown[subject.owner]; g != nil && !g.told {
+		g.told = true
+		lead += " " + g.String() + ", now"
+	}
+	switch {
+	case c.kind == clashOverlap:
+		r.warn("%s overlaps %s by %sx%s", lead, name(other), num(c.w), num(c.h))
+	case subject == c.up:
+		r.warn("%s covers %s's text", lead, name(other))
+	default:
+		r.warn("%s goes under %s, which hides its text", lead, name(other))
+	}
+}
+
+// past returns how far a box reaches past another, on its worst side.
+func past(a, b geo.Box) float64 {
+	return max(b.X-a.X, a.MaxX()-b.MaxX(), b.Y-a.Y, a.MaxY()-b.MaxY())
 }
 
 // covers says whether what paints later hides the text of what paints earlier.
@@ -333,7 +443,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 					continue
 				}
 				if w, h := depth(page, *it.text); w > 1 && h > 1 {
-					r.warn("%s's label covers %s's text", name, shortID(it.s.ID))
+					r.warn("%s's label covers %s's text", name, shortID(it.owner))
 				}
 			}
 		}
@@ -357,20 +467,20 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 func (r *run) checkCrossings(name string, m geo.Mat, info *editor.ArrowInfo, pts []geo.Vec, bs, be *doc.Binding, items []*item) {
 	line := geo.BoxOf(pts)
 	rawStart, rawEnd := m.Apply(info.RawStart), m.Apply(info.RawEnd)
-	joins := func(id doc.ID, b *doc.Binding) bool {
-		return b != nil && (b.To == id || r.e.IsAncestor(id, b.To))
+	joins := func(it *item, b *doc.Binding) bool {
+		return b != nil && (b.To == it.s.ID || it.owner == ownerOf(r.e, b.To) || r.e.IsAncestor(it.s.ID, b.To))
 	}
 	for _, it := range items {
 		if !it.content || it.s.Type == doc.TypeFrame || !line.Overlaps(it.box) || r.warned() {
 			continue
 		}
-		if joins(it.s.ID, bs) || joins(it.s.ID, be) || it.box.Contains(rawStart) || it.box.Contains(rawEnd) {
+		if joins(it, bs) || joins(it, be) || it.box.Contains(rawStart) || it.box.Contains(rawEnd) {
 			continue
 		}
 		corners := it.box.Expand(-2).Corners()
 		for i := 1; i < len(pts); i++ {
 			if len(geo.SegmentPolyline(pts[i-1], pts[i], corners[:], true)) > 0 {
-				r.warn("%s runs through %s", name, shortID(it.s.ID))
+				r.warn("%s runs through %s", name, shortID(it.owner))
 				break
 			}
 		}
@@ -391,7 +501,7 @@ func (r *run) checkFrames(ids []doc.ID, touched map[doc.ID]bool) {
 		b := r.e.PageMat(f.ID).Invert().Mul(r.e.PageMat(id)).BoundsOf(r.e.Geometry(s).Bounds)
 		const slack = 1.0
 		if b.X < -slack || b.Y < -slack || b.MaxX() > f.W+slack || b.MaxY() > f.H+slack {
-			r.warn("%s sticks out of frame %s, which clips it", shortID(id), shortID(f.ID))
+			r.warn("%s sticks out of frame %s, which clips it", r.name(id), shortID(f.ID))
 		}
 	}
 }

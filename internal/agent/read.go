@@ -128,7 +128,12 @@ func line(e *editor.Editor, id doc.ID) string {
 	var b strings.Builder
 	b.WriteString(shortID(id))
 	b.WriteByte(' ')
-	b.WriteString(kindName(s))
+	card := cardOf(e, id)
+	if card != nil {
+		b.WriteString(cardKind)
+	} else {
+		b.WriteString(kindName(s))
+	}
 	b.WriteByte(' ')
 	b.WriteString(boxText(boxOf(e, id)))
 	if s.Type != doc.TypeArrow {
@@ -138,10 +143,10 @@ func line(e *editor.Editor, id doc.ID) string {
 	}
 	if s.Type == doc.TypeArrow {
 		if t := e.BindingOf(id, "start"); t != nil {
-			fmt.Fprintf(&b, " from %s", shortID(t.To))
+			fmt.Fprintf(&b, " from %s", shortID(ownerOf(e, t.To)))
 		}
 		if t := e.BindingOf(id, "end"); t != nil {
-			fmt.Fprintf(&b, " to %s", shortID(t.To))
+			fmt.Fprintf(&b, " to %s", shortID(ownerOf(e, t.To)))
 		}
 	}
 	if s.Type != doc.TypeFrame && s.Type != doc.TypeGroup && s.Type != doc.TypeImage {
@@ -157,6 +162,9 @@ func line(e *editor.Editor, id doc.ID) string {
 	}
 	if s.Text != "" {
 		fmt.Fprintf(&b, " %q", clip(s.Text))
+	}
+	if card != nil && card.head != nil {
+		fmt.Fprintf(&b, " %q", clip(card.head.Text))
 	}
 	if n := len(e.Children(id)); n > 0 {
 		fmt.Fprintf(&b, " holds %d", n)

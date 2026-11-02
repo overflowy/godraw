@@ -46,7 +46,7 @@ func tryOps(e *editor.Editor, ops string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return apply(e, list, false)
+	return apply(e, list, applyMode{})
 }
 
 func ops(t *testing.T, e *editor.Editor, list string) string {
@@ -293,10 +293,10 @@ func wantWarnings(t *testing.T, e *editor.Editor, list string, want ...string) s
 func TestWarnsOfGrowth(t *testing.T) {
 	e := newEditor()
 	wantWarnings(t, e, `[{"add":"rectangle","id":"keycloak","x":0,"y":0,"w":200,"h":90,"text":"one\ntwo\nthree"},{"add":"rectangle","id":"metabase","x":0,"y":110,"w":200,"h":90,"text":"bi"}]`,
-		"keycloak grew 90→121", "metabase overlaps keycloak by 200x11")
+		"keycloak grew 90→121.1, now overlaps metabase by 200x11.1")
 	// Further in, it reaches the text.
 	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"keycloak","x":0,"y":0,"w":200,"h":90,"text":"one\ntwo\nthree\nfour"},{"add":"rectangle","id":"metabase","x":0,"y":100,"w":200,"h":90,"text":"bi"}]`,
-		"metabase covers keycloak's text")
+		"keycloak grew 90→150.8, now goes under metabase, which hides its text")
 
 	// Later changes count, and only growth does.
 	e = newEditor()
@@ -401,7 +401,7 @@ func TestDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := apply(e, list, true)
+	out, err := apply(e, list, applyMode{dry: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestDryRun(t *testing.T) {
 	// It measures what it would make, warnings and all.
 	e = newEditor()
 	list, _ = decodeOps(json.RawMessage(`[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":40,"text":"one\ntwo"}]`))
-	if out, err = apply(e, list, true); err != nil || !strings.Contains(out, "a 0,0 100x") || !strings.Contains(out, "a grew 40→") {
+	if out, err = apply(e, list, applyMode{dry: true}); err != nil || !strings.Contains(out, "a 0,0 100x") || !strings.Contains(out, "a grew 40→") {
 		t.Errorf("%q, %v", out, err)
 	}
 	if len(e.Doc.Shapes) != 0 {
@@ -515,6 +515,309 @@ func TestArrowLabelSide(t *testing.T) {
 	}
 	if meta := string(e.Doc.Shapes["shape:across"].Meta); strings.Contains(meta, doc.MetaLabel) {
 		t.Errorf("meta keeps %s", meta)
+	}
+}
+
+// Text shapes don't wrap, so a card's line can run past its box unnoticed.
+func TestWarnsOfTextPastItsBox(t *testing.T) {
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"box","x":0,"y":0,"w":100,"h":100},{"add":"text","id":"line","text":"far too long","x":20,"y":10,"size":"s"},{"group":["box","line"],"id":"g"}]`,
+		"line's text sticks out of box by 28")
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"box","x":0,"y":0,"w":200,"h":100},{"add":"text","text":"fits","x":20,"y":10,"size":"s"}]`)
+	// Beside it is no business of the box's.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"box","x":0,"y":0,"w":100,"h":100},{"add":"text","text":"caption","x":110,"y":10,"size":"s"}]`)
+	// A later edit counts too, and the answer gives the new size.
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"box","x":0,"y":0,"w":200,"h":100},{"add":"text","id":"line","text":"fits","x":20,"y":10,"size":"s"}]`)
+	list, err := decodeOps(json.RawMessage(`[{"set":"line","text":"a good deal longer than the box"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := apply(e, list, applyMode{dry: true})
+	if err != nil || !strings.Contains(out, "changed:\nline 20,10 279x") || !strings.Contains(out, "line's text sticks out of box by 99") {
+		t.Errorf("%q, %v", out, err)
+	}
+}
+
+func TestReportOfChanges(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":200,"y":0,"w":100,"h":100}]`)
+	out := ops(t, e, `[{"add":"star","id":"s","x":500,"y":0,"w":50,"h":50},{"set":"a","x":10},{"set":"s","x":600}]`)
+	want := "s 600,0 50x50\nchanged:\na 10,0 100x100\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("%q lacks %q", out, want)
+	}
+
+	list, _ := decodeOps(json.RawMessage(`[{"add":"star","id":"q","x":700,"y":0,"w":50,"h":50},{"set":"a","x":20,"h":5,"text":"one\ntwo"}]`))
+	out, err := apply(e, list, applyMode{quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"added 1", "changed 1", "page bounds", "warnings:", "a grew 5→"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("quiet lacks %q: %q", w, out)
+		}
+	}
+	if strings.Contains(out, "q 700") || strings.Contains(out, "a 20") {
+		t.Errorf("quiet lists boxes: %q", out)
+	}
+}
+
+func TestCards(t *testing.T) {
+	e := newEditor()
+	long := strings.Repeat("words ", 40)
+	wantWarnings(t, e, `[{"add":"card","id":"k","title":"Keycloak","body":"`+long+`","color":"violet","labelColor":"grey","fill":"solid","font":"sans","x":10,"y":20},{"add":"card","id":"short","title":"Hi","right":"k","gap":50},{"add":"arrow","id":"s","from":"k","to":"short","straight":"h"}]`)
+	k := cardOf(e, "shape:k")
+	if k == nil || k.head == nil || k.body == nil {
+		t.Fatalf("parts: %+v", k)
+	}
+	if k.box.W != cardMaxW || k.box.Color != "violet" || k.box.Fill != "solid" || k.head.Color != "violet" || k.body.Color != "grey" || k.body.Font != "sans" || k.body.Size != "s" {
+		t.Errorf("styled: box %+v head %+v body %+v", k.box, k.head, k.body)
+	}
+	// Fits its parts, with them in order and inside it.
+	wantBox(t, e, "k", 10, 20, cardMaxW, k.box.H)
+	head, body, box := e.PageBounds(k.head.ID), e.PageBounds(k.body.ID), e.PageBounds(k.box.ID)
+	if !box.ContainsBox(head) || !box.ContainsBox(body) || body.Y < head.MaxY() || !near(box.MaxY(), body.MaxY()+cardPad) {
+		t.Errorf("box %+v head %+v body %+v", box, head, body)
+	}
+	if sb := cardOf(e, "shape:short").box; sb.W != cardMinW {
+		t.Errorf("short card is %v wide", sb.W)
+	}
+	// An arrow binds to its box, by the card's id.
+	if b := e.BindingOf("shape:s", "start"); b == nil || b.To != k.box.ID {
+		t.Errorf("binding %+v", b)
+	}
+	if got, _ := read(e, readArgs{}, "t", ""); !strings.Contains(got, `k card 10,20`) || !strings.Contains(got, `"Keycloak"`) {
+		t.Errorf("read: %s", got)
+	}
+
+	// Set it, and it fits again where it was; the arrow stays level.
+	was := k.box.H
+	wantWarnings(t, e, `[{"set":"k","body":"short"}]`)
+	k = cardOf(e, "shape:k")
+	if k.box.H >= was || k.box.X != cardOf(e, "shape:k").box.X {
+		t.Errorf("height %v, was %v", k.box.H, was)
+	}
+	wantBox(t, e, "k", 10, 20, cardMaxW, k.box.H)
+	wantWarnings(t, e, `[{"set":"k","w":200,"color":"blue","x":0}]`)
+	k = cardOf(e, "shape:k")
+	wantBox(t, e, "k", 0, 20, 200, k.box.H)
+	if k.box.Color != "blue" || k.head.Color != "blue" || k.body.Color != "grey" {
+		t.Errorf("set color: %v %v %v", k.box.Color, k.head.Color, k.body.Color)
+	}
+	if t2 := e.PageBounds(k.body.ID); t2.W != 200-2*cardPad {
+		t.Errorf("body wraps at %v", t2.W)
+	}
+
+	// A height asked for holds while the text allows, and warns when it can't.
+	wantWarnings(t, e, `[{"set":"k","h":300}]`)
+	wantWarnings(t, e, `[{"set":"k","title":"Changed"}]`)
+	wantBox(t, e, "k", 0, 20, 200, 300)
+	wantWarnings(t, e, `[{"set":"k","h":10}]`, "grew 10→")
+
+	// A part can come and go, so long as one stays.
+	wantWarnings(t, e, `[{"set":"k","body":""}]`)
+	if c := cardOf(e, "shape:k"); c.body != nil {
+		t.Error("body stayed")
+	}
+	wantWarnings(t, e, `[{"set":"k","body":"back"}]`)
+	if c := cardOf(e, "shape:k"); c.body == nil || c.body.Text != "back" || c.body.Size != "s" {
+		t.Errorf("body back: %+v", c.body)
+	}
+	if _, err := tryOps(e, `[{"set":"k","body":""},{"set":"k","title":""}]`); err == nil || !strings.Contains(err.Error(), "title or body") {
+		t.Errorf("emptied: %v", err)
+	}
+	if _, err := tryOps(e, `[{"set":"k","text":"x"}]`); err == nil || !strings.Contains(err.Error(), "title body") {
+		t.Errorf("text on a card: %v", err)
+	}
+	if _, err := tryOps(newEditor(), `[{"add":"card"}]`); err == nil || !strings.Contains(err.Error(), "title or body") {
+		t.Errorf("empty card: %v", err)
+	}
+
+	// Copies are cards too, and take moving as one.
+	out := ops(t, e, `[{"dup":"k","dx":0,"dy":500}]`)
+	copyID := strings.Fields(strings.Split(out, "\n")[1])[0]
+	if c := cardOf(e, shapeID(copyID)); c == nil || c.body == nil {
+		t.Fatalf("copy %s isn't a card: %s", copyID, out)
+	}
+	ops(t, e, `[{"set":"`+copyID+`","title":"Copy","dx":100}]`)
+	if got := cardOf(e, "shape:k").head.Text; got == "Copy" {
+		t.Error("setting the copy changed the original")
+	}
+
+	// In a frame, in rotated company, and from a batch's style.
+	e = newEditor()
+	wantWarnings(t, e, `[{"style":{"color":"red","font":"mono"}},{"add":"frame","id":"f","x":100,"y":100,"w":600,"h":400},{"add":"card","id":"c","in":"f","title":"In","x":120,"y":140,"size":"l"},{"set":"f","rot":30},{"set":"c","title":"In a frame"}]`)
+	c := cardOf(e, "shape:c")
+	if c.head.Font != "mono" || c.box.Color != "red" || c.head.Size != "l" {
+		t.Errorf("styled %+v", c.head)
+	}
+	if e.Doc.Shapes["shape:c"].Parent != "shape:f" {
+		t.Error("left its frame")
+	}
+	if b := e.PageMat(c.box.ID).Invert().Mul(e.PageMat(c.head.ID)).Apply(geo.V(0, 0)); !near(b.X, cardPad) || !near(b.Y, cardPad) {
+		t.Errorf("heading off the box by %v", b)
+	}
+
+	// Saved and read back, it's still a card.
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	d, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cardOf(editor.New(d, fakeMeasure), "shape:c") == nil {
+		t.Error("no card from the file")
+	}
+}
+
+// A card growing into another is one thing gone wrong, whatever its parts do.
+func TestWarningsNameTheCause(t *testing.T) {
+	e := newEditor()
+	wantWarnings(t, e, `[{"add":"card","id":"casbin","title":"Casbin","body":"short","w":200,"x":0,"y":0},{"add":"card","id":"routes","title":"Routes","body":"short","w":200,"x":0,"y":120}]`)
+	out := wantWarnings(t, e, `[{"set":"casbin","body":"one\ntwo\nthree\nfour\nfive\nsix"}]`, "casbin grew 94.7→216.2")
+	_, warnings, _ := strings.Cut(out, "warnings:\n")
+	if lines := strings.Split(warnings, "\n"); len(lines) != 1 || !strings.Contains(lines[0], ", now") || !strings.Contains(lines[0], "routes") {
+		t.Errorf("want one line of the cause: %q", warnings)
+	}
+	if strings.Contains(out, "-box") || strings.Contains(out, "-head") || strings.Contains(out, "-body") {
+		t.Errorf("names a part: %q", out)
+	}
+	// Moving one into a thing that stayed blames what moved.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"still","x":0,"y":0,"w":300,"h":100,"text":"x"},{"add":"rectangle","id":"moved","x":500,"y":0,"w":100,"h":100,"text":"y"}]`)
+	wantWarnings(t, e, `[{"set":"still","color":"blue"}]`)
+	wantWarnings(t, e, `[{"set":"moved","x":250}]`, "moved overlaps still by 50x100")
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"over","x":500,"y":0,"w":100,"h":100,"text":"y"},{"add":"rectangle","id":"under","x":0,"y":0,"w":100,"h":100,"text":"x","fill":"solid"}]`)
+	wantWarnings(t, e, `[{"set":"over","x":40}]`, "over goes under under, which hides its text")
+
+	// A card that fits new text and hits nothing is what was asked for, and
+	// its arrow names the card.
+	e = newEditor()
+	out = wantWarnings(t, e, `[{"add":"card","id":"a","title":"A","x":0,"y":0},{"add":"card","id":"z","title":"Z","x":300,"y":0},{"add":"card","id":"c","title":"C","x":600,"y":0},{"add":"arrow","id":"s","from":"a","to":"c"}]`, "s runs through z")
+	if strings.Count(out, "runs through") != 1 {
+		t.Errorf("told more than once: %q", out)
+	}
+	wantWarnings(t, e, `[{"del":"s"}]`)
+	wantWarnings(t, e, `[{"set":"a","body":"one\ntwo\nthree"}]`)
+	ops(t, e, `[{"add":"arrow","id":"t","from":"a","to":"z"}]`)
+	if got, _ := read(e, readArgs{IDs: names{"t"}}, "", ""); !strings.Contains(got, "from a to z") {
+		t.Errorf("read: %s", got)
+	}
+}
+
+func TestSetLinesUpSeveral(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":10,"w":100,"h":100},{"add":"card","id":"c","title":"C","x":200,"y":70},{"add":"note","id":"n","x":400,"y":300}]`)
+	ops(t, e, `[{"set":["a","c","n"],"y":368}]`)
+	for _, id := range []string{"a", "c", "n"} {
+		if b := boxOf(e, shapeID(id)); !near(b.Y, 368) {
+			t.Errorf("%s at y %v", id, b.Y)
+		}
+	}
+	if b := boxOf(e, "shape:c"); !near(b.X, 200) {
+		t.Errorf("x moved to %v", b.X)
+	}
+	ops(t, e, `[{"set":["a","c"],"x":50}]`)
+	if a, c := boxOf(e, "shape:a"), boxOf(e, "shape:c"); !near(a.X, 50) || !near(c.X, 50) {
+		t.Errorf("x: %v, %v", a.X, c.X)
+	}
+	for op, want := range map[string]string{`{"set":["a","c"],"x":1,"y":2}`: "stack", `{"set":["a","c"],"right":"n"}`: "one shape at a time"} {
+		if _, err := tryOps(e, "["+op+"]"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", op, err)
+		}
+	}
+}
+
+func TestCardSizeIsItsText(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"style":{"size":"xl"}},{"add":"card","id":"k","title":"T","body":"B"}]`)
+	c := cardOf(e, "shape:k")
+	if c.box.Size != "s" || c.head.Size != "xl" || c.body.Size != "l" {
+		t.Errorf("box %s title %s body %s", c.box.Size, c.head.Size, c.body.Size)
+	}
+	ops(t, e, `[{"set":"k","size":"m"}]`)
+	c = cardOf(e, "shape:k")
+	if c.box.Size != "s" || c.head.Size != "m" || c.body.Size != "s" {
+		t.Errorf("after set: box %s title %s body %s", c.box.Size, c.head.Size, c.body.Size)
+	}
+	// The border can still be heavier, by its own id.
+	ops(t, e, `[{"set":"`+shortID(c.box.ID)+`","size":"l"}]`)
+	if c = cardOf(e, "shape:k"); c.box.Size != "l" {
+		t.Errorf("box %s", c.box.Size)
+	}
+	ops(t, e, `[{"set":"k","title":"Still"}]`)
+	if c = cardOf(e, "shape:k"); c.box.Size != "l" {
+		t.Errorf("refit changed the border to %s", c.box.Size)
+	}
+}
+
+func TestDryRunCommits(t *testing.T) {
+	e := newEditor()
+	s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
+	args := map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "x"}}}
+	got := textOf(call(t, s, "apply", args))
+	token := regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	if token == nil || e.Doc.Shapes["shape:x"] != nil {
+		t.Fatalf("dry: %q", got)
+	}
+	got = textOf(call(t, s, "apply", map[string]any{"commit": token[1], "quiet": true}))
+	if !strings.HasPrefix(got, "ok ") || !strings.Contains(got, "added 1") || e.Doc.Shapes["shape:x"] == nil {
+		t.Errorf("commit: %q", got)
+	}
+	// Only once: again would be the id taken, or a second copy.
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError || !strings.Contains(textOf(r), "send ops again") {
+		t.Errorf("twice: %q", textOf(r))
+	}
+	if r := call(t, s, "apply", map[string]any{"commit": "d1", "ops": []any{map[string]any{"add": "star"}}}); !r.IsError {
+		t.Errorf("commit with ops: %q", textOf(r))
+	}
+	// A client whose old schema requires ops sends an empty list, and that's fine.
+	got = textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star", "id": "viaEmpty"}}}))
+	empty := regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	if r := call(t, s, "apply", map[string]any{"commit": empty[1], "ops": []any{}}); r.IsError || e.Doc.Shapes["shape:viaEmpty"] == nil {
+		t.Errorf("commit with empty ops: %q", textOf(r))
+	}
+	// Sent as an op, it says where it goes.
+	for _, name := range []string{"commit", "dry", "quiet"} {
+		r := call(t, s, "apply", map[string]any{"ops": []any{map[string]any{name: "d1"}}})
+		if !r.IsError || !strings.Contains(textOf(r), name+" is an argument of apply") {
+			t.Errorf("%s as an op: %q", name, textOf(r))
+		}
+	}
+	if r := call(t, s, "apply", map[string]any{}); !r.IsError || !strings.Contains(textOf(r), "commit") {
+		t.Errorf("neither: %q", textOf(r))
+	}
+
+	// A commit that fails can be fixed and tried again.
+	args = map[string]any{"dry": true, "ops": []any{map[string]any{"set": "y", "x": 1}}}
+	if r := call(t, s, "apply", args); !r.IsError {
+		t.Errorf("dry of what doesn't exist: %q", textOf(r))
+	}
+	ops(t, e, `[{"add":"star","id":"y"}]`)
+	got = textOf(call(t, s, "apply", args))
+	token = regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)
+	ops(t, e, `[{"del":"y"}]`)
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError {
+		t.Errorf("commit after its target went: %q", textOf(r))
+	}
+	ops(t, e, `[{"add":"star","id":"y"}]`)
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError {
+		t.Errorf("commit again: %q", textOf(r))
+	}
+
+	// Only the latest stay.
+	var first string
+	for i := range keptDries + 1 {
+		got := textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{map[string]any{"add": "star"}}}))
+		if i == 0 {
+			first = regexp.MustCompile(`commit "(d\d+)"`).FindStringSubmatch(got)[1]
+		}
+	}
+	if r := call(t, s, "apply", map[string]any{"commit": first}); !r.IsError {
+		t.Errorf("oldest still commits: %q", textOf(r))
 	}
 }
 
@@ -941,6 +1244,23 @@ func TestToolsStayCheap(t *testing.T) {
 	for _, want := range []string{"guide", "read", "apply", "view"} {
 		if !names[want] {
 			t.Errorf("no tool %s", want)
+		}
+	}
+	// What the handlers take, a client must be told: a strict one refuses the rest.
+	declared := map[string][]string{"apply": {"ops", "dry", "commit", "quiet"}, "view": {"theme"}}
+	for _, tool := range res.Tools {
+		schema, _ := json.Marshal(tool.InputSchema)
+		for _, want := range declared[tool.Name] {
+			if !strings.Contains(string(schema), `"`+want+`":`) {
+				t.Errorf("%s doesn't declare %s: %s", tool.Name, want, schema)
+			}
+		}
+		if tool.Name == "guide" {
+			for topic := range guideTopics {
+				if topic != "" && !strings.Contains(string(schema), `"`+topic+`"`) {
+					t.Errorf("guide doesn't declare topic %q: %s", topic, schema)
+				}
+			}
 		}
 	}
 	data, _ := json.Marshal(res.Tools)

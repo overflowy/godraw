@@ -93,7 +93,7 @@ to use another port.
 
 | Tool | What it does |
 | --- | --- |
-| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing. It answers with each new shape's box and warnings about the layout. `dry` gives the same answer without changing anything |
+| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies, and `quiet` leaves out the boxes |
 | `read` | The canvas as compact text, one line per shape, paged and searchable |
 | `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default, in the window's theme or the one asked for |
 | `guide` | The reference for `apply`, a topic at a time |
@@ -115,8 +115,11 @@ to `.tldr` like the rest. Agents can't save or name a drawing. That stays with y
 File menu.
 
 `apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
-covers text, when an arrow is hidden, off level, buried by its label or runs through a box,
+covers text, naming what caused it, when a text shape sticks out of the box under it, when an arrow is hidden, off level, buried by its label or runs through a box,
 and when a frame clips something. It only warns about what that call touched.
+
+A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
+a rectangle and two text shapes, so it needs nothing special to open elsewhere.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. That
 and `label:"above"` are kept in the shape's `meta`, so tldraw opens the file and shows the
