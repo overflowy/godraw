@@ -44,9 +44,9 @@ func (e *Editor) ZoomIn() {
 // ZoomOut goes to the previous zoom stop.
 func (e *Editor) ZoomOut() {
 	z := e.Cam().Z
-	for i := len(zoomStops) - 1; i >= 0; i-- {
-		if zoomStops[i] < z*0.99 {
-			e.zoomTo(e.center(), zoomStops[i])
+	for _, zoomStop := range slices.Backward(zoomStops) {
+		if zoomStop < z*0.99 {
+			e.zoomTo(e.center(), zoomStop)
 			return
 		}
 	}

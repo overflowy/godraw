@@ -2,7 +2,7 @@ package app
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -58,7 +58,7 @@ func BenchmarkCanvas(b *testing.B) {
 						c.step(a, tt, i)
 						times = append(times, time.Since(t0))
 					}
-					sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+					slices.Sort(times)
 					if len(times) > 0 {
 						b.ReportMetric(float64(times[len(times)*95/100].Microseconds())/1000, "p95ms")
 					}

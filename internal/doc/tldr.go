@@ -334,8 +334,9 @@ func readShape(raw []byte) (*Shape, error) {
 	s.AssetID = ID(p.str("assetId", ""))
 	if v, ok := p["fontSizeAdjustment"]; ok {
 		var f *float64
-		json.Unmarshal(v, &f)
-		s.FontAdjustment = f
+		if json.Unmarshal(v, &f) == nil {
+			s.FontAdjustment = f
+		}
 	}
 	var v struct{ X, Y float64 }
 	if b, ok := p["start"]; ok && json.Unmarshal(b, &v) == nil {
@@ -706,7 +707,7 @@ func richOf(s *Shape) any {
 // PlainToRich returns plain text as a rich text document, a paragraph a line.
 func PlainToRich(text string) any {
 	content := []any{}
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			content = append(content, obj{{"type", "paragraph"}})
 			continue

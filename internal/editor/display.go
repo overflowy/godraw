@@ -468,7 +468,7 @@ func geoBox(s *doc.Shape, w, h float64) *RoundedBox {
 	default:
 		return nil
 	}
-	box := &RoundedBox{Box: geo.Box{W: w, H: h}}
+	box := &RoundedBox{W: w, H: h}
 	if s.Dash == "draw" {
 		box.Radius = math.Min(math.Min(strokeOf(s.Size)*s.Scale*2, 10), math.Min(w, h)/2)
 	}

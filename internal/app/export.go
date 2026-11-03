@@ -199,6 +199,8 @@ func (a *App) saveAs(data []byte, name, kind, ext string) {
 		if err != nil || path == "" {
 			return
 		}
-		os.WriteFile(path, data, 0o644)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			mygo.Dialog.Error("Couldn't export", err.Error())
+		}
 	}()
 }

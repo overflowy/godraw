@@ -2,7 +2,10 @@
 // matrices, paths, and the intersection tests hit-testing and arrows use.
 package geo
 
-import "math"
+import (
+	"math"
+	"slices"
+)
 
 // Vec is a point or a direction.
 type Vec struct{ X, Y float64 }
@@ -244,7 +247,7 @@ func DistToPolyline(p Vec, pts []Vec, closed bool) float64 {
 func PointInPolygon(p Vec, poly []Vec) bool {
 	wn := 0
 	n := len(poly)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		a, b := poly[i], poly[(i+1)%n]
 		isLeft := (b.X-a.X)*(p.Y-a.Y) - (p.X-a.X)*(b.Y-a.Y)
 		if a.Y <= p.Y {
@@ -325,13 +328,11 @@ func SegmentHitsPolyline(a, b Vec, pts []Vec, closed bool, margin float64) bool 
 // BoxHitsPolyline reports whether the polyline crosses the box or lies
 // inside it.
 func BoxHitsPolyline(b Box, pts []Vec, closed bool) bool {
-	for _, p := range pts {
-		if b.Contains(p) {
-			return true
-		}
+	if slices.ContainsFunc(pts, b.Contains) {
+		return true
 	}
 	c := b.Corners()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if SegmentHitsPolyline(c[i], c[(i+1)%4], pts, closed, 0) {
 			return true
 		}

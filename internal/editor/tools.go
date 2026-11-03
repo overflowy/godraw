@@ -511,7 +511,7 @@ func (e *Editor) selectDown(clicks int) {
 	case target != "" && !hit.Hollow:
 		wasSelected := e.IsSelected(target)
 		if !wasSelected && !e.pointer.Mods.Shift {
-			if !(inBox && len(e.sel) > 1) {
+			if !inBox || len(e.sel) <= 1 {
 				e.Select(target)
 			}
 		} else if !wasSelected {
@@ -666,12 +666,7 @@ func (g *brushGesture) move(e *Editor) {
 			return false
 		}
 		if s.Type == doc.TypeGroup {
-			for _, k := range e.Children(id) {
-				if test(k) {
-					return true
-				}
-			}
-			return false
+			return slices.ContainsFunc(e.Children(id), test)
 		}
 		bounds := e.PageBounds(id)
 		if !box.Overlaps(bounds) {
@@ -1674,8 +1669,7 @@ func (e *Editor) bindTargetAt(p geo.Vec, arrow doc.ID) doc.ID {
 	var walk func(parent doc.ID) doc.ID
 	walk = func(parent doc.ID) doc.ID {
 		kids := e.Children(parent)
-		for i := len(kids) - 1; i >= 0; i-- {
-			id := kids[i]
+		for _, id := range slices.Backward(kids) {
 			if id == arrow {
 				continue
 			}
@@ -1917,9 +1911,8 @@ func (g *linePointDrag) cancel(e *Editor) { e.rollback() }
 // --- freehand ---
 
 type freehand struct {
-	id       doc.ID
-	last     geo.Vec
-	straight bool
+	id   doc.ID
+	last geo.Vec
 }
 
 func newFreehand(e *Editor) *freehand {

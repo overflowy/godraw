@@ -53,10 +53,10 @@ func incInt(x string) string {
 	if !carry {
 		return string(d)
 	}
-	switch {
-	case head == 'Z':
+	switch head {
+	case 'Z':
 		return "a0"
-	case head == 'z':
+	case 'z':
 		return "" // out of range
 	}
 	head++
@@ -85,10 +85,10 @@ func decInt(x string) string {
 	if !borrow {
 		return string(d)
 	}
-	switch {
-	case head == 'a':
+	switch head {
+	case 'a':
 		return "Z" + string(digits[len(digits)-1])
-	case head == 'A':
+	case 'A':
 		return "" // out of range
 	}
 	head--
@@ -189,7 +189,7 @@ func IndexBetween(a, b string) string {
 func IndicesBetween(a, b string, n int) []string {
 	out := make([]string, 0, n)
 	cur := a
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if b != "" && i == n-1 {
 			cur = IndexBetween(cur, b)
 		} else if b != "" {

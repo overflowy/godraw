@@ -49,11 +49,9 @@ type scene struct {
 	noHeading                bool
 	// shown is how many pixels of the screen a unit painted comes to.
 	shown   float64
-	only    []doc.ID // what an export draws; all of the page without it
 	path    ui.Path
 	segment [2][2]float32
 	span    [1]ui.Span
-	transp  bool
 }
 
 func toUI(c editor.Color) ui.Color {

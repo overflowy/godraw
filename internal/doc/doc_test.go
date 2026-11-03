@@ -16,7 +16,7 @@ func readFixture(t *testing.T) *Drawing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	d, err := Read(f)
 	if err != nil {
 		t.Fatal(err)

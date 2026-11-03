@@ -255,8 +255,7 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 	d.DisallowUnknownFields()
 	o := &op{}
 	if err := d.Decode(o); err != nil {
-		var wrong *json.UnmarshalTypeError
-		if errors.As(err, &wrong) {
+		if wrong, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 			return nil, wrongType(wrong)
 		}
 		return nil, errors.New(strings.TrimPrefix(err.Error(), "json: "))
@@ -513,11 +512,11 @@ func wrongType(e *json.UnmarshalTypeError) error {
 		return errors.New(anchorHelp)
 	}
 	for _, t := range []reflect.Type{reflect.TypeFor[fields](), reflect.TypeFor[op]()} {
-		for i := range t.NumField() {
-			if t.Field(i).Tag.Get("json") != name {
+		for field := range t.Fields() {
+			if field.Tag.Get("json") != name {
 				continue
 			}
-			switch t.Field(i).Type.Elem().Kind() {
+			switch field.Type.Elem().Kind() {
 			case reflect.Float64:
 				return fmt.Errorf("%s must be a number", name)
 			case reflect.Int:

@@ -2,6 +2,7 @@ package editor
 
 import (
 	"math"
+	"slices"
 
 	"godraw/internal/doc"
 	"godraw/internal/geo"
@@ -462,8 +463,7 @@ func (e *Editor) Hit(p geo.Vec, margin float64, allowLocked bool) HitResult {
 	var walk func(parent doc.ID) doc.ID
 	walk = func(parent doc.ID) doc.ID {
 		kids := e.Children(parent)
-		for i := len(kids) - 1; i >= 0; i-- {
-			id := kids[i]
+		for _, id := range slices.Backward(kids) {
 			s := e.Doc.Shapes[id]
 			if s.Locked && !allowLocked {
 				continue
@@ -531,8 +531,7 @@ func (e *Editor) frameAt(p geo.Vec, skip map[doc.ID]bool) doc.ID {
 	var walk func(parent doc.ID) doc.ID
 	walk = func(parent doc.ID) doc.ID {
 		kids := e.Children(parent)
-		for i := len(kids) - 1; i >= 0; i-- {
-			id := kids[i]
+		for _, id := range slices.Backward(kids) {
 			s := e.Doc.Shapes[id]
 			if skip[id] {
 				continue

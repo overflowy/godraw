@@ -86,7 +86,7 @@ func (p *Path) Smooth(pts []Vec, closed bool) *Path {
 	}
 	if closed {
 		p.Move(Med(pts[n-1], pts[0]))
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Quad(pts[i], Med(pts[i], pts[(i+1)%n]))
 		}
 		return p.Close()
@@ -119,7 +119,7 @@ func RoundedPoly(pts []Vec, r float64) *Path {
 	if n < 3 {
 		return p.Poly(pts, true)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		prev, cur, next := pts[(i+n-1)%n], pts[i], pts[(i+1)%n]
 		d := math.Min(r, math.Min(cur.Dist(prev), cur.Dist(next))/2)
 		a := cur.Add(prev.Sub(cur).Uni().Mul(d))

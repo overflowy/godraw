@@ -298,7 +298,7 @@ func (a *App) opacityRow(c *ui.Context) {
 func segment(c *ui.Context, key string, n int, chosen func(i int) bool, label func(i int) string, cell func(i int), pick func(i int)) {
 	t := c.Theme()
 	ui.Row(c.Key(key)).Gap(2).Children(func() {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			b := ui.ButtonBase(c.Key(fmt.Sprint(key, i))).Grow(1).Basis(0).Height(30).Radius(6).Center().Label(label(i)).Tooltip(label(i))
 			if chosen(i) {
 				b.Background(t.SurfacePressed)

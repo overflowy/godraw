@@ -46,12 +46,16 @@ func TestArrowHeadMenuOffersPipe(t *testing.T) {
 	a.Editor().Select(s.ID)
 	tt := ui.NewTester(a.View, 1280, 820)
 	tt.Frame()
-	tt.Click("End arrowhead")
+	if err := tt.Click("End arrowhead"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
 	if _, ok := tt.Find("pipe"); !ok {
 		t.Fatal("the menu has no pipe")
 	}
-	tt.Click("pipe")
+	if err := tt.Click("pipe"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
 	if got := a.Editor().Doc.Shapes[s.ID].HeadEnd; got != "pipe" {
 		t.Errorf("the head is %q", got)

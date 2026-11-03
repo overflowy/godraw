@@ -498,7 +498,7 @@ func covers(up, low *item) bool {
 		}
 	}
 	hollow := up.s.Type == doc.TypeGeo && up.s.Fill == "none"
-	return !(hollow && up.box.ContainsBox(*low.text))
+	return !hollow || !up.box.ContainsBox(*low.text)
 }
 
 func (r *run) checkArrows(ids []doc.ID, items []*item, touched map[doc.ID]bool) {
@@ -1101,8 +1101,7 @@ func (r *run) behind(s *doc.Shape, order int, at geo.Vec, pal *editor.Palette, p
 	}
 	var layers []layer
 walk:
-	for i := len(painters) - 1; i >= 0; i-- {
-		p := painters[i]
+	for _, p := range slices.Backward(painters) {
 		if p.order > order || !p.box.Contains(at) {
 			continue
 		}
@@ -1120,8 +1119,8 @@ walk:
 		}
 	}
 	under := pal.Background
-	for i := len(layers) - 1; i >= 0; i-- {
-		under = under.Mix(layers[i].c, layers[i].a)
+	for _, layer := range slices.Backward(layers) {
+		under = under.Mix(layer.c, layer.a)
 	}
 	return under, true
 }
@@ -1183,7 +1182,7 @@ func (r *run) checkFrames(ids []doc.ID, touched map[doc.ID]bool) {
 	for _, id := range ids {
 		s := r.e.Doc.Shapes[id]
 		arrow := s.Type == doc.TypeArrow
-		if (!touched[id] && !(arrow && r.arrowTouched(id, touched))) || s.Type == doc.TypeGroup || r.warned() {
+		if (!touched[id] && (!arrow || !r.arrowTouched(id, touched))) || s.Type == doc.TypeGroup || r.warned() {
 			continue
 		}
 		f := r.frameOf(s)

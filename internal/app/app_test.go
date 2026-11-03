@@ -216,7 +216,7 @@ func showcase(t *testing.T, a *App, tt *ui.Tester) {
 	e.SetTool(editor.ToolDraw)
 	stroke := func(x0, y0 float32) {
 		tt.Press(x0, y0)
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			f := float32(i)
 			tt.Move(x0+f*5, y0+30*sinf(f/5))
 		}
@@ -397,7 +397,9 @@ func TestExportPNG(t *testing.T) {
 		t.Errorf("exported %v", b)
 	}
 	if dir := os.Getenv("GODRAW_SNAPSHOTS"); dir != "" {
-		os.WriteFile(filepath.Join(dir, "export.png"), data, 0o644)
+		if err := os.WriteFile(filepath.Join(dir, "export.png"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -564,7 +566,7 @@ func TestDensePageLosesNothing(t *testing.T) {
 	img := tt.Image()
 	p := a.Editor().ToScreen(geo.V(1050, 550))
 	r, g, b, _ := img.At(int(p.X*2), int(p.Y*2)).RGBA()
-	if !(r>>8 > 180 && g>>8 < 90 && b>>8 < 90) {
+	if r>>8 <= 180 || g>>8 >= 90 || b>>8 >= 90 {
 		t.Errorf("the last shape didn't paint: pixel at %v is %d,%d,%d", p, r>>8, g>>8, b>>8)
 	}
 	// And the window's own icons still show: the select tool's button holds ink.

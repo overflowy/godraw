@@ -9,9 +9,11 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,17 +52,15 @@ type App struct {
 	opacity      float64 // bound to the opacity slider
 	opacityLive  bool
 
-	geoOpen, pagesOpen, menuOpen, helpOpen, moreOpen bool
-	headsOpen                                        bool
-	minimap                                          bool
-	renamingPage                                     doc.ID
-	renameText                                       string
-	editKey                                          int
-	lastEditing                                      doc.ID
+	geoOpen, pagesOpen, helpOpen bool
+	minimap                      bool
+	renamingPage                 doc.ID
+	renameText                   string
+	editKey                      int
+	lastEditing                  doc.ID
 
 	services ui.Services
 	hasSvc   bool
-	toast    string
 
 	bitmaps map[doc.ID]*ui.Bitmap
 	decoded map[doc.ID]string
@@ -68,7 +68,6 @@ type App struct {
 	inUse   map[doc.ID]bool // the assets shapes show; nil once the document changed
 	inUseOf *doc.Drawing    // the drawing inUse is of
 	inUseN  int             // how many shapes it had, as a change not yet committed shows
-	dark    bool
 
 	sizeBadge bool
 
@@ -170,11 +169,11 @@ func (a *App) decodeAssets() {
 }
 
 func decodeDataURL(src string) *ui.Bitmap {
-	i := strings.IndexByte(src, ',')
-	if i < 0 {
+	_, after, ok := strings.Cut(src, ",")
+	if !ok {
 		return nil
 	}
-	data, err := base64.StdEncoding.DecodeString(src[i+1:])
+	data, err := base64.StdEncoding.DecodeString(after)
 	if err != nil {
 		return nil
 	}
@@ -394,12 +393,7 @@ func (a *App) paste() {
 	e := a.ed
 	formats := a.services.ClipboardFormats()
 	has := func(f transfer.Format) bool {
-		for _, g := range formats {
-			if g == f {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(formats, f)
 	}
 	// As in tldraw, what is pasted comes where it was if that shows, not at
 	// the pointer.
@@ -408,7 +402,9 @@ func (a *App) paste() {
 	case has(transfer.Format(editor.ClipboardFormat)):
 		d := a.services.ReadClipboardData(transfer.Format(editor.ClipboardFormat))
 		if b, err := d.Read(transfer.Format(editor.ClipboardFormat)); err == nil {
-			e.Paste(b, at)
+			if err := e.Paste(b, at); err != nil {
+				log.Printf("godraw: paste: %v", err)
+			}
 		}
 	case has(transfer.PNG):
 		d := a.services.ReadClipboardData(transfer.PNG)

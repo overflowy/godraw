@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"math"
 	"testing"
 
@@ -59,7 +58,7 @@ func TestZoomKeepsTextInPlace(t *testing.T) {
 			for _, size := range []string{"s", "m", "xl"} {
 				for _, z := range []float64{2, 1, 0.75, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15} {
 					off, n := inkMiddle(t, z, scale, font, size)
-					t.Log(fmt.Sprintf("scale %v %s %s zoom %v: %.2f off (%d px)", scale, font, size, z, off, n))
+					t.Logf("scale %v %s %s zoom %v: %.2f off (%d px)", scale, font, size, z, off, n)
 					if n == 0 {
 						// Too small to read, it's drawn as a line in a gray of its color.
 						if editor.LabelSize(size)*z >= 3.5 {

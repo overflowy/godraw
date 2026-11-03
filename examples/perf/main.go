@@ -151,7 +151,9 @@ func main() {
 		if d, err = doc.Read(f); err != nil {
 			log.Fatal(err)
 		}
-		f.Close()
+		if err := f.Close(); err != nil {
+			log.Fatal(err)
+		}
 	}
 	h := &host{}
 	a := app.New(d, h)
@@ -177,8 +179,10 @@ func main() {
 				if err != nil {
 					log.Fatal(err)
 				}
-				pprof.StartCPUProfile(f)
-				defer f.Close()
+				// The file closes with the process, at the end of this function.
+				if err := pprof.StartCPUProfile(f); err != nil {
+					log.Fatal(err)
+				}
 			}
 			for _, p := range script {
 				if *only != "" && p.name != *only {
@@ -256,7 +260,9 @@ func measure(seconds float64) {
 		}
 		frames[current] = append(frames[current], f)
 	}
-	cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		log.Print(err)
+	}
 	fmt.Printf("%-10s %6s %5s %6s %6s %6s %6s %7s %7s %7s\n", "part", "frames", "fps", "p50", "p95", "max", "build", "paint", "present", "allocs")
 	for _, name := range order {
 		fs := frames[name]

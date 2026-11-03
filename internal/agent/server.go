@@ -102,17 +102,16 @@ func Handler(h Host, version string) http.Handler {
 	tool("view", viewDesc, viewInput, readOnly, s.view)
 
 	mux := http.NewServeMux()
-	mux.Handle(endpoint, http.MaxBytesHandler(answerUnknown(mcp.NewStreamableHTTPHandler(
+	// Web pages may not reach it, directly or by rebinding a name to this machine;
+	// the handler checks the Host header by default.
+	mux.Handle(endpoint, http.NewCrossOriginProtection().Handler(http.MaxBytesHandler(answerUnknown(mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{
 			Stateless: true, JSONResponse: true,
 			// Images come in requests, as data: URLs. The SDK's own limit is 4 MiB.
 			MaxRequestBodyBytes: maxRequest,
-			// Web pages may not reach it, directly or by rebinding a name to
-			// this machine; the handler checks the Host header by default.
-			CrossOriginProtection: http.NewCrossOriginProtection(),
 		},
-	)), maxRequest))
+	)), maxRequest)))
 	return mux
 }
 
@@ -139,7 +138,7 @@ func answerUnknown(next http.Handler) http.Handler {
 		req, isReq := msg.(*jsonrpc.Request)
 		if err != nil || !isReq || !bytes.HasPrefix(held.body.Bytes(), []byte(notHandled)) {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write(held.body.Bytes())
+			_, _ = w.Write(held.body.Bytes()) // a client that's gone has nothing to be told
 			return
 		}
 		if !req.IsCall() {
@@ -156,7 +155,7 @@ func answerUnknown(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(out)
+		_, _ = w.Write(out)
 	})
 }
 

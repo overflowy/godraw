@@ -14,6 +14,8 @@ go run .                    # a new drawing
 go run . drawing.tldr       # open a file
 go tool mygo build          # package build/<platform>/godraw.app and a .dmg
 go test ./...
+task check                  # show every format, vet and lint issue, changing nothing
+task fix                    # apply what the formatters and linters can fix themselves
 ```
 
 ## Try the showcase

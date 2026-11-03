@@ -75,7 +75,7 @@ func TestGuideExamplesRun(t *testing.T) {
 	example := regexp.MustCompile(`\[\{.*\}\]`)
 	found := 0
 	for topic, text := range guideTopics {
-		for _, l := range strings.Split(text, "\n") {
+		for l := range strings.SplitSeq(text, "\n") {
 			m := example.FindString(l)
 			if m == "" {
 				continue
@@ -104,13 +104,13 @@ func TestGuideCoversEverything(t *testing.T) {
 		if kind != doc.TypeGeo && !strings.Contains(guideText, kind+":") {
 			t.Errorf("guide lacks %s", kind)
 		}
-		for _, name := range strings.Fields(list) {
+		for name := range strings.FieldsSeq(list) {
 			if !strings.Contains(guideText, name) {
 				t.Errorf("guide lacks field %s of %s", name, kind)
 			}
 		}
 	}
-	for _, name := range strings.Fields(placeFields) {
+	for name := range strings.FieldsSeq(placeFields) {
 		if !strings.Contains(guideText, name) {
 			t.Errorf("guide lacks %s", name)
 		}
@@ -1143,7 +1143,9 @@ func TestImages(t *testing.T) {
 	}
 	// Not an image: a file an agent can't get at by pretending it is one.
 	txt := filepath.Join(t.TempDir(), "secret.txt")
-	os.WriteFile(txt, []byte("secret"), 0o644)
+	if err := os.WriteFile(txt, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	bad, _ := json.Marshal(txt)
 	if _, err := tryOps(e, `[{"add":"image","src":`+string(bad)+`}]`); err == nil || strings.Contains(err.Error(), "secret\"") {
 		t.Errorf("non-image: %v", err)
@@ -1272,7 +1274,7 @@ func connect(t *testing.T, h Host) *mcp.ClientSession {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { session.Close() })
+	t.Cleanup(func() { _ = session.Close() })
 	return session
 }
 
@@ -1429,7 +1431,7 @@ func (c *themedCanvas) Render(box geo.Box, ids []doc.ID, scale float64) *image.R
 func TestViewTheme(t *testing.T) {
 	e := newEditor()
 	ops(t, e, `[{"add":"star"}]`)
-	c := &themedCanvas{fakeCanvas: fakeCanvas{id: "d1", e: e}}
+	c := &themedCanvas{id: "d1", e: e}
 	s := connect(t, &fakeHost{list: []Canvas{c}})
 	if got := textOf(call(t, s, "view", map[string]any{})); !strings.Contains(got, "light theme") || c.dark {
 		t.Errorf("window's theme: %q, rendered dark %v", got, c.dark)
@@ -1510,7 +1512,7 @@ func TestWebPagesCantReachIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res.Body.Close()
+		_ = res.Body.Close()
 		return res.StatusCode
 	}
 	if code := post(func(r *http.Request) {
@@ -1566,9 +1568,11 @@ func TestUnknownMethodsAreAnsweredInJSONRPC(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer res.Body.Close()
+			defer func() { _ = res.Body.Close() }()
 			var got bytes.Buffer
-			got.ReadFrom(res.Body)
+			if _, err := got.ReadFrom(res.Body); err != nil {
+				t.Fatal(err)
+			}
 			if res.StatusCode != c.code || !strings.Contains(got.String(), c.has) {
 				t.Fatalf("got %d %q, want %d with %q", res.StatusCode, got.String(), c.code, c.has)
 			}
@@ -2614,7 +2618,9 @@ func TestContrast(t *testing.T) {
 	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 8, 8))); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	src, _ := json.Marshal(path)
 	if out := ops(t, e, `[{"add":"image","src":`+string(src)+`,"x":0,"y":0,"w":300,"h":100},{"add":"text","x":20,"y":30,"text":"Hi","color":"white"}]`); strings.Contains(out, "hardly shows") {
 		t.Errorf("warned of what it can't see: %s", out)

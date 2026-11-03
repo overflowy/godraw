@@ -1,0 +1,43 @@
+version: "3"
+
+tasks:
+  check:
+    desc: Show every format, vet and lint issue, changing nothing. Fails if there are any
+    silent: true
+    cmds:
+      - |
+        failed=""
+        step() {
+          name=$1
+          shift
+          echo "==> $name"
+          if "$@"; then
+            echo "    ok"
+          else
+            failed="$failed $name"
+          fi
+        }
+        unformatted() {
+          gofmt -d .
+          [ -z "$(gofmt -l .)" ]
+        }
+        step gofmt unformatted
+        step "go-vet" go vet ./...
+        step "mygo-vet" go tool mygo vet .
+        step "go-fix" go fix -diff ./...
+        step golangci-lint golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
+        if [ -n "$failed" ]; then
+          echo
+          echo "Issues from:$failed"
+          exit 1
+        fi
+        echo
+        echo "No issues"
+
+  fix:
+    desc: Apply what the formatters and linters can fix themselves
+    silent: true
+    cmds:
+      - gofmt -w .
+      - go fix ./...
+      - golangci-lint run --fix --max-issues-per-linter=0 --max-same-issues=0 ./...

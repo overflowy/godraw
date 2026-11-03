@@ -390,7 +390,7 @@ func TestLineMidpointBecomesVertex(t *testing.T) {
 	if !near(s.Points[1].X, 100) || !near(s.Points[1].Y, 100) {
 		t.Errorf("new vertex %+v", s.Points[1])
 	}
-	if !(s.Points[0].Index < s.Points[1].Index && s.Points[1].Index < s.Points[2].Index) {
+	if s.Points[0].Index >= s.Points[1].Index || s.Points[1].Index >= s.Points[2].Index {
 		t.Errorf("vertices out of order: %+v", s.Points)
 	}
 }
@@ -1045,8 +1045,10 @@ func TestWriteSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	if err := doc.Write(f, h.Doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

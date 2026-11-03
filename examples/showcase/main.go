@@ -73,7 +73,7 @@ func catmull(pts []geo.Vec, closed bool, step float64) []geo.Vec {
 	for i := 0; i < segs; i++ {
 		p0, p1, p2, p3 := at(i-1), at(i), at(i+1), at(i+2)
 		k := max(int(p1.Dist(p2)/step), 1)
-		for j := 0; j < k; j++ {
+		for j := range k {
 			t := float64(j) / float64(k)
 			t2, t3 := t*t, t*t*t
 			out = append(out, geo.V(
@@ -570,8 +570,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
 	if err := doc.Write(f, b.d); err != nil {
+		log.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %s: %d shapes on %d pages", out, len(b.d.Shapes), len(b.d.Pages))
