@@ -3,6 +3,8 @@
 A local whiteboard written in Go. It draws with [MyGo](https://github.com/egoist/mygo)'s native
 UI, so there's no web view and no JavaScript.
 
+<img width="2328" height="1620" alt="screenshot" src="https://github.com/user-attachments/assets/84073b6b-1f1b-4630-a81a-08c42b26435f" />
+
 Drawings are `.godraw` files. They're plain JSON with one line for each page, shape, binding and
 image, so they diff well.
 
