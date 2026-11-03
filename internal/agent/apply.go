@@ -29,6 +29,7 @@ import (
 const (
 	maxOps      = 5000
 	maxCopies   = 500
+	maxMade     = 10000 // shapes one dup makes, with what they hold
 	maxSubpaths = 500
 	maxPoints   = 20000
 	maxImage    = 20 << 20
@@ -130,26 +131,28 @@ type fields struct {
 	At       *float64 `json:"at"`
 	Label    *string  `json:"label"`
 
-	How *string `json:"how"`
-	N   *int    `json:"n"`
+	How  *string `json:"how"`
+	N    *int    `json:"n"`
+	Rows *int    `json:"rows"`
+	Cols *int    `json:"cols"`
 }
 
 // op is one change: exactly one of its verbs, and fields.
 type op struct {
-	Add     *string `json:"add"`
-	Set     names   `json:"set"`
-	Del     names   `json:"del"`
-	Dup     names   `json:"dup"`
-	Group   names   `json:"group"`
-	Ungroup names   `json:"ungroup"`
-	Arrange names   `json:"arrange"`
-	Order   names   `json:"order"`
-	Flip    names   `json:"flip"`
-	Camera  names   `json:"camera"`
-	Page    *string `json:"page"`
-	DelPage *string `json:"delPage"`
-	Style   *fields `json:"style"`
-	With    with    `json:"with"`
+	Add     *string  `json:"add"`
+	Set     *targets `json:"set"`
+	Del     *targets `json:"del"`
+	Dup     *targets `json:"dup"`
+	Group   *targets `json:"group"`
+	Ungroup *targets `json:"ungroup"`
+	Arrange *targets `json:"arrange"`
+	Order   *targets `json:"order"`
+	Flip    *targets `json:"flip"`
+	Camera  *targets `json:"camera"`
+	Page    *string  `json:"page"`
+	DelPage *string  `json:"delPage"`
+	Style   *fields  `json:"style"`
+	With    with     `json:"with"`
 	fields
 
 	verb    string
@@ -176,13 +179,15 @@ var (
 		doc.TypeHighlight: "d w h color size",
 		doc.TypeLine:      "d w h color dash size spline shadow",
 		cardKind:          "title body w h color labelColor fill gradient gradientAngle dash size font bodyFont align radius shadow",
-		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend via head tail straight at label",
+		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor dash size font kind bend via head tail straight at label",
 	}
-	placeFields = "id in x y rot opacity locked right left above below gap behind over use"
-	verbFields  = map[string]string{
+	// Of geo shapes, only a rectangle has corners to round.
+	cornerlessGeo = strings.Replace(addFields[doc.TypeGeo], " radius", "", 1)
+	placeFields   = "id in x y rot opacity locked right left above below gap behind over use"
+	verbFields    = map[string]string{
 		"del": "", "ungroup": "", "camera": "", "delPage": "",
-		"group": "id", "arrange": "how", "order": "how behind over", "flip": "how",
-		"dup": "dx dy n id", "page": "name",
+		"group": "id", "arrange": "how rows cols gap", "order": "how behind over", "flip": "how",
+		"dup": "dx dy n rows cols gap id", "page": "name",
 	}
 
 	styleEnums = map[string][]string{
@@ -203,11 +208,19 @@ var (
 		"label":      {"center", "above"},
 	}
 	verbHows = map[string][]string{
-		"arrange": {"left", "center-h", "right", "top", "center-v", "bottom", "distribute-h", "distribute-v"},
+		"arrange": {"left", "center-h", "right", "top", "center-v", "bottom", "distribute-h", "distribute-v", "grid"},
 		"order":   {"front", "forward", "backward", "back"},
 		"flip":    {"h", "v"},
 	}
 )
+
+// takenBy returns what a kind of shape takes, besides where it goes.
+func takenBy(kind, geoKind string) string {
+	if kind == doc.TypeGeo && geoKind != "rectangle" {
+		return cornerlessGeo
+	}
+	return addFields[kind]
+}
 
 // said returns the names of the fields f sets, in its own order.
 func said(f *fields) []string {
@@ -392,13 +405,14 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 	}
 	switch o.verb {
 	case "add":
-		kind, _, err := shapeKind(*o.Add)
+		kind, geoKind, err := shapeKind(*o.Add)
 		if err != nil {
 			return nil, err
 		}
+		list := takenBy(kind, geoKind)
 		for _, name := range said(&o.fields) {
-			if !allows(addFields[kind], name) && !allows(placeFields, name) {
-				return nil, fmt.Errorf("%s has no %q; it takes %s %s", *o.Add, name, addFields[kind], placeFields)
+			if !allows(list, name) && !allows(placeFields, name) {
+				return nil, fmt.Errorf("%s has no %q; it takes %s %s", *o.Add, name, list, placeFields)
 			}
 		}
 		if o.Dash != nil && *o.Dash == "none" && !outlineOptional(kind) {
@@ -416,6 +430,9 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 			if o.At != nil && (o.Straight == nil || *o.Straight == "off") {
 				return nil, errors.New(`at goes with straight:"h" or "v"`)
 			}
+		}
+		if o.Gap != nil && !o.saysBeside() {
+			return nil, errors.New(gapHelp)
 		}
 		if kind == doc.TypeDraw && (o.X1 != nil || o.X2 != nil) && o.Fn == nil {
 			return nil, errors.New("x1 and x2 are where a draw's fn runs, and it has none")
@@ -455,11 +472,39 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 				return nil, fmt.Errorf("%s needs how: %s", o.verb, strings.Join(hows, ", "))
 			}
 		}
+		if o.verb == "arrange" && *o.How != "grid" && (o.Rows != nil || o.Cols != nil || o.Gap != nil) {
+			return nil, errors.New(`rows, cols and gap go with how:"grid"`)
+		}
 	}
 	if err := o.readPath(); err != nil {
 		return nil, err
 	}
+	if o.verb == "add" && *o.Add == doc.TypeDraw && o.path != nil && saysFill(&o.fields) && !o.closes() {
+		return nil, errors.New(openFillHelp)
+	}
 	return o, nil
+}
+
+// gapHelp says what gap is, of what sits beside something.
+const gapHelp = "gap is how far from what right, left, above or below names, and this names none"
+
+// saysBeside says whether fields place a shape beside another.
+func (f *fields) saysBeside() bool {
+	return f.Right != nil || f.Left != nil || f.Above != nil || f.Below != nil
+}
+
+// openFillHelp says why a fill doesn't take on a draw.
+const openFillHelp = "a draw only fills if its path closes; end d with Z"
+
+// saysFill says whether fields ask for something to fill with.
+func saysFill(f *fields) bool {
+	return (f.Fill != nil && *f.Fill != "none") || (f.Gradient != nil && len(*f.Gradient) > 0)
+}
+
+// closes says whether any of an op's path closes, and so can hold a fill.
+func (o *op) closes() bool {
+	_, closed := o.path.Flatten(1)
+	return slices.Contains(closed, true)
 }
 
 // readPath works out the path an op's d or fn says.
@@ -581,6 +626,11 @@ func checkValues(f *fields) error {
 		}
 		if f.Via != nil && len(*f.Via) > 0 {
 			return errors.New(`straight runs level, so it can't take via`)
+		}
+	}
+	for _, n := range []*int{f.Rows, f.Cols} {
+		if n != nil && (*n < 1 || *n > maxMade) {
+			return fmt.Errorf("rows and cols must be from 1 to %d", maxMade)
 		}
 	}
 	if f.Via != nil {
@@ -792,6 +842,8 @@ type applyMode struct {
 	// what they come to when a batch that isn't dry succeeds.
 	styles map[string]*fields
 	keep   func(map[string]*fields)
+	// check says, as the batch begins, whether it can go ahead at all.
+	check func() error
 }
 
 // apply runs ops as one step of undo, and says what came of them.
@@ -812,6 +864,11 @@ func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 	}
 	var report string
 	err := e.Batch(func() error {
+		if mode.check != nil {
+			if err := mode.check(); err != nil {
+				return err
+			}
+		}
 		for i, o := range ops {
 			if o == nil {
 				continue
@@ -908,6 +965,16 @@ func (r *run) checkReach() error {
 }
 
 func (r *run) do(o *op) error {
+	// A selector can reach another page, for as long as this op takes.
+	if t := o.targets(); t != nil && t.sel != nil && t.sel.Page != nil {
+		p := findPage(r.e, *t.sel.Page)
+		if p == nil {
+			return fmt.Errorf("no page %q", *t.sel.Page)
+		}
+		was := r.e.Page
+		r.e.Page = p.ID
+		defer func() { r.e.Page = was }()
+	}
 	switch o.verb {
 	case "add":
 		if err := r.add(o); err != nil {
@@ -928,6 +995,15 @@ func (r *run) do(o *op) error {
 		ids, err := r.mutable(o.Ungroup)
 		if err != nil {
 			return err
+		}
+		if o.Ungroup.broad() {
+			// A card comes apart only when it's named.
+			ids = slices.DeleteFunc(ids, func(id doc.ID) bool {
+				return r.e.Doc.Shapes[id].Type != doc.TypeGroup || r.cardOf(id) != nil
+			})
+			if len(ids) == 0 {
+				return errors.New("there is no group among them")
+			}
 		}
 		for _, id := range ids {
 			if r.e.Doc.Shapes[id].Type != doc.TypeGroup {
@@ -1146,29 +1222,16 @@ func (r *run) current(name string) (*doc.Shape, error) {
 }
 
 // mutable resolves the ids of shapes about to change, none of them locked.
-func (r *run) mutable(list names) ([]doc.ID, error) {
-	if len(list) == 0 {
-		return nil, errors.New("names no shapes")
-	}
-	ids := make([]doc.ID, 0, len(list))
-	for _, name := range list {
-		s, err := r.current(name)
-		if err != nil {
-			return nil, err
-		}
-		if s.Locked {
-			return nil, fmt.Errorf("%s is locked; {\"set\":%q,\"locked\":false} first", name, name)
-		}
-		ids = append(ids, s.ID)
-	}
-	return ids, nil
-}
+func (r *run) mutable(t *targets) ([]doc.ID, error) { return r.pick(t, false) }
 
 // freshID returns a new shape id, the one asked for or a short one.
 func (r *run) freshID(asked *string) (doc.ID, error) {
 	if asked != nil {
 		if *asked == "" || strings.ContainsAny(*asked, " \t\n") {
 			return "", fmt.Errorf("bad id %q", *asked)
+		}
+		if *asked == everything {
+			return "", fmt.Errorf(`bad id %q: it means all on the page`, *asked)
 		}
 		id := shapeID(*asked)
 		if r.e.Doc.Shapes[id] != nil {
@@ -1216,7 +1279,7 @@ func (r *run) add(o *op) error {
 		return err
 	}
 	if o.Use != nil {
-		f, err := r.withUse(&o.fields, addFields[kind])
+		f, err := r.withUse(&o.fields, takenBy(kind, geoKind))
 		if err != nil {
 			return err
 		}
@@ -1280,7 +1343,7 @@ func (r *run) add(o *op) error {
 // styled applies the batch's style then the op's own fields to a new shape,
 // leaving out of the style what this kind of shape doesn't take.
 func (r *run) styled(s *doc.Shape, f *fields) {
-	style := keepAllowed(&r.style, addFields[s.Type])
+	style := keepAllowed(&r.style, takenBy(s.Type, s.Geo))
 	assign(s, &style)
 	assign(s, f)
 }
@@ -2019,38 +2082,27 @@ func (r *run) set(o *op) error {
 	if len(said(f)) == 0 {
 		return errors.New("set says nothing to change")
 	}
-	if f.ID != nil || f.How != nil || f.N != nil {
-		return errors.New(`set has no "id", "how" or "n"`)
+	if f.ID != nil || f.How != nil || f.N != nil || f.Rows != nil || f.Cols != nil {
+		return errors.New(`set has no "id", "how", "n", "rows" or "cols"`)
 	}
-	if len(o.Set) > 1 && (f.Right != nil || f.Left != nil || f.Above != nil || f.Below != nil) {
+	ids, err := r.pick(o.Set, f.Locked != nil && !*f.Locked)
+	if err != nil {
+		return err
+	}
+	several := len(ids) > 1 || o.Set.broad()
+	if several && f.saysBeside() {
 		return errors.New("relative places are for one shape at a time; use x, y, dx or dy for several")
 	}
-	if len(o.Set) > 1 && f.X != nil && f.Y != nil {
+	if several && f.X != nil && f.Y != nil {
 		return errors.New("x and y together would stack several shapes; give one of them to line them up, or use dx, dy")
 	}
-	var ids []doc.ID
-	unlocking := f.Locked != nil && !*f.Locked
-	for _, name := range o.Set {
-		s, err := r.current(name)
-		if err != nil {
-			return err
-		}
-		if s.Locked && !unlocking {
-			return fmt.Errorf("%s is locked; {\"set\":%q,\"locked\":false} first", name, name)
-		}
-		ids = append(ids, s.ID)
+	done, err := r.setAll(ids, o, o.Set.broad())
+	if err != nil {
+		return err
 	}
-	if len(ids) == 0 {
-		return errors.New("names no shapes")
-	}
-	for _, id := range ids {
-		if err := r.setOne(id, o); err != nil {
-			return fmt.Errorf("%s: %w", shortID(id), err)
-		}
-		r.changed[id] = true
-	}
+	r.markChanged(done)
 	if f.Behind != nil || f.Over != nil {
-		return r.orderBeside(ids, f)
+		return r.orderBeside(done, f)
 	}
 	return nil
 }
@@ -2061,16 +2113,11 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	if err != nil {
 		return err
 	}
-	if err := r.checkSet(s, f); err != nil {
-		return err
-	}
-	if s.Type == doc.TypeDraw && (f.X1 != nil || f.X2 != nil) && f.Fn == nil {
-		return errors.New("x1 and x2 are where a draw's fn runs, and this says none")
-	}
-	if f.GradientAngle != nil && f.Gradient == nil && !slices.ContainsFunc(r.leaves(id), func(l *doc.Shape) bool {
-		return l.Gradient != nil
-	}) {
-		return errors.New("gradientAngle goes with a gradient, and it has none")
+	// Only what the op says itself: a style is left out of what doesn't take it.
+	for _, name := range said(&o.fields) {
+		if err := r.refuses(s, o, name); err != nil {
+			return err
+		}
 	}
 	if c := r.cardOf(id); c != nil {
 		if _, ok := r.before[id]; !ok {
@@ -2091,7 +2138,7 @@ func (r *run) setOne(id doc.ID, o *op) error {
 		if leaf.ID == id {
 			assign(c, f)
 		} else {
-			assign(c, stylesFor(leaf.Type, f))
+			assign(c, stylesFor(leaf, f))
 		}
 		r.e.FitLabel(c)
 		r.e.Put(c)
@@ -2180,29 +2227,75 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	return nil
 }
 
-// checkSet says whether a shape takes what set says.
-func (r *run) checkSet(s *doc.Shape, f *fields) error {
+// refuses says why a shape can't take a field an op says, if it can't: nothing that
+// would only be stored, to show nowhere.
+func (r *run) refuses(s *doc.Shape, o *op, name string) error {
 	const placing = "x y dx dy in right left above below gap behind over locked rot opacity use"
+	f := &o.fields
 	list := r.setList(s)
-	if f.Dash != nil && *f.Dash == "none" && !outlineOptional(s.Type) {
-		return fmt.Errorf(`a %s is its line, so it can't have dash "none"`, s.Type)
+	if s.Type == doc.TypeArrow && allows("x y rot right left above below gap w h", name) {
+		return fmt.Errorf("an arrow has no %q; move it with dx,dy or its ends", name)
 	}
-	for _, name := range said(f) {
-		if s.Type == doc.TypeArrow {
-			if allows("x y rot right left above below gap w h", name) {
-				return fmt.Errorf("an arrow has no %q; move it with dx,dy or its ends", name)
-			}
+	if !allows(placing, name) && !allows(list, name) {
+		return fmt.Errorf("%s has no %q; it takes %s %s", aKind(s), name, list, placing)
+	}
+	switch name {
+	case "gap":
+		if !f.saysBeside() {
+			return errors.New(gapHelp)
 		}
-		if !allows(placing, name) && !allows(list, name) {
-			return fmt.Errorf("a %s has no %q; it takes %s %s", s.Type, name, list, placing)
+	case "dash":
+		if *f.Dash == "none" && !outlineOptional(s.Type) {
+			return fmt.Errorf(`a %s is its line, so it can't have dash "none"`, s.Type)
+		}
+	case "dx", "dy":
+		if s.Type == doc.TypeArrow && r.e.BindingOf(s.ID, "start") != nil && r.e.BindingOf(s.ID, "end") != nil {
+			return errors.New("a bound arrow moves with what it joins")
+		}
+	case "x1", "x2":
+		if s.Type == doc.TypeDraw && f.Fn == nil {
+			return errors.New("x1 and x2 are where a draw's fn runs, and this says none")
+		}
+	case "in":
+		if t := r.e.Doc.Shapes[shapeID(*f.In)]; *f.In != "" && t != nil && (t.ID == s.ID || r.e.IsAncestor(s.ID, t.ID)) {
+			return errors.New("a shape can't go inside itself")
+		}
+	case "fill", "gradient":
+		// A new path says for itself whether it closes.
+		closed := s.IsClosed
+		if o.path != nil {
+			closed = o.closes()
+		}
+		if s.Type == doc.TypeDraw && saysFill(f) && !closed {
+			return errors.New(openFillHelp)
+		}
+	case "gradientAngle":
+		if f.Gradient == nil && !slices.ContainsFunc(r.leaves(s.ID), func(l *doc.Shape) bool { return l.Gradient != nil }) {
+			return errors.New("gradientAngle goes with a gradient, and it has none")
+		}
+	}
+	// A group takes a style for what it holds, so that has to take it.
+	if s.Type == doc.TypeGroup && r.cardOf(s.ID) == nil && !allows(placing, name) && isStyleField(name) {
+		if !slices.ContainsFunc(r.leaves(s.ID), func(l *doc.Shape) bool { return allows(takenBy(l.Type, l.Geo), name) }) {
+			return fmt.Errorf("nothing in group %s takes %q", shortID(s.ID), name)
 		}
 	}
 	return nil
 }
 
+// aKind says what a shape is, with its article.
+func aKind(s *doc.Shape) string {
+	name := kindName(s)
+	if strings.ContainsRune("aeiox", rune(name[0])) { // as x-box
+		return "an " + name
+	}
+	return "a " + name
+}
+
 // setList returns what a shape takes, beside where it goes.
 func (r *run) setList(s *doc.Shape) string {
-	list, known := addFields[s.Type]
+	list := takenBy(s.Type, s.Geo)
+	_, known := addFields[s.Type]
 	switch {
 	case s.Type == doc.TypeGroup:
 		list = "w h color labelColor fill gradient gradientAngle dash size font align valign padding radius shadow"
@@ -2231,9 +2324,9 @@ func (r *run) leaves(id doc.ID) []*doc.Shape {
 }
 
 // stylesFor keeps of fields the styles a type of shape takes.
-func stylesFor(typ string, f *fields) *fields {
+func stylesFor(leaf *doc.Shape, f *fields) *fields {
 	out := *f
-	list := addFields[typ]
+	list := takenBy(leaf.Type, leaf.Geo)
 	v := reflect.ValueOf(&out).Elem()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Tag.Get("json")
@@ -2297,16 +2390,13 @@ func (r *run) setPath(s *doc.Shape, o *op) error {
 }
 
 func (r *run) del(o *op) error {
-	var ids []doc.ID
-	if len(o.Del) == 1 && o.Del[0] == "*" {
-		r.e.SelectNone()
-		r.e.SelectAll()
-		ids = slices.Clone(r.e.Selection())
-	} else {
-		var err error
-		if ids, err = r.mutable(o.Del); err != nil {
-			return err
+	ids, err := r.mutable(o.Del)
+	if err != nil {
+		// A page already clear is what was asked for.
+		if o.Del.isEverything() && errors.Is(err, errPicksNothing) {
+			return nil
 		}
+		return err
 	}
 	before := len(r.e.Doc.Shapes)
 	r.warnLostBindings(ids)
@@ -2348,43 +2438,31 @@ func (r *run) dup(o *op) error {
 	if err != nil {
 		return err
 	}
-	n := max(len(o.With), 1)
-	if o.N != nil {
-		if len(o.With) > 1 && *o.N != len(o.With) {
-			return fmt.Errorf("n says %d copies and with lists %d; leave n out", *o.N, len(o.With))
-		}
-		n = *o.N
-	}
-	if n < 1 || n > maxCopies {
-		return fmt.Errorf("n must be from 1 to %d", maxCopies)
-	}
-	if o.ID != nil && n > 1 {
-		return errors.New(`id names one copy; name several with with:[{"id":"a"},{"id":"b"}]`)
-	}
 	var box geo.Box
+	size := 0
 	for i, id := range ids {
 		if i == 0 {
 			box = r.e.PageBounds(id)
 		} else {
 			box = box.Union(r.e.PageBounds(id))
 		}
+		size += 1 + len(r.e.Descendants(id))
 	}
-	// Beside what it copies, unless asked otherwise.
-	d := geo.V(box.W+copyGap, 0)
-	if o.DX != nil || o.DY != nil {
-		d = geo.Vec{}
-		if o.DX != nil {
-			d.X = *o.DX
-		}
-		if o.DY != nil {
-			d.Y = *o.DY
-		}
+	offsets, err := copyOffsets(o, box)
+	if err != nil {
+		return err
+	}
+	if n := len(offsets) * size; n > maxMade {
+		return fmt.Errorf("this would make %d shapes; a dup makes up to %d", n, maxMade)
+	}
+	if o.ID != nil && len(offsets) > 1 {
+		return errors.New(`id names one copy; name several with with:[{"id":"a"},{"id":"b"}]`)
 	}
 	r.warnLostEnds(ids)
-	for i := 1; i <= n; i++ {
+	for i, at := range offsets {
 		var item *op
 		if len(o.With) > 0 {
-			item = o.With[min(i-1, len(o.With)-1)]
+			item = o.With[min(i, len(o.With)-1)]
 		}
 		asked := o.ID
 		if item != nil && item.ID != nil {
@@ -2399,7 +2477,7 @@ func (r *run) dup(o *op) error {
 			}
 		}
 		r.e.Select(ids...)
-		copies := r.e.DuplicateAs(d.Mul(float64(i)), r.copyNames(asked))
+		copies := r.e.DuplicateAs(at, r.copyNames(asked))
 		r.added = append(r.added, copies...)
 		if item == nil {
 			continue
@@ -2409,13 +2487,94 @@ func (r *run) dup(o *op) error {
 		if len(said(&over.fields)) == 0 {
 			continue
 		}
-		for _, id := range copies {
-			if err := r.setOne(id, &over); err != nil {
-				return fmt.Errorf("%s: %w", shortID(id), err)
-			}
+		if _, err := r.setAll(copies, &over, o.Dup.broad()); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// copyOffsets returns how far each copy a dup asks for is from what it copies: along
+// a line, or the cells of a grid, row by row, whose first is the original.
+func copyOffsets(o *op, box geo.Box) ([]geo.Vec, error) {
+	if o.Rows != nil || o.Cols != nil {
+		return gridOffsets(o, box)
+	}
+	if o.Gap != nil {
+		return nil, errors.New("gap goes with rows or cols; dx and dy space a line of copies")
+	}
+	n := max(len(o.With), 1)
+	if o.N != nil {
+		if len(o.With) > 1 && *o.N != len(o.With) {
+			return nil, fmt.Errorf("n says %d copies and with lists %d; leave n out", *o.N, len(o.With))
+		}
+		n = *o.N
+	}
+	if n < 1 || n > maxCopies {
+		return nil, fmt.Errorf("n must be from 1 to %d", maxCopies)
+	}
+	// Beside what it copies, unless asked otherwise.
+	d := geo.V(box.W+copyGap, 0)
+	if o.DX != nil || o.DY != nil {
+		d = geo.Vec{}
+		if o.DX != nil {
+			d.X = *o.DX
+		}
+		if o.DY != nil {
+			d.Y = *o.DY
+		}
+	}
+	out := make([]geo.Vec, n)
+	for i := range out {
+		out[i] = d.Mul(float64(i + 1))
+	}
+	return out, nil
+}
+
+func gridOffsets(o *op, box geo.Box) ([]geo.Vec, error) {
+	if o.N != nil {
+		return nil, errors.New("n counts a line of copies, and rows and cols a grid's cells; use one or the other")
+	}
+	if o.Gap != nil && (o.DX != nil || o.DY != nil) {
+		return nil, errors.New("gap is between cells and dx, dy from one to the next; use one or the other")
+	}
+	rows, cols := 1, 1
+	if o.Rows != nil {
+		rows = *o.Rows
+	}
+	if o.Cols != nil {
+		cols = *o.Cols
+	}
+	n := rows*cols - 1
+	if n < 1 {
+		return nil, errors.New("a grid of one cell is the original, so it copies nothing")
+	}
+	if n > maxMade {
+		return nil, fmt.Errorf("%d rows of %d make too many copies; a dup makes up to %d", rows, cols, maxMade)
+	}
+	if len(o.With) > 1 && len(o.With) != n {
+		return nil, fmt.Errorf("%d rows of %d make %d copies, the original being the first cell, and with lists %d", rows, cols, n, len(o.With))
+	}
+	gap := copyGap
+	if o.Gap != nil {
+		gap = *o.Gap
+	}
+	d := geo.V(box.W+gap, box.H+gap)
+	if o.DX != nil {
+		d.X = *o.DX
+	}
+	if o.DY != nil {
+		d.Y = *o.DY
+	}
+	out := make([]geo.Vec, 0, n)
+	for row := range rows {
+		for col := range cols {
+			if row != 0 || col != 0 {
+				out = append(out, geo.V(float64(col)*d.X, float64(row)*d.Y))
+			}
+		}
+	}
+	return out, nil
 }
 
 // copyNames returns what names a copy's shapes: the first as asked, and what it holds
@@ -2519,6 +2678,13 @@ func (r *run) arrange(o *op) error {
 	if err != nil {
 		return err
 	}
+	if o.Arrange.broad() {
+		// An arrow goes with what it joins.
+		ids = slices.DeleteFunc(ids, func(id doc.ID) bool { return r.e.Doc.Shapes[id].Type == doc.TypeArrow })
+	}
+	if *o.How == "grid" {
+		return r.arrangeGrid(ids, o)
+	}
 	r.e.Select(ids...)
 	switch *o.How {
 	case "distribute-h", "distribute-v":
@@ -2536,27 +2702,79 @@ func (r *run) arrange(o *op) error {
 	return nil
 }
 
+// arrangeGrid lays shapes out in cells as big as the biggest of them, in the order
+// they come, from the top left of the box they share.
+func (r *run) arrangeGrid(ids []doc.ID, o *op) error {
+	chosen := make(map[doc.ID]bool, len(ids))
+	for _, id := range ids {
+		chosen[id] = true
+	}
+	// What holds a shape takes it along.
+	ids = slices.DeleteFunc(ids, func(id doc.ID) bool { return r.heldBy(id, chosen) })
+	if len(ids) < 2 {
+		return errors.New("a grid needs at least 2 shapes")
+	}
+	cols := int(math.Ceil(math.Sqrt(float64(len(ids)))))
+	switch {
+	case o.Rows != nil && o.Cols != nil:
+		if *o.Rows**o.Cols < len(ids) {
+			return fmt.Errorf("%d rows of %d hold %d shapes, and this has %d", *o.Rows, *o.Cols, *o.Rows**o.Cols, len(ids))
+		}
+		cols = *o.Cols
+	case o.Cols != nil:
+		cols = *o.Cols
+	case o.Rows != nil:
+		cols = (len(ids) + *o.Rows - 1) / *o.Rows
+	}
+	gap := copyGap
+	if o.Gap != nil {
+		gap = *o.Gap
+	}
+	var box geo.Box
+	cell := geo.Vec{}
+	for i, id := range ids {
+		if s := r.e.Doc.Shapes[id]; s.Type == doc.TypeArrow {
+			return fmt.Errorf("%s is an arrow, which goes with what it joins; leave it out of a grid", shortID(id))
+		}
+		b := r.e.PageBounds(id)
+		if i == 0 {
+			box = b
+		} else {
+			box = box.Union(b)
+		}
+		cell = geo.V(math.Max(cell.X, b.W), math.Max(cell.Y, b.H))
+	}
+	for i, id := range ids {
+		b := r.e.PageBounds(id)
+		at := geo.V(box.X+float64(i%cols)*(cell.X+gap), box.Y+float64(i/cols)*(cell.Y+gap))
+		r.e.MoveBy(id, geo.V(at.X-b.X, at.Y-b.Y))
+	}
+	r.markChanged(ids)
+	return nil
+}
+
 func (r *run) setCamera(o *op) error {
 	r.camera = true
-	if len(o.Camera) == 1 && o.Camera[0] == "fit" {
+	t := o.Camera
+	if !t.broad() && len(t.list) == 1 && t.list[0] == "fit" {
 		if !r.dry {
 			r.e.ZoomToFit()
 		}
 		return nil
 	}
-	if len(o.Camera) == 0 {
+	if !t.broad() && len(t.list) == 0 {
 		return errors.New(`camera takes "fit" or ids`)
 	}
+	ids, err := r.pick(t, true)
+	if err != nil {
+		return err
+	}
 	var box geo.Box
-	for i, name := range o.Camera {
-		s, err := r.current(name)
-		if err != nil {
-			return err
-		}
+	for i, id := range ids {
 		if i == 0 {
-			box = r.e.PageBounds(s.ID)
+			box = r.e.PageBounds(id)
 		} else {
-			box = box.Union(r.e.PageBounds(s.ID))
+			box = box.Union(r.e.PageBounds(id))
 		}
 	}
 	if !r.dry {
@@ -2610,9 +2828,13 @@ func (r *run) report() string {
 		fmt.Fprintf(&b, "ok page %q\n", p.Name)
 	}
 	// What it made first, then what it changed, as each now is.
+	added := make(map[doc.ID]bool, len(r.added))
+	for _, id := range r.added {
+		added[id] = true
+	}
 	var changed []doc.ID
 	for id := range r.changed {
-		if r.e.Doc.Shapes[id] != nil && !slices.Contains(r.added, id) {
+		if r.e.Doc.Shapes[id] != nil && !added[id] {
 			changed = append(changed, id)
 		}
 	}
@@ -2666,14 +2888,7 @@ func (r *run) report() string {
 
 // idRanges lists ids compactly: a run of ids an agent didn't choose, as s4-s9.
 func idRanges(ids []doc.ID) string {
-	number := func(id doc.ID) (int, bool) {
-		rest, ok := strings.CutPrefix(shortID(id), "s")
-		if !ok {
-			return 0, false
-		}
-		n, err := strconv.Atoi(rest)
-		return n, err == nil && "s"+strconv.Itoa(n) == shortID(id)
-	}
+	number := func(id doc.ID) (int, bool) { return autoNumber(shortID(id)) }
 	var out []string
 	for i := 0; i < len(ids); {
 		end := i

@@ -138,6 +138,7 @@ type Editor struct {
 	spaceHeld bool
 
 	undo, redo []*entry
+	revision   uint64
 	tx         *entry
 	routes     map[doc.ID]*viaRoute // as they were when tx began
 	pageShapes map[doc.ID][]routeShape
@@ -174,6 +175,7 @@ func New(d *doc.Drawing, measure Measure) *Editor {
 func (e *Editor) Replace(d *doc.Drawing) {
 	e.cancelGesture()
 	e.Doc = d
+	e.revision++
 	e.undo, e.redo, e.tx = nil, nil, nil
 	e.kids, e.sel, e.Editing, e.Hovered, e.FocusedGroup = nil, nil, "", "", ""
 	e.bindFrom, e.bindTo = nil, nil
@@ -296,10 +298,16 @@ func (e *Editor) commit() {
 }
 
 func (e *Editor) changed() {
+	e.revision++
 	if e.OnChange != nil {
 		e.OnChange(e.Doc.Snapshot())
 	}
 }
+
+// Revision counts the changes to the document: each commit, undo and redo, and each
+// drawing replacing it. What's rolled back never happened, and an undo is a change
+// like any other, so that the same number means the same document.
+func (e *Editor) Revision() uint64 { return e.revision }
 
 // rollback ends the transaction, restoring what it changed.
 func (e *Editor) rollback() {

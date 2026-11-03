@@ -248,6 +248,10 @@ func clip(s string) string {
 
 // details says all there is of the shapes named, with what they hold.
 func details(e *editor.Editor, list names) (string, error) {
+	list, err := spread(e, list)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	for _, name := range list {
 		id := shapeID(name)
@@ -430,7 +434,11 @@ const (
 func viewPlan(e *editor.Editor, a viewArgs) (geo.Box, []doc.ID, float64, error) {
 	var ids []doc.ID
 	if len(a.IDs) > 0 {
-		for _, name := range a.IDs {
+		list, err := spread(e, a.IDs)
+		if err != nil {
+			return geo.Box{}, nil, 0, err
+		}
+		for _, name := range list {
 			id := shapeID(name)
 			if e.Doc.Shapes[id] == nil {
 				return geo.Box{}, nil, 0, fmt.Errorf("no shape %q", name)

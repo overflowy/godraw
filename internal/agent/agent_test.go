@@ -793,23 +793,6 @@ func TestDryRunCommits(t *testing.T) {
 		t.Errorf("neither: %q", textOf(r))
 	}
 
-	// A commit that fails can be fixed and tried again.
-	args = map[string]any{"dry": true, "ops": []any{map[string]any{"set": "y", "x": 1}}}
-	if r := call(t, s, "apply", args); !r.IsError {
-		t.Errorf("dry of what doesn't exist: %q", textOf(r))
-	}
-	ops(t, e, `[{"add":"star","id":"y"}]`)
-	got = textOf(call(t, s, "apply", args))
-	token = regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
-	ops(t, e, `[{"del":"y"}]`)
-	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); !r.IsError {
-		t.Errorf("commit after its target went: %q", textOf(r))
-	}
-	ops(t, e, `[{"add":"star","id":"y"}]`)
-	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError {
-		t.Errorf("commit again: %q", textOf(r))
-	}
-
 	// Only the latest stay.
 	var first string
 	for i := range keptDries + 1 {
@@ -843,6 +826,474 @@ func TestDryRunTokenIsNoDocID(t *testing.T) {
 	// Getting them mixed up costs nothing: the dry run is still there.
 	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError || e.Doc.Shapes["shape:x"] == nil {
 		t.Errorf("commit after the mix-ups: %q", textOf(r))
+	}
+}
+
+// A commit runs the ops again, so what it comes to is what the dry run answered only
+// if nothing changed in between.
+func TestStaleDryRunIsRefused(t *testing.T) {
+	dry := func(t *testing.T, s *mcp.ClientSession, op map[string]any) string {
+		t.Helper()
+		got := textOf(call(t, s, "apply", map[string]any{"dry": true, "ops": []any{op}}))
+		token := regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
+		if token == nil {
+			t.Fatalf("dry: %q", got)
+		}
+		return token[1]
+	}
+	cases := []struct {
+		name   string
+		change func(e *editor.Editor, s *mcp.ClientSession)
+	}{
+		{"its anchor moved", func(e *editor.Editor, _ *mcp.ClientSession) { ops(t, e, `[{"set":"a","dx":-300,"dy":100}]`) }},
+		{"something else was added", func(e *editor.Editor, _ *mcp.ClientSession) { ops(t, e, `[{"add":"star","x":900,"y":900}]`) }},
+		{"another page changed", func(e *editor.Editor, _ *mcp.ClientSession) {
+			ops(t, e, `[{"page":"Other"},{"add":"star"},{"page":"Page 1"}]`)
+		}},
+		{"undone", func(e *editor.Editor, _ *mcp.ClientSession) { e.Undo() }},
+		{"undone and redone", func(e *editor.Editor, _ *mcp.ClientSession) { e.Undo(); e.Redo() }},
+		{"a new file", func(e *editor.Editor, _ *mcp.ClientSession) { e.Replace(doc.New()) }},
+		{"another commit", func(e *editor.Editor, s *mcp.ClientSession) {
+			first := dry(t, s, map[string]any{"add": "star", "id": "other"})
+			call(t, s, "apply", map[string]any{"commit": first})
+		}},
+		{"a style it uses", func(e *editor.Editor, s *mcp.ClientSession) {
+			call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"style": map[string]any{"color": "red"}, "name": "body"}}})
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEditor()
+			s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
+			ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100}]`)
+			token := dry(t, s, map[string]any{"add": "rectangle", "id": "x", "below": "a"})
+			c.change(e, s)
+			r := call(t, s, "apply", map[string]any{"commit": token})
+			if !r.IsError || !strings.Contains(textOf(r), "changed since") || !strings.Contains(textOf(r), "nothing was changed") {
+				t.Fatalf("commit: %q", textOf(r))
+			}
+			if e.Doc.Shapes["shape:x"] != nil {
+				t.Error("it committed anyway")
+			}
+			// It can't hold again, and says so as any token that's gone does.
+			if r := call(t, s, "apply", map[string]any{"commit": token}); !r.IsError || !strings.Contains(textOf(r), "no dry run") {
+				t.Errorf("again: %q", textOf(r))
+			}
+		})
+	}
+}
+
+// What leaves the drawing as it was leaves a dry run good, and a commit lands where
+// the dry run said.
+func TestDryRunHoldsWhatChangesNothing(t *testing.T) {
+	e := newEditor()
+	s := connect(t, &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: e}}})
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"page":"Other"},{"page":"Page 1"}]`)
+	args := map[string]any{"dry": true, "ops": []any{map[string]any{"add": "rectangle", "id": "x", "below": "a", "w": 100, "h": 100}}}
+	got := textOf(call(t, s, "apply", args))
+	token := regexp.MustCompile(`commit "(t\d+)"`).FindStringSubmatch(got)
+	if token == nil {
+		t.Fatalf("dry: %q", got)
+	}
+	// Reads, other dry runs, a batch that failed, looking elsewhere and coming back.
+	call(t, s, "read", map[string]any{})
+	call(t, s, "apply", args)
+	if _, err := tryOps(e, `[{"set":"a","dx":5},{"set":"ghost","dx":5}]`); err == nil {
+		t.Fatal("a batch that should fail")
+	}
+	ops(t, e, `[{"camera":"fit"},{"page":"Other"}]`)
+	ops(t, e, `[{"page":"Page 1"}]`)
+	e.Select("shape:a")
+	if r := call(t, s, "apply", map[string]any{"commit": token[1]}); r.IsError {
+		t.Fatalf("commit: %q", textOf(r))
+	}
+	wantBox(t, e, "x", 0, 220, 100, 100)
+}
+
+func TestPickByRun(t *testing.T) {
+	e := newEditor()
+	got, err := apply(e, mustOps(t, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":10,"h":10},{"dup":"c","n":5}]`), applyMode{quiet: true})
+	if err != nil || !strings.Contains(got, "s1-s5") {
+		t.Fatalf("%q %v", got, err)
+	}
+	// What the answer printed, the server takes back.
+	ops(t, e, `[{"set":"s1-s5","color":"red"}]`)
+	for _, id := range []string{"s1", "s3", "s5"} {
+		if c := e.Doc.Shapes[shapeID(id)].Color; c != "red" {
+			t.Errorf("%s is %s", id, c)
+		}
+	}
+	if c := e.Doc.Shapes[shapeID("c")].Color; c == "red" {
+		t.Error("what the run doesn't name changed")
+	}
+	ops(t, e, `[{"set":["c","s1-s2"],"dy":10}]`)
+	wantBox(t, e, "s2", 60, 10, 10, 10)
+	// Named twice, it moves once.
+	ops(t, e, `[{"set":["s3","s3-s4"],"dy":10}]`)
+	wantBox(t, e, "s3", 90, 10, 10, 10)
+	ops(t, e, `[{"dup":"s1-s3","dy":100,"n":1}]`)
+	if len(e.Children(e.Page)) != 9 {
+		t.Errorf("%d shapes", len(e.Children(e.Page)))
+	}
+	if out, err := read(e, readArgs{IDs: names{"s1-s2"}}, "", ""); err != nil || !strings.Contains(out, "s2 rectangle") {
+		t.Errorf("read: %q %v", out, err)
+	}
+	if _, _, _, err := viewPlan(e, viewArgs{IDs: names{"s1-s2"}}); err != nil {
+		t.Errorf("view: %v", err)
+	}
+	ops(t, e, `[{"del":"s1-s5"}]`)
+	if e.Doc.Shapes[shapeID("s3")] != nil || e.Doc.Shapes[shapeID("c")] == nil {
+		t.Error("del of a run")
+	}
+
+	// Any one not there fails it, and an id that looks like a run is still that id.
+	e = newEditor()
+	ops(t, e, `[{"add":"star","id":"s1","x":0,"y":0},{"add":"star","id":"s3","x":0,"y":0},{"add":"star","id":"s7-s8","x":0,"y":0}]`)
+	for list, want := range map[string]string{
+		`"s1-s3"`:         `no shape "s2"`,
+		`"s1-s999999999"`: "runs over",
+		`"s3-s1"`:         `no shape "s3-s1"`,
+	} {
+		if _, err := tryOps(e, `[{"set":`+list+`,"dx":1}]`); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", list, err)
+		}
+	}
+	ops(t, e, `[{"set":"s7-s8","color":"blue"}]`)
+	if e.Doc.Shapes[shapeID("s7-s8")].Color != "blue" {
+		t.Error("an id that looks like a run")
+	}
+}
+
+func TestPickEverything(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100},
+		{"add":"ellipse","id":"o","x":200,"y":0,"w":100,"h":100},
+		{"add":"text","id":"t","text":"Hi","x":400,"y":0},
+		{"add":"line","id":"l","d":"M600 0 L700 0"},
+		{"add":"rectangle","id":"inner","x":0,"y":300,"w":40,"h":40},
+		{"add":"rectangle","id":"inner2","x":60,"y":300,"w":40,"h":40},
+		{"group":["inner","inner2"],"id":"g"},
+		{"add":"arrow","id":"a","from":"r","to":"o"}]`)
+	// Each takes what it can, a group passing it on. A text has no fill.
+	got := ops(t, e, `[{"set":"*","fill":"solid"}]`)
+	if !strings.Contains(got, "fill left out of what doesn't take it: t, l, a") {
+		t.Errorf("no word of what was left out:\n%s", got)
+	}
+	if e.Doc.Shapes[shapeID("r")].Fill != "solid" || e.Doc.Shapes[shapeID("inner")].Fill != "solid" {
+		t.Error("a shape that takes a fill didn't get it")
+	}
+	if e.Doc.Shapes[shapeID("t")].Fill == "solid" {
+		t.Error("the text has a fill")
+	}
+	// Moving all of it moves each once, and arrows go with what they join.
+	if got := ops(t, e, `[{"set":"*","dx":10}]`); strings.Contains(got, "left out") {
+		t.Errorf("an arrow going with what it joins is no news:\n%s", got)
+	}
+	wantBox(t, e, "inner", 10, 300, 40, 40)
+	// Every kind takes this, so nothing is said of it.
+	ops(t, e, `[{"set":"*","opacity":0.5}]`)
+	if e.Doc.Shapes[shapeID("a")].Opacity != 0.5 {
+		t.Error("the arrow's opacity")
+	}
+	// Nothing can take it: then it's wrong.
+	if _, err := tryOps(e, `[{"set":{"kind":"text"},"fill":"solid"}]`); err == nil || !strings.Contains(err.Error(), `takes "fill"`) {
+		t.Errorf("nothing takes it: %v", err)
+	}
+	// Named by id, it stays strict.
+	if _, err := tryOps(e, `[{"set":["r","t"],"fill":"pattern"}]`); err == nil || !strings.Contains(err.Error(), `a text has no "fill"`) {
+		t.Errorf("by id: %v", err)
+	}
+	if e.Doc.Shapes[shapeID("r")].Fill == "pattern" {
+		t.Error("a failed op changed something")
+	}
+	for _, c := range []struct{ ops, want string }{
+		{`[{"set":"*","x":0,"y":0}]`, "stack"},
+		{`[{"set":"*","right":"r"}]`, "one shape at a time"},
+		{`[{"set":["*","r"],"dx":1}]`, "stands alone"},
+		{`[{"add":"star","id":"*"}]`, "bad id"},
+	} {
+		if _, err := tryOps(e, c.ops); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.ops, err, c.want)
+		}
+	}
+	// dup of everything keeps what its arrows join.
+	before := len(e.Doc.Shapes)
+	ops(t, e, `[{"dup":"*","dy":600,"with":{"fill":"pattern"}}]`)
+	if got := len(e.Doc.Shapes); got != 2*before {
+		t.Errorf("%d shapes, from %d", got, before)
+	}
+	// A page already clear is what was asked for; nothing to pick is otherwise wrong.
+	ops(t, e, `[{"del":"*"},{"del":"*"}]`)
+	if _, err := tryOps(e, `[{"set":"*","dx":1}]`); err == nil || !strings.Contains(err.Error(), "picks nothing") {
+		t.Errorf("empty page: %v", err)
+	}
+}
+
+func TestPickByKindAndPage(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":50,"h":50},
+		{"add":"ellipse","id":"o","x":100,"y":0,"w":50,"h":50},
+		{"add":"frame","id":"f","x":0,"y":200,"w":300,"h":200},
+		{"add":"rectangle","id":"inFrame","in":"f","x":10,"y":210,"w":50,"h":50},
+		{"add":"card","id":"c","title":"T","x":400,"y":0},
+		{"add":"rectangle","id":"p1","x":0,"y":500,"w":10,"h":10},
+		{"add":"rectangle","id":"p2","x":20,"y":500,"w":10,"h":10},
+		{"group":["p1","p2"],"id":"g"},
+		{"page":"Two"},
+		{"add":"rectangle","id":"far","x":0,"y":0,"w":50,"h":50},
+		{"add":"star","id":"star","x":100,"y":0,"w":50,"h":50},
+		{"page":"Page 1"}]`)
+	home := e.Page
+	shape := func(id string) *doc.Shape { return e.Doc.Shapes[shapeID(id)] }
+
+	// At any depth, not a card's box, and not on another page.
+	ops(t, e, `[{"set":{"kind":"rectangle"},"color":"red"}]`)
+	for id, want := range map[string]bool{"r": true, "inFrame": true, "p1": true, "c-box": false, "o": false, "far": false} {
+		if (shape(id).Color == "red") != want {
+			t.Errorf("%s is %s", id, shape(id).Color)
+		}
+	}
+	ops(t, e, `[{"set":{"kind":["ellipse","card"]},"color":"green"}]`)
+	if shape("o").Color != "green" || shape("c-box").Color != "green" {
+		t.Error("a list of kinds")
+	}
+	// geo is all of them; a group isn't a card.
+	ops(t, e, `[{"set":{"kind":"geo"},"dash":"dotted"}]`)
+	if shape("o").Dash != "dotted" || shape("r").Dash != "dotted" {
+		t.Error("kind geo")
+	}
+	if got := ops(t, e, `[{"set":{"kind":"group"},"dx":5}]`); !strings.Contains(got, "g ") {
+		t.Errorf("kind group: %s", got)
+	}
+	wantBox(t, e, "c", boxOf(e, shapeID("c")).X, 0, boxOf(e, shapeID("c")).W, boxOf(e, shapeID("c")).H)
+	if boxOf(e, shapeID("c")).X != 400 {
+		t.Error("kind group took in a card")
+	}
+	// Another page, without going there.
+	ops(t, e, `[{"set":{"page":"Two"},"color":"violet"}]`)
+	if e.Page != home {
+		t.Error("it went to the page")
+	}
+	if shape("far").Color != "violet" || shape("star").Color != "violet" || shape("r").Color == "violet" {
+		t.Error("page")
+	}
+	ops(t, e, `[{"set":{"page":"Two","kind":"star"},"color":"orange"}]`)
+	if shape("star").Color != "orange" || shape("far").Color != "violet" {
+		t.Error("page and kind")
+	}
+	// A copy stays on its page.
+	got := ops(t, e, `[{"dup":{"page":"Two","kind":"star"},"dy":100,"with":{"id":"star2"}}]`)
+	if e.PageOf(shapeID("star2")) == home || e.Page != home {
+		t.Errorf("dup across pages:\n%s", got)
+	}
+	// It all comes back as one undo step.
+	e.Undo()
+	if shape("star2") != nil {
+		t.Error("undo of dup across pages")
+	}
+	ops(t, e, `[{"del":{"page":"Two"}}]`)
+	if shape("far") != nil || shape("r") == nil || e.Page != home {
+		t.Error("del of another page")
+	}
+	for _, c := range []struct{ ops, want string }{
+		{`[{"set":{"kind":"blob"},"dx":1}]`, "no kind"},
+		{`[{"set":{"page":"Nope"},"dx":1}]`, `no page "Nope"`},
+		{`[{"set":{},"dx":1}]`, "a selector is"},
+		{`[{"set":{"shape":"r"},"dx":1}]`, "a selector is"},
+		{`[{"set":{"kind":"star"},"dx":1}]`, "picks nothing"},
+		{`[{"set":7,"dx":1}]`, "expected an id"},
+	} {
+		if _, err := tryOps(e, c.ops); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.ops, err, c.want)
+		}
+	}
+}
+
+func TestPickLeavesLockedAlone(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":50,"h":50},
+		{"add":"rectangle","id":"b","x":100,"y":0,"w":50,"h":50,"locked":true},
+		{"add":"rectangle","id":"p1","x":0,"y":100,"w":10,"h":10},
+		{"add":"rectangle","id":"p2","x":20,"y":100,"w":10,"h":10},
+		{"group":["p1","p2"],"id":"g"},
+		{"set":"g","locked":true}]`)
+	got := ops(t, e, `[{"set":{"kind":"rectangle"},"color":"red"}]`)
+	if !strings.Contains(got, "left alone what is locked") {
+		t.Errorf("no word of it:\n%s", got)
+	}
+	if e.Doc.Shapes[shapeID("a")].Color != "red" {
+		t.Error("what isn't locked")
+	}
+	for _, id := range []string{"b", "p1"} {
+		if e.Doc.Shapes[shapeID(id)].Color == "red" {
+			t.Errorf("%s changed, locked", id)
+		}
+	}
+	// A locked one named by its id is refused, and it takes unlocking to reach them.
+	if _, err := tryOps(e, `[{"set":"b","color":"red"}]`); err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Errorf("by id: %v", err)
+	}
+	ops(t, e, `[{"del":"*"}]`)
+	if e.Doc.Shapes[shapeID("b")] == nil || e.Doc.Shapes[shapeID("a")] != nil {
+		t.Error("del * and what's locked")
+	}
+	ops(t, e, `[{"set":"*","locked":false}]`)
+	if e.Doc.Shapes[shapeID("b")].Locked || e.Doc.Shapes[shapeID("g")].Locked {
+		t.Error("unlocking all of it")
+	}
+}
+
+func TestGridOfCopies(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":10,"y":20,"w":40,"h":30},{"dup":"c","rows":3,"cols":4}]`)
+	if n := len(e.Children(e.Page)); n != 12 {
+		t.Fatalf("%d shapes", n)
+	}
+	// Row by row, each cell its size and the default gap on.
+	wantBox(t, e, "s1", 70, 20, 40, 30)
+	wantBox(t, e, "s3", 190, 20, 40, 30)
+	wantBox(t, e, "s4", 10, 70, 40, 30)
+	wantBox(t, e, "s11", 190, 120, 40, 30)
+
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","rows":2,"cols":2,"gap":5}]`)
+	wantBox(t, e, "s3", 45, 35, 40, 30)
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","rows":2,"cols":2,"dx":100}]`)
+	wantBox(t, e, "s3", 100, 50, 40, 30)
+	// One way is a line.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","rows":3}]`)
+	wantBox(t, e, "s2", 0, 100, 40, 30)
+	// Copies with changes, by cell.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","rows":2,"cols":2,"with":[{"id":"b","color":"red"},{"id":"d"},{"id":"e","color":"blue"}]}]`)
+	wantBox(t, e, "d", 0, 50, 40, 30)
+	if e.Doc.Shapes[shapeID("e")].Color != "blue" {
+		t.Error("with by cell")
+	}
+	// A grid of a row: nested grids are one op on a run.
+	e = newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","n":3},{"dup":["c","s1-s3"],"rows":2}]`)
+	if n := len(e.Children(e.Page)); n != 8 {
+		t.Errorf("%d shapes", n)
+	}
+	for _, c := range []struct{ ops, want string }{
+		{`[{"dup":"c","rows":1}]`, "copies nothing"},
+		{`[{"dup":"c","rows":0}]`, "from 1"},
+		{`[{"dup":"c","cols":2,"n":1}]`, "use one or the other"},
+		{`[{"dup":"c","gap":2}]`, "gap goes with rows or cols"},
+		{`[{"dup":"c","cols":2,"gap":2,"dx":3}]`, "use one or the other"},
+		{`[{"dup":"c","rows":2,"cols":2,"with":[{"id":"a"},{"id":"b"}]}]`, "with lists 2"},
+		{`[{"dup":"c","rows":2,"cols":2,"id":"a"}]`, "id names one copy"},
+		{`[{"dup":"c","rows":9999,"cols":9999}]`, "too many"},
+		{`[{"set":"c","rows":2}]`, "set has no"},
+		{`[{"dup":"c","with":{"rows":2}}]`, "has no"},
+		{`[{"add":"star","cols":2}]`, "has no"},
+	} {
+		f := newEditor()
+		ops(t, f, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30}]`)
+		if _, err := tryOps(f, c.ops); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.ops, err, c.want)
+		}
+	}
+	// However it comes to too many.
+	f := newEditor()
+	ops(t, f, `[{"add":"rectangle","id":"c","x":0,"y":0,"w":40,"h":30},{"dup":"c","n":200}]`)
+	if _, err := tryOps(f, `[{"dup":"*","n":200}]`); err == nil || !strings.Contains(err.Error(), "would make") {
+		t.Errorf("too many by a selection: %v", err)
+	}
+}
+
+func TestArrangeGrid(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":100,"y":100,"w":40,"h":40},
+		{"add":"rectangle","id":"b","x":500,"y":900,"w":60,"h":20},
+		{"add":"rectangle","id":"c","x":300,"y":300,"w":20,"h":50},
+		{"add":"rectangle","id":"d","x":900,"y":100,"w":20,"h":20},
+		{"add":"rectangle","id":"e","x":200,"y":200,"w":20,"h":20},
+		{"add":"arrow","id":"ar","from":"a","to":"b"},
+		{"arrange":["a","b","c","d","e"],"how":"grid","cols":2,"gap":10}]`)
+	// Cells are 60x50, from the top left of the box they shared, in the order named.
+	wantBox(t, e, "a", 100, 100, 40, 40)
+	wantBox(t, e, "b", 170, 100, 60, 20)
+	wantBox(t, e, "c", 100, 160, 20, 50)
+	wantBox(t, e, "d", 170, 160, 20, 20)
+	wantBox(t, e, "e", 100, 220, 20, 20)
+	ops(t, e, `[{"arrange":["a","b","c","d","e"],"how":"grid","rows":2,"gap":0}]`)
+	wantBox(t, e, "d", 100, 150, 20, 20)
+	wantBox(t, e, "e", 160, 150, 20, 20)
+	// Neither says: near square.
+	ops(t, e, `[{"arrange":["a","b","c","d","e"],"how":"grid"}]`)
+	wantBox(t, e, "d", 100, 170, 20, 20)
+	// What's picked goes without its arrows, and may come to one.
+	ops(t, e, `[{"arrange":"*","how":"grid","cols":5,"gap":0}]`)
+	wantBox(t, e, "b", 160, 100, 60, 20)
+	for _, c := range []struct{ ops, want string }{
+		{`[{"arrange":["a","b"],"how":"left","cols":2}]`, "go with"},
+		{`[{"arrange":["a","ar"],"how":"grid"}]`, "leave it out"},
+		{`[{"arrange":"a","how":"grid"}]`, "at least 2"},
+		{`[{"arrange":["a","b","c"],"how":"grid","rows":1,"cols":2}]`, "hold 2"},
+	} {
+		if _, err := tryOps(e, c.ops); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.ops, err, c.want)
+		}
+	}
+}
+
+// What a shape can't show is refused, by add and set alike, as a text's fill is.
+func TestRefusesWhatWouldNotShow(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"ellipse","id":"o","x":0,"y":0,"w":50,"h":50},
+		{"add":"x-box","id":"x","x":100,"y":0,"w":50,"h":50},
+		{"add":"rectangle","id":"r","x":200,"y":0,"w":50,"h":50},
+		{"add":"text","id":"t","text":"Hi","x":300,"y":0},
+		{"add":"arrow","id":"ar","x1":0,"y1":200,"x2":100,"y2":200},
+		{"add":"draw","id":"open","d":"M0 300 L100 300"},
+		{"add":"draw","id":"shut","d":"M0 400 L100 400 L50 450Z"},
+		{"add":"ellipse","id":"g1","x":0,"y":500,"w":50,"h":50},
+		{"add":"ellipse","id":"g2","x":100,"y":500,"w":50,"h":50},
+		{"group":["g1","g2"],"id":"round"},
+		{"add":"rectangle","id":"m1","x":0,"y":600,"w":50,"h":50},
+		{"add":"ellipse","id":"m2","x":100,"y":600,"w":50,"h":50},
+		{"group":["m1","m2"],"id":"mixed"}]`)
+	for _, c := range []struct{ ops, want string }{
+		{`[{"add":"ellipse","radius":8}]`, `ellipse has no "radius"`},
+		{`[{"add":"star","radius":8}]`, `star has no "radius"`},
+		{`[{"add":"x-box","radius":8}]`, `x-box has no "radius"`},
+		{`[{"set":"o","radius":8}]`, `an ellipse has no "radius"`},
+		{`[{"set":"x","radius":8}]`, `an x-box has no "radius"`},
+		{`[{"add":"text","fill":"solid"}]`, `text has no "fill"`},
+		{`[{"set":"t","fill":"solid"}]`, `a text has no "fill"`},
+		{`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"fill":"solid"}]`, `arrow has no "fill"`},
+		{`[{"set":"ar","fill":"solid"}]`, `an arrow has no "fill"`},
+		{`[{"add":"draw","d":"M0 0L9 9","fill":"solid"}]`, "closes"},
+		{`[{"add":"draw","fn":"x","x1":0,"x2":9,"gradient":["red","blue"]}]`, "closes"},
+		{`[{"set":"open","fill":"solid"}]`, "closes"},
+		{`[{"set":"shut","d":"M0 0L9 9","fill":"solid"}]`, "closes"},
+		{`[{"set":"round","radius":8}]`, `nothing in group round takes "radius"`},
+		{`[{"dup":"o","with":{"radius":8}}]`, `an ellipse has no "radius"`},
+		{`[{"add":"star","gap":8}]`, "gap is how far"},
+		{`[{"set":"r","gap":8}]`, "gap is how far"},
+	} {
+		if _, err := tryOps(e, c.ops); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.ops, err, c.want)
+		}
+	}
+	// What can show still does, and clearing is always fine.
+	ops(t, e, `[{"add":"rectangle","radius":8},{"add":"card","title":"T","radius":8},{"set":"r","radius":4},
+		{"set":"open","fill":"none"},{"set":"shut","fill":"solid"},{"set":"open","d":"M0 0L9 9L5 5Z","fill":"solid"}]`)
+	// A group's goes to what can take it, and what can't isn't touched.
+	ops(t, e, `[{"set":"mixed","radius":9}]`)
+	if e.Doc.Shapes[shapeID("m1")].Radius != 9 || e.Doc.Shapes[shapeID("m2")].Radius != 0 {
+		t.Errorf("mixed: %v %v", e.Doc.Shapes[shapeID("m1")].Radius, e.Doc.Shapes[shapeID("m2")].Radius)
+	}
+	// Defaults and named styles leave it out, as they do what any kind doesn't take.
+	ops(t, e, `[{"style":{"radius":5}},{"add":"ellipse","id":"def","x":0,"y":800},{"style":{"radius":6},"name":"soft"},{"add":"ellipse","id":"use","x":0,"y":900,"use":"soft"},{"set":"use","use":"soft"}]`)
+	for _, id := range []string{"def", "use"} {
+		if e.Doc.Shapes[shapeID(id)].Radius != 0 {
+			t.Errorf("%s has a radius", id)
+		}
 	}
 }
 
@@ -1755,7 +2206,7 @@ func TestArrowsSharingALine(t *testing.T) {
 // it as that. Where no shape stands for the group, the error names those to use.
 func TestArrowToAGroup(t *testing.T) {
 	e := newEditor()
-	ops(t, e, `[{"add":"draw","id":"cyl","d":"M0 20 C0 -6 100 -6 100 20 C100 46 0 46 0 20 M0 20 L0 120 C0 146 100 146 100 120 L100 20","fill":"solid"},{"add":"rectangle","id":"a","x":400,"y":0},{"add":"arrow","id":"s","from":"a","to":"cyl"}]`)
+	ops(t, e, `[{"add":"draw","id":"cyl","d":"M0 20 C0 -6 100 -6 100 20 C100 46 0 46 0 20 M0 20 L0 120 C0 146 100 146 100 120 L100 20"},{"add":"rectangle","id":"a","x":400,"y":0},{"add":"arrow","id":"s","from":"a","to":"cyl"}]`)
 	if b := e.BindingOf(shapeID("s"), "end"); b == nil || b.To != shapeID("cyl-2") {
 		t.Errorf("bound to %v", b)
 	}

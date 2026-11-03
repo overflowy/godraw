@@ -87,7 +87,7 @@ to use another port.
 
 | Tool | What it does |
 | --- | --- |
-| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing, and lists every op that's wrong. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies, and `quiet` lists only the ids |
+| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing, and lists every op that's wrong. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies as long as the drawing hasn't changed since, and `quiet` lists only the ids |
 | `read` | The canvas as compact text, one line per shape, paged and searchable. `check` lists the warnings of the whole page instead |
 | `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default, in the window's theme or the one asked for |
 | `export` | Writes the page, some shapes or a box to a PNG or SVG file. It takes an absolute path, and only replaces a file with `overwrite` |
@@ -123,6 +123,13 @@ outline's color, a rectangle or card takes a `radius`, and most shapes take a `s
 with no offset and a bright color is a glow. `text`, `title` and `body` can be a list of runs,
 to mix fonts, colors and sizes or set a superscript. A `draw` can take `fn`, a formula, in
 place of a path.
+
+`dup` also makes grids (`"rows":3,"cols":4`), and `arrange` with `"how":"grid"` lays out what
+already exists. Any verb that names shapes can pick them instead: a run as an answer prints it
+(`s4-s503`), `"*"` for all on the page, or a selector such as `{"kind":"rectangle"}` or
+`{"page":"Two","kind":"note"}`. What's picked takes what it can of an op, with a warning of what
+was left out, while an id that can't take a field fails the op. Either way, a field that wouldn't
+show is refused rather than stored, as with `radius` on an ellipse.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
 elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the

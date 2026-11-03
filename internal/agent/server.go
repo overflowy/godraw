@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,7 +79,7 @@ const (
 	exportDesc = "Write the page, some shapes or a box to a .png or .svg file."
 
 	docProp     = `"doc":{"type":"string"}`
-	guideInput  = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","looks","reuse","place","layout","arrows","paths","edit"]}}}`
+	guideInput  = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","looks","reuse","grid","place","layout","arrows","paths","edit","select"]}}}`
 	readInput   = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"check":{"type":"boolean","description":"Warnings of the whole page."}}}`
 	applyInput  = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
 	viewInput   = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
@@ -240,6 +241,22 @@ type dryRun struct {
 	token, doc string
 	page       doc.ID // where it began, which is what its answer was about
 	ops        []*op
+	// What its answer was worked out from, and has to hold for it to commit.
+	revision uint64
+	styles   map[string]*fields
+}
+
+// errStaleDry says that what a dry run answered no longer holds. The drawing's
+// revision only goes up, so such a dry run is never of use again.
+var errStaleDry = errors.New("the drawing changed since this dry run, so what it answered may no longer hold; nothing was changed. Send ops again, with dry to see them first")
+
+// stillHolds says what is wrong if a dry run's answer is out of date. A commit runs
+// the ops again, so it comes to what the answer said only from the same drawing.
+func (d *dryRun) stillHolds(e *editor.Editor, styles map[string]*fields) error {
+	if e.Revision() != d.revision || !reflect.DeepEqual(styles, d.styles) {
+		return errStaleDry
+	}
+	return nil
 }
 
 // onItsPage says what is wrong if the dry run can't commit on the current page.
@@ -257,12 +274,12 @@ func (d *dryRun) onItsPage(e *editor.Editor) error {
 // How many dry runs stay to be committed: ops can hold images.
 const keptDries = 4
 
-func (s *server) keepDry(canvas string, page doc.ID, ops []*op) string {
+func (s *server) keepDry(canvas string, page doc.ID, revision uint64, styles map[string]*fields, ops []*op) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nDry++
 	// Not d, which is what document ids start with.
-	d := &dryRun{token: "t" + strconv.Itoa(s.nDry), doc: canvas, page: page, ops: ops}
+	d := &dryRun{token: "t" + strconv.Itoa(s.nDry), doc: canvas, page: page, ops: ops, revision: revision, styles: styles}
 	s.dries = append(s.dries, d)
 	if len(s.dries) > keptDries {
 		s.dries = slices.Delete(s.dries, 0, len(s.dries)-keptDries)
@@ -441,8 +458,13 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	if !a.Dry {
 		mode.keep = func(styles map[string]*fields) { s.keepStyles(c.ID(), styles) }
 	}
+	if committing != nil {
+		// As the batch begins: it first commits what a slider left open.
+		mode.check = func() error { return committing.stillHolds(c.Editor(), mode.styles) }
+	}
 	var out string
 	var began doc.ID
+	var revision uint64
 	deadline := time.Now().Add(busyWait)
 	for {
 		err = onMain(ctx, c, func() error {
@@ -455,6 +477,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 			began = e.Page
 			var err error
 			out, err = apply(e, ops, mode)
+			revision = e.Revision()
 			return err
 		})
 		if !errors.Is(err, editor.ErrBusy) {
@@ -469,12 +492,15 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
+	if errors.Is(err, errStaleDry) {
+		s.dropDry(a.Commit)
+	}
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case a.Dry:
-		out += fmt.Sprintf("\nto apply this, call apply with commit %q and no ops", s.keepDry(c.ID(), began, ops))
+		out += fmt.Sprintf("\nto apply this, call apply with commit %q and no ops, before the drawing changes", s.keepDry(c.ID(), began, revision, mode.styles, ops))
 	case a.Commit != "":
 		s.dropDry(a.Commit)
 	}

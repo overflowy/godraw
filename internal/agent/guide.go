@@ -15,14 +15,14 @@ var guideTopics = map[string]string{
 	"": `Units are page pixels, y down. Later shapes paint over earlier ones.
 Work: apply ops, view to check, set to fix. read shows what is already there.
 Each apply is one undo step, and an error in it changes nothing. It answers with each new shape's box, to place the next from, then warnings of what looks wrong. Fix those.
-An apply with several errors lists them all. Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops, from the same page. "quiet":true lists only ids, not boxes.
+An apply with several errors lists them all. Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops, from the same page, and refuses if the drawing changed in between, as its answer may no longer hold. "quiet":true lists only ids, not boxes.
 With several drawings open, read lists them; pass doc to pick one, or get the frontmost.
 read says if the window is light or dark; view can show either.
 Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish; export writes a picture of it to a PNG or SVG file you name. Quitting keeps unsaved drawings for the next launch.
-Read only the topics you need: shapes (kinds and their fields), styles (colors, fills, fonts), looks (corners, shadows, glows, mixed text), reuse (copies with changes, named styles), place (positions), layout (text sizes, warnings, cards, containers), arrows (ends, elbows, routes), paths (curves, formulas, free forms), edit (changing what exists).`,
+Read only the topics you need: shapes (kinds and their fields), styles (colors, fills, fonts), looks (corners, shadows, glows, mixed text), reuse (copies with changes, named styles), grid (rows and columns), place (positions), layout (text sizes, warnings, cards, containers), arrows (ends, elbows, routes), paths (curves, formulas, free forms), edit (changing what exists), select (many shapes at once, by run, kind or page).`,
 
 	"shapes": `Add with {"add":KIND,...}. Fields for each kind, besides those of topic place:
-geo (` + strings.Join(editor.GeoKinds, " ") + `): w h text color labelColor fill dash size font align valign radius shadow url. Without w,h it fits its text.
+geo (` + strings.Join(editor.GeoKinds, " ") + `): w h text color labelColor fill dash size font align valign radius(rectangle only) shadow url. Without w,h it fits its text.
 text: text w(wraps) color size font align scale. Without w it stays on one line per \n.
 note: text color labelColor size font align valign scale shadow url. 200 square, grows with its text.
 card: title body w h color labelColor fill dash size font align radius shadow. Title and wrapped body in a box that fits. See layout.
@@ -52,6 +52,11 @@ Example: [{"add":"card","title":"Energy","body":["E = mc",{"text":"2","sup":true
 A shape in a group named from it, as c1-title in c1, copies as c2-title in c2, for a set to reach: {"set":"c2-title","text":"Two"}. A card's parts are c1-head, c1-body and c1-box.
 Named styles last across applies, for this drawing while the app runs, and read lists them: {"style":{"font":"serif","size":"s","scale":0.85,"color":"#c9d1ff"},"name":"body"} defines one, then "use":"body" on add or set or in with lays it under the op's own fields, leaving out what a kind doesn't take. A style can use another, and {"style":{"use":"body"}} makes one the batch's defaults. style takes color labelColor fill gradient gradientAngle dash size font bodyFont align valign padding radius shadow scale spline opacity.
 Example: [{"style":{"font":"serif","size":"s","color":"blue"},"name":"body"},{"add":"text","id":"t1","text":"One","use":"body","x":0,"y":0},{"dup":"t1","dy":40,"with":[{"id":"t2","text":"Two"},{"id":"t3","text":"Three","color":"red"}]}]`,
+
+	"grid": `{"dup":IDS,"rows":3,"cols":4} copies into a grid, row by row, the original as its top left cell, so this makes 11 copies. One of rows, cols is a line. Cells are the size of what's copied with gap between, 20 unless said, or dx and dy from one cell to the next. with lists what each copy changes, or a single object changes them all.
+{"arrange":IDS,"how":"grid","cols":4} lays out shapes that exist, in the order named, from the top left of their box, in cells as big as the biggest, gap apart. rows or cols says how many; neither is near square.
+Name shapes to go on by a run: a dup quiet answers s1-s11, and {"set":"s1-s11","color":"red"} changes them. See select.
+Example: [{"add":"rectangle","id":"cell","x":0,"y":0,"w":40,"h":40,"color":"blue"},{"dup":"cell","rows":3,"cols":4,"gap":8},{"set":{"kind":"rectangle"},"fill":"solid"}]`,
 
 	"place": `Every shape can say id in x y rot opacity locked right left above below gap behind over. Arrows use their ends instead.
 x,y are the top left of its box in page coordinates, always, even inside a frame.
@@ -87,12 +92,20 @@ fn on a draw is a formula in place of d: page y of page x, from x1 to x2, so + i
 Close with Z to fill. Each M after the first makes a separate stroke, id-1, id-2 and on, and they come back as a group with the id; holes don't cut out, so paint them over.
 Curves are cheap: prefer C and A to many L. Example: [{"add":"draw","id":"blob","d":"M0 40C0 0 80 0 80 40S0 80 0 40Z","fill":"solid","color":"violet","x":100,"y":100,"w":160}]`,
 
-	"edit": `Each op has one verb. A list of ids or one id both work.
+	"select": `Every verb that names shapes can pick them instead. set, dup and del are what it's most for.
+A run as an answer prints it: "s4-s503", in a list or alone. Each has to be there; a shape with that very id comes first.
+"*" is all on the page, but not what that holds.
+{"kind":"rectangle"} is every one of a kind, {"kind":["note","text"]} of several, at any depth, a card being one card and not its parts. Kinds: group card text note frame image draw highlight line arrow, geo for every geo shape, or one of those.
+{"page":"Two"} reaches another page without going there, alone like "*", or with kind.
+What's picked takes what it can of an op. What can't take a field, and what's locked or held by what is, are left out with a warning, and it's an error if none takes it. Ids are stricter: one that can't take it fails the op.
+Example: [{"add":"rectangle","x":0,"y":0},{"add":"note","text":"Hi","x":300,"y":0},{"set":"*","color":"red"},{"set":{"kind":"note"},"dy":40},{"dup":{"kind":"rectangle"},"dy":120}]`,
+
+	"edit": `Each op has one verb. IDS is one id, a list of ids, or what picks many: see select.
 {"set":IDS,...} changes any field the shape takes: styles, text, name, w h, x y, dx dy, rot, in (empty leaves the frame), locked, d, and an arrow's ends (empty from or to frees it). Styles on a group reach what it holds.
 One x or y lines several shapes up. {"del":IDS} deletes, with what those hold, {"del":"*"} clears the page. An arrow bound to what goes stays, with that end free.
 {"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default. A copied arrow stays bound only to what is copied with it. id and with change copies: see reuse.
 {"group":IDS,"id":"g"} {"ungroup":IDS}
-{"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + `
+{"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + ` (see grid)
 {"order":IDS,"how":HOW} ` + strings.Join(verbHows["order"], " ") + `, or {"order":IDS,"behind":"x"} and "over":"x" for just under or above x. read lists shapes bottom first.
 {"flip":IDS,"how":"h"} or "v". An arrow only turns if what it joins flips with it.
 {"page":"Name"} goes to that page, making it if new; add "name" to rename it. {"delPage":"Name"}
