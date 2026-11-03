@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -610,5 +611,238 @@ func TestExportDensePageInTiles(t *testing.T) {
 				t.Fatalf("pixel %d,%d is %v inside a solid %v", x, y, img.At(x, y), want)
 			}
 		}
+	}
+}
+
+func TestMCPDialog(t *testing.T) {
+	const url = "http://127.0.0.1:7463/mcp"
+	was := mcpCopiedFor
+	mcpCopiedFor = 10 * time.Millisecond
+	defer func() { mcpCopiedFor = was }()
+	h := &testHost{}
+	a := New(doc.New(), h)
+	st := MCPStatus{}
+	a.MCP = func() MCPStatus { return st }
+	tt := ui.NewTester(a.View, 1280, 820)
+	tt.Frame()
+	if _, ok := tt.Find("MCP server: starting"); !ok {
+		t.Error("no sign of a server starting")
+	}
+
+	st = MCPStatus{URL: url}
+	tt.Frame()
+	if err := tt.Click("MCP server: running"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	snapshot(t, tt, "mcp-dialog")
+	want := "claude mcp add --scope project --transport http godraw " + url
+	if !tt.HasText(want) || !tt.HasText(url) || !tt.HasText("Running") {
+		t.Fatalf("dialog shows %v", tt.Texts())
+	}
+	before, ok := tt.Find("Copy Claude Code")
+	if !ok {
+		t.Fatal("no copy button")
+	}
+	if err := tt.Click("Copy Claude Code"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := tt.Clipboard(); got != want {
+		t.Errorf("copied %q", got)
+	}
+	after, ok := tt.Find("Copied Claude Code")
+	if !ok {
+		t.Fatal("nothing says it copied")
+	}
+	if after != before {
+		t.Errorf("the button moved as it copied: %+v to %+v", before, after)
+	}
+	snapshot(t, tt, "mcp-copied")
+	// It goes back by itself, unless another copy came since.
+	time.Sleep(50 * time.Millisecond)
+	h.pump()
+	tt.Frame()
+	if _, ok := tt.Find("Copied Claude Code"); ok {
+		t.Error("still says copied")
+	}
+	if err := tt.Click("Copy Other MCP clients"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := tt.Clipboard(); got != url {
+		t.Errorf("copied %q", got)
+	}
+	a.mcpCopies++ // as another copy would
+	time.Sleep(50 * time.Millisecond)
+	h.pump()
+	tt.Frame()
+	if _, ok := tt.Find("Copied Other MCP clients"); !ok {
+		t.Error("an old timer undid a newer copy")
+	}
+	a.mcpCopied = ""
+
+	// Keys are the dialog's while it is open.
+	tt.Key(0, ui.KeyD)
+	tt.Frame()
+	if a.Editor().Tool == editor.ToolDraw {
+		t.Error("a key reached the canvas through the dialog")
+	}
+	if err := tt.Click("Close"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText(want) {
+		t.Error("the dialog stayed")
+	}
+	tt.Key(0, ui.KeyD)
+	tt.Frame()
+	if a.Editor().Tool != editor.ToolDraw {
+		t.Error("keys didn't come back")
+	}
+	a.Editor().SetTool(editor.ToolSelect)
+	tt.Frame()
+
+	// The menu opens it.
+	if err := tt.Click("More"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	snapshot(t, tt, "mcp-menu")
+	if err := tt.Click("MCP Server…"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText(want) {
+		t.Error("the menu didn't open it")
+	}
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if tt.HasText(want) {
+		t.Error("Escape didn't close it")
+	}
+
+	st = MCPStatus{Problem: "Port 7463 is in use."}
+	tt.Frame()
+	if err := tt.Click("MCP server: not running"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	snapshot(t, tt, "mcp-problem")
+	if !tt.HasText("Port 7463 is in use.") || !tt.HasText("Not running") || tt.HasText(want) {
+		t.Errorf("failed dialog shows %v", tt.Texts())
+	}
+}
+
+// At any size of window, all of the dialog shows, and the command breaks at
+// its space, not inside its URL.
+func TestMCPDialogFitsTheWindow(t *testing.T) {
+	const url = "http://127.0.0.1:7463/mcp"
+	h := &testHost{}
+	a := New(doc.New(), h)
+	a.MCP = func() MCPStatus { return MCPStatus{URL: url} }
+	tt := ui.NewTester(a.View, 1280, 820)
+	a.ShowMCP()
+	tt.Frame()
+	whole := MCPStatus{URL: url}.ClaudeCommand()
+	for _, w := range []int{1280, 900, 760, 700, 688, 660, 640} {
+		tt.SetSize(w, 420)
+		tt.Frame()
+		for _, name := range []string{"Copy Claude Code", "Copy Other MCP clients", "Close"} {
+			// Find clips to what shows, so a button cut off comes out narrower.
+			box, ok := tt.Find(name)
+			if !ok {
+				t.Fatalf("%d: no %s", w, name)
+			}
+			if box.W < 32 || box.X+box.W > float32(w)-8 {
+				t.Errorf("%d: %s at %+v", w, name, box)
+			}
+		}
+		broken := false
+		for _, s := range tt.Texts() {
+			if strings.Contains(s, " \\\n"+url) {
+				broken = true
+			}
+		}
+		if !broken && !tt.HasText(whole) {
+			t.Errorf("%d: command shows as %v", w, tt.Texts())
+		}
+		if w == 640 {
+			snapshot(t, tt, "mcp-small")
+			if !broken {
+				t.Log("the command fits on one line at the smallest size")
+			}
+		}
+		// What it copies never has the break in it.
+		if err := tt.Click("Copy Claude Code"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		if got := tt.Clipboard(); got != whole {
+			t.Errorf("%d: copied %q", w, got)
+		}
+		a.mcpCopied = ""
+	}
+}
+
+// The button sits where it covers nothing, at the smallest window too.
+func TestMCPButtonCoversNoTools(t *testing.T) {
+	h := &testHost{}
+	a := New(doc.New(), h)
+	a.MCP = func() MCPStatus { return MCPStatus{URL: "http://127.0.0.1:7463/mcp"} }
+	tt := ui.NewTester(a.View, 640, 420)
+	tt.Frame()
+	mcp, ok := tt.Find("MCP server: running")
+	if !ok {
+		t.Fatal("no button")
+	}
+	for _, name := range []string{"Select — V", "Hand — H", "Draw — D", "Zoom out — ⌘-", "Black", "black"} {
+		if box, ok := tt.Find(name); ok && box.X < mcp.X+mcp.W && mcp.X < box.X+box.W && box.Y < mcp.Y+mcp.H && mcp.Y < box.Y+box.H {
+			t.Errorf("it covers %s: %+v and %+v", name, mcp, box)
+		}
+	}
+	// The window's bottom panels are as they were without it: nothing there
+	// grew to hold it.
+	tt.SetSize(1100, 700)
+	tt.Frame()
+	zoom, _ := tt.Find("Keyboard shortcuts — ?")
+	sel, _ := tt.Find("Select — V")
+	if zoom.X+zoom.W >= sel.X {
+		t.Errorf("the zoom panel reaches the toolbar at 1100: %+v, %+v", zoom, sel)
+	}
+}
+
+func TestNoMCPWithoutAServer(t *testing.T) {
+	_, tt, _ := newTest(t)
+	for _, name := range []string{"MCP", "MCP server starting"} {
+		if _, ok := tt.Find(name); ok {
+			t.Errorf("found %q", name)
+		}
+	}
+}
+
+// A marker goes under what it marks in what an export draws, as on the canvas.
+func TestExportPutsHighlightsUnder(t *testing.T) {
+	a, _, _ := newTest(t)
+	e := a.ed
+	drag := func(x0, y0, x1, y1 float64) {
+		e.PointerMove(x0, y0, editor.Mods{}, 0)
+		e.PointerDown(x0, y0, 0, 1, editor.Mods{}, 0)
+		e.PointerMove(x1, y1, editor.Mods{}, 0)
+		e.PointerUp(x1, y1, editor.Mods{}, 0)
+	}
+	e.SetGeoTool("rectangle")
+	e.Next.Fill = "solid"
+	drag(100, 100, 300, 300)
+	box := geo.Box{X: 50, Y: 50, W: 300, H: 300}
+	at := func() color.Color {
+		return a.RenderImage(box, e.Children(e.Page), 1).At(150, 150)
+	}
+	before := at()
+	e.SetTool(editor.ToolHighlight)
+	e.Next.Color = "yellow"
+	drag(80, 200, 320, 200)
+	if after := at(); after != before {
+		t.Errorf("the marker shows over a solid box: %v, was %v", after, before)
 	}
 }

@@ -36,6 +36,9 @@ type Host interface {
 
 // App is one window's state.
 type App struct {
+	// MCP tells how the app's MCP server is doing; nil shows nothing of it.
+	MCP func() MCPStatus
+
 	ed   *editor.Editor
 	host Host
 	meas *measurer
@@ -62,9 +65,24 @@ type App struct {
 	bitmaps map[doc.ID]*ui.Bitmap
 	decoded map[doc.ID]string
 	pending map[doc.ID]bool
+	inUse   map[doc.ID]bool // the assets shapes show; nil once the document changed
+	inUseOf *doc.Drawing    // the drawing inUse is of
+	inUseN  int             // how many shapes it had, as a change not yet committed shows
 	dark    bool
 
 	sizeBadge bool
+
+	zoomedAt time.Time // when the zoom going on last moved; zero for none
+	zoom     zoomState
+	rest     restView
+
+	cells      map[cellKey]*cellPlan
+	details    map[detailKey]*detail
+	cellsFrame int
+
+	mcpOpen   bool
+	mcpCopied string // the field that says it copied
+	mcpCopies int    // how many times it has, for a timer to know its own
 }
 
 // New returns the state of a window showing a drawing.
@@ -76,7 +94,10 @@ func New(d *doc.Drawing, host Host) *App {
 		minimap: false, sizeBadge: true,
 	}
 	a.ed = editor.New(d, m.measure)
-	a.ed.OnChange = host.Changed
+	a.ed.OnChange = func(d *doc.Drawing) {
+		a.inUse = nil
+		host.Changed(d)
+	}
 	return a
 }
 
@@ -92,10 +113,37 @@ func (a *App) bitmapOf(id doc.ID) *ui.Bitmap {
 	return a.bitmaps[id]
 }
 
+// assetsInUse returns the assets that shapes show, and forgets the images of the
+// others, which take far more memory than anything else a drawing has. Deleting a
+// shape leaves its asset in the document, for undo. Bringing a shape back decodes its
+// image again. It looks through the shapes only after a change to the document.
+func (a *App) assetsInUse() map[doc.ID]bool {
+	d := a.ed.Doc
+	if a.inUse != nil && a.inUseOf == d && a.inUseN == len(d.Shapes) {
+		return a.inUse
+	}
+	a.inUse, a.inUseOf, a.inUseN = map[doc.ID]bool{}, d, len(d.Shapes)
+	if len(d.Assets) > 0 {
+		for _, s := range d.Shapes {
+			if s.AssetID != "" && d.Assets[s.AssetID] != nil {
+				a.inUse[s.AssetID] = true
+			}
+		}
+	}
+	for id := range a.decoded {
+		if !a.inUse[id] {
+			delete(a.decoded, id)
+			delete(a.bitmaps, id)
+		}
+	}
+	return a.inUse
+}
+
 // decodeAssets decodes on the side what shapes are about to show.
 func (a *App) decodeAssets() {
+	inUse := a.assetsInUse()
 	for id, asset := range a.ed.Doc.Assets {
-		if a.decoded[id] == asset.Src || a.pending[id] {
+		if !inUse[id] || a.decoded[id] == asset.Src || a.pending[id] {
 			continue
 		}
 		if !strings.HasPrefix(asset.Src, "data:") {
@@ -108,6 +156,10 @@ func (a *App) decodeAssets() {
 			b := decodeDataURL(src)
 			a.host.Update(func() {
 				delete(a.pending, id)
+				// It may have left the drawing or changed meanwhile.
+				if asset := a.ed.Doc.Assets[id]; asset == nil || asset.Src != src || !a.assetsInUse()[id] {
+					return
+				}
 				a.decoded[id] = src
 				if b != nil {
 					a.bitmaps[id] = b
@@ -163,6 +215,7 @@ func (a *App) View(c *ui.Context) {
 		}
 	})
 	a.helpDialog(c)
+	a.mcpDialog(c)
 }
 
 func (a *App) applyTheme(c *ui.Context) {
@@ -188,11 +241,14 @@ func modsOf(m ui.Modifiers) editor.Mods {
 // canvas builds the element the drawing is painted on and takes input on.
 func (a *App) canvas(c *ui.Context) {
 	e := a.ed
+	ui.Themed(c.Key("canvas-paint"), paintTheme(c.Theme())).Background(ui.Transparent).
+		Absolute().Top(0).Left(0).Right(0).Bottom(0).Children(func() {
+		ui.Box(c.Key("canvas-ink")).Fill().Draw(a.paintCanvas)
+	})
 	cv := ui.Box(c.Key("canvas")).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 		Focusable().FocusRing(false).Bind(&a.canvasHandle).
 		Cursor(cursorOf(e.CursorNow()))
 	cv.Label("Canvas")
-	cv.Draw(a.paintCanvas)
 	cv.HandleInput(func(ev ui.InputEvent) bool { return a.input(c, ev) })
 	cv.ContextMenu(a.contextMenu)
 }
@@ -245,14 +301,14 @@ func (a *App) input(c *ui.Context, ev ui.InputEvent) bool {
 		return true
 	case ui.InputScroll:
 		if ev.Mods&(ui.Cmd|ui.Ctrl) != 0 {
-			e.ZoomAt(geo.V(x, y), math.Exp(-float64(ev.DY)*0.01))
+			a.ZoomGesture(geo.V(x, y), math.Exp(-float64(ev.DY)*0.01), ev.Time)
 		} else {
 			e.Pan(float64(ev.DX), float64(ev.DY))
 		}
 		e.PointerMove(x, y, modsOf(ev.Mods), t)
 		return true
 	case ui.InputZoom:
-		e.ZoomAt(geo.V(x, y), float64(ev.Scale))
+		a.ZoomGesture(geo.V(x, y), float64(ev.Scale), ev.Time)
 		return true
 	case ui.InputKeyDown:
 		if ev.Key == ui.KeySpace && e.Editing == "" {

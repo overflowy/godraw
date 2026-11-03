@@ -142,7 +142,7 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 	if text == "" {
 		text = " "
 	}
-	pad := labelPadding * s.Scale
+	pad := LabelPad(s)
 	b := e.Measure(text, s.Font, size, math.Max(w-2*pad, 8))
 	box := geo.Box{W: math.Max(w-2*pad, 8), H: b.H}
 	box.X = pad
@@ -155,6 +155,13 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 		box.Y = (h - b.H) / 2
 	}
 	return &box
+}
+
+// LabelPad returns how far a shape's label sits in from its box.
+func LabelPad(s *doc.Shape) float64 {
+	pad := float64(labelPadding)
+	s.MetaValue(doc.MetaPadding, &pad)
+	return pad * s.Scale
 }
 
 // strokePoints returns the points of a freehand shape in its space.
@@ -216,9 +223,9 @@ func geoOutline(kind string, w, h float64, seed string) []geo.Vec {
 	case "pentagon":
 		return regular(5, w, h, -math.Pi/2)
 	case "hexagon":
-		return regular(6, w, h, 0)
+		return regular(6, w, h, -math.Pi/2)
 	case "octagon":
-		return regular(8, w, h, math.Pi/8)
+		return regular(8, w, h, -math.Pi/2)
 	case "star":
 		return star(w, h)
 	case "rhombus":
@@ -510,8 +517,12 @@ func (e *Editor) Hit(p geo.Vec, margin float64, allowLocked bool) HitResult {
 
 func (e *Editor) hitFrameHeading(s *doc.Shape, q geo.Vec) bool {
 	z := e.Cam().Z
-	h := 26 / z
-	return q.Y < 0 && q.Y >= -h && q.X >= 0 && q.X <= math.Min(s.W, 160/z)
+	h, w := 26/z, 160/z
+	if size, font := FrameHeading(s); size > 0 {
+		h = math.Max(h, size*1.6)
+		w = math.Max(w, e.Measure(s.Name, font, size, 0).W)
+	}
+	return q.Y < 0 && q.Y >= -h && q.X >= 0 && q.X <= math.Min(s.W, w)
 }
 
 // frameAt returns the top frame holding a point of the page, other than

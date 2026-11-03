@@ -22,7 +22,7 @@ func (a *App) shortcuts(c *ui.Context) {
 		}
 		return
 	}
-	if a.renamingPage != "" || a.helpOpen {
+	if a.renamingPage != "" || a.helpOpen || a.mcpOpen {
 		return
 	}
 	cmd := ui.Cmd

@@ -196,10 +196,13 @@ func setStyleOf(s *doc.Shape, p StyleProp, v string) {
 	switch p {
 	case StyleColor:
 		s.Color = v
+		s.SetMeta(doc.MetaColor, nil)
 	case StyleFill:
 		s.Fill = v
+		s.SetMeta(doc.MetaGradient, nil)
 	case StyleDash:
 		s.Dash = v
+		s.SetMeta(doc.MetaNoOutline, nil)
 	case StyleSize:
 		s.Size = v
 	case StyleFont:
@@ -478,15 +481,15 @@ func (e *Editor) cleanGroups(ids map[doc.ID]bool) {
 
 // cloneShapes copies shapes with what they hold and the bindings among them,
 // above the originals, offset by d, and returns the new top shapes.
-func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec) []doc.ID {
+func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec, fresh func() doc.ID) []doc.ID {
 	tops := map[doc.ID]string{} // the next index in each parent
 	idmap := map[doc.ID]doc.ID{}
 	var all []doc.ID
 	for _, id := range ids {
-		idmap[id] = doc.NewID("shape")
+		idmap[id] = fresh()
 		all = append(all, id)
 		for _, k := range e.Descendants(id) {
-			idmap[k] = doc.NewID("shape")
+			idmap[k] = fresh()
 			all = append(all, k)
 		}
 	}
@@ -545,9 +548,11 @@ func (e *Editor) Duplicate() {
 	}
 	e.transact(func() {
 		d := 16 / e.Cam().Z
-		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d))...)
+		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d), newShapeID)...)
 	})
 }
+
+func newShapeID() doc.ID { return doc.NewID("shape") }
 
 // ClipboardFormat is the clipboard format of copied shapes.
 const ClipboardFormat = "application/vnd.godraw.shapes+json"
@@ -753,7 +758,10 @@ func (e *Editor) InsertImage(name, mime string, data []byte, w, h float64, at *g
 // --- grouping ---
 
 // Group groups the selection.
-func (e *Editor) Group() {
+func (e *Editor) Group() { e.GroupAs(newShapeID()) }
+
+// GroupAs groups the selection, in a group of a given id.
+func (e *Editor) GroupAs(id doc.ID) {
 	ids := e.topSelected()
 	if len(ids) < 2 || e.ReadOnly {
 		return
@@ -776,7 +784,7 @@ func (e *Editor) Group() {
 				box = box.Union(b)
 			}
 		}
-		g := doc.NewShape(doc.NewID("shape"), doc.TypeGroup)
+		g := doc.NewShape(id, doc.TypeGroup)
 		g.Parent = parent
 		o := e.parentMat(parent).Invert().Apply(geo.V(box.X, box.Y))
 		g.X, g.Y = o.X, o.Y
@@ -933,6 +941,39 @@ func (e *Editor) reorderIn(parent doc.ID, ids []doc.ID, how string) {
 			}
 		}
 	}
+	e.writeOrder(order)
+}
+
+// OrderBeside moves children of a parent to just behind or over another of them,
+// keeping their order among themselves.
+func (e *Editor) OrderBeside(parent doc.ID, ids []doc.ID, ref doc.ID, over bool) {
+	moving := map[doc.ID]bool{}
+	for _, id := range ids {
+		moving[id] = true
+	}
+	kids := e.Children(parent)
+	var them, order []doc.ID
+	for _, k := range kids {
+		if moving[k] {
+			them = append(them, k)
+		}
+	}
+	for _, k := range kids {
+		switch {
+		case moving[k]:
+		case k != ref:
+			order = append(order, k)
+		case over:
+			order = append(append(order, k), them...)
+		default:
+			order = append(append(order, them...), k)
+		}
+	}
+	e.transact(func() { e.writeOrder(order) })
+}
+
+// writeOrder gives children of a parent the paint order of a list.
+func (e *Editor) writeOrder(order []doc.ID) {
 	// New indices from the bottom: simple, and they stay short.
 	idx := ""
 	for _, id := range order {
@@ -1052,25 +1093,25 @@ func (e *Editor) Flip(horizontal bool) {
 	if len(e.sel) == 0 || e.ReadOnly {
 		return
 	}
-	e.begin()
-	h := Handle{Kind: HandleResize, Which: geo.V(1, 0.5)}
-	if !horizontal {
-		h.Which = geo.V(0.5, 1)
-	}
-	g := newResize(e, h)
-	box := g.box
-	inv := geo.Rotate(-g.rotation)
-	fwd := geo.Rotate(g.rotation)
-	sx, sy := 1.0, 1.0
-	if horizontal {
-		sx = -1
-	} else {
-		sy = -1
-	}
-	for _, it := range g.items {
-		e.resizeItem(it, sx, sy, box.Center(), fwd, inv, geo.V(0, 0))
-	}
-	e.commit()
+	e.transact(func() {
+		h := Handle{Kind: HandleResize, Which: geo.V(1, 0.5)}
+		if !horizontal {
+			h.Which = geo.V(0.5, 1)
+		}
+		g := newResize(e, h)
+		box := g.box
+		inv := geo.Rotate(-g.rotation)
+		fwd := geo.Rotate(g.rotation)
+		sx, sy := 1.0, 1.0
+		if horizontal {
+			sx = -1
+		} else {
+			sy = -1
+		}
+		for _, it := range g.items {
+			e.resizeItem(it, sx, sy, box.Center(), fwd, inv, geo.V(0, 0))
+		}
+	})
 }
 
 // --- locks ---
@@ -1242,30 +1283,45 @@ func (e *Editor) visualBounds(id doc.ID) geo.Box {
 		}
 		return b
 	}
+	if s.Type == doc.TypeFrame {
+		b = b.Union(e.FrameHeadingBox(s, 1))
+	}
 	return b.Expand(pad)
 }
 
-// WalkPaint calls fn for what id paints, in order, with its transform.
-// frames open and close around their contents, with enter and leave.
-func (e *Editor) WalkPaint(id doc.ID, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
-	s := e.Doc.Shapes[id]
-	if s == nil {
-		return
-	}
-	switch s.Type {
-	case doc.TypeGroup:
-		for _, k := range e.Children(id) {
-			e.WalkPaint(k, fn, enter, leave)
+// WalkPaint calls fn for what ids paint, in order, with their transforms: as on
+// the canvas, the highlights among them first, under the rest. Frames open and
+// close around their contents, with enter and leave.
+func (e *Editor) WalkPaint(ids []doc.ID, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
+	e.walkLayer(ids, true, fn, enter, leave)
+	e.walkLayer(ids, false, fn, enter, leave)
+}
+
+func (e *Editor) walkLayer(ids []doc.ID, highlights bool, fn func(s *doc.Shape), enter func(frame *doc.Shape), leave func(frame *doc.Shape)) {
+	for _, id := range ids {
+		s := e.Doc.Shapes[id]
+		if s == nil {
+			continue
 		}
-	case doc.TypeFrame:
-		fn(s)
-		enter(s)
-		for _, k := range e.Children(id) {
-			e.WalkPaint(k, fn, enter, leave)
+		switch s.Type {
+		case doc.TypeGroup:
+			e.walkLayer(e.Children(id), highlights, fn, enter, leave)
+		case doc.TypeHighlight:
+			if highlights {
+				fn(s)
+			}
+		case doc.TypeFrame:
+			if !highlights {
+				fn(s)
+				enter(s)
+				e.WalkPaint(e.Children(id), fn, enter, leave)
+				leave(s)
+			}
+		default:
+			if !highlights {
+				fn(s)
+			}
 		}
-		leave(s)
-	default:
-		fn(s)
 	}
 }
 
@@ -1291,27 +1347,33 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 		}
 		return ""
 	}
-	for _, id := range ids {
-		e.WalkPaint(id, func(s *doc.Shape) {
-			m := e.PageMat(s.ID)
-			fmt.Fprintf(&b, `<g%s>`, opacity(s))
-			for _, p := range e.Display(s, pal) {
-				e.svgPrim(&b, p, m)
+	e.WalkPaint(ids, func(s *doc.Shape) {
+		m := e.PageMat(s.ID)
+		fmt.Fprintf(&b, `<g%s>`, opacity(s))
+		for _, p := range e.Display(s, pal) {
+			e.svgPrim(&b, p, m)
+		}
+		if s.Type == doc.TypeFrame && s.Name != "" {
+			size, font := FrameHeading(s)
+			color := pal.Text
+			if size > 0 {
+				color = pal.SwatchOf(s).Solid
 			}
-			if s.Type == doc.TypeFrame && s.Name != "" {
-				o := m.Apply(geo.V(0, -6))
-				fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="sans-serif" font-size="12" fill="%s">%s</text>`, o.X, o.Y, pal.Text.CSS(), xmlEscape(s.Name))
+			if size == 0 {
+				size = FrameHeadingFloor
 			}
-			b.WriteString(`</g>`)
-		}, func(f *doc.Shape) {
-			clips++
-			m := e.PageMat(f.ID)
-			c := m.ApplyBox(geo.Box{W: f.W, H: f.H})
-			fmt.Fprintf(&b, `<clipPath id="c%d"><path d="%s"/></clipPath><g clip-path="url(#c%d)">`, clips, (&geo.Path{}).Poly(c[:], true).SVG(geo.Identity), clips)
-		}, func(f *doc.Shape) {
-			b.WriteString(`</g>`)
-		})
-	}
+			o := m.Apply(geo.V(0, -size/2))
+			fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s">%s</text>`, o.X, o.Y, svgFontFamily(font), size, color.CSS(), xmlEscape(s.Name))
+		}
+		b.WriteString(`</g>`)
+	}, func(f *doc.Shape) {
+		clips++
+		m := e.PageMat(f.ID)
+		c := m.ApplyBox(geo.Box{W: f.W, H: f.H})
+		fmt.Fprintf(&b, `<clipPath id="c%d"><path d="%s"/></clipPath><g clip-path="url(#c%d)">`, clips, (&geo.Path{}).Poly(c[:], true).SVG(geo.Identity), clips)
+	}, func(f *doc.Shape) {
+		b.WriteString(`</g>`)
+	})
 	b.WriteString(`</svg>`)
 	return b.Bytes(), true
 }
@@ -1335,11 +1397,11 @@ func svgFontFamily(font string) string {
 	case "draw":
 		return "'Shantell Sans', 'Comic Sans MS', cursive"
 	case "serif":
-		return "Georgia, serif"
+		return "'IBM Plex Serif', Georgia, serif"
 	case "mono":
-		return "Menlo, monospace"
+		return "'IBM Plex Mono', Menlo, monospace"
 	}
-	return "-apple-system, 'Helvetica Neue', Arial, sans-serif"
+	return "'IBM Plex Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif"
 }
 
 func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {
@@ -1349,6 +1411,16 @@ func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {
 	}
 	switch p.Kind {
 	case PrimFill:
+		if g := p.Gradient; g != nil {
+			name := fmt.Sprintf("gradient%d", b.Len())
+			from, to := m.Apply(g.From), m.Apply(g.To)
+			fmt.Fprintf(b, `<linearGradient id="%s" gradientUnits="userSpaceOnUse" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f">`, name, from.X, from.Y, to.X, to.Y)
+			for i, c := range g.Colors {
+				fmt.Fprintf(b, `<stop offset="%.4g" stop-color="%s"/>`, float64(i)/float64(len(g.Colors)-1), c.CSS())
+			}
+			fmt.Fprintf(b, `</linearGradient><path d="%s" fill="url(#%s)"/>`, p.Path.SVG(m), name)
+			return
+		}
 		fmt.Fprintf(b, `<path d="%s" fill="%s"%s/>`, p.Path.SVG(m), p.Color.CSS(), alpha)
 	case PrimStroke:
 		dash := ""
@@ -1420,6 +1492,9 @@ func (e *Editor) Nudge(d geo.Vec) {
 		}
 	})
 }
+
+// ArrowHeads are the ends an arrow can have.
+var ArrowHeads = []string{"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"}
 
 // GeoKinds lists the geo shapes, in the order the toolbar shows them.
 var GeoKinds = []string{

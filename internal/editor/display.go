@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"math"
 
 	"godraw/internal/doc"
@@ -33,6 +34,16 @@ type Prim struct {
 	// Ink, on a hand-drawn stroke's fill, is the line the fill outlines: what
 	// a view with very many strokes draws in its place.
 	Ink *Ink
+	// Rounded, on a fill or a frame's border, says that its path is this box, which
+	// the GPU can draw as it is rather than from a mask of the path. It draws a border
+	// on whole pixels, which suits a frame's and not a shape's, whose weight would
+	// differ from that of a shape of another form.
+	Rounded *RoundedBox
+	// Hatched, on the lines of a pattern, is what they fill, for a view too far away
+	// to make them out.
+	Hatched *geo.Path
+	// Gradient, on a fill, is what it fills with in place of Color.
+	Gradient *GradientFill
 
 	// Text.
 	Block *TextBlock
@@ -47,6 +58,99 @@ type Prim struct {
 	FlipX bool
 	FlipY bool
 	Crop  *doc.Crop
+}
+
+// GradientFill blends colors, evenly spaced, along a line in a shape's space.
+type GradientFill struct {
+	From, To geo.Vec
+	Colors   []Color
+}
+
+// Along returns how far along the line a point lies, 0 at its start and 1 at its
+// end, and past those beyond them.
+func (g *GradientFill) Along(p geo.Vec) float64 {
+	d := g.To.Sub(g.From)
+	l := d.Dot(d)
+	if l == 0 {
+		return 0
+	}
+	return p.Sub(g.From).Dot(d) / l
+}
+
+// At returns the color a part of the way along the line.
+func (g *GradientFill) At(t float64) Color {
+	k := min(max(t, 0), 1) * float64(len(g.Colors)-1)
+	i := min(int(k), len(g.Colors)-2)
+	return g.Colors[i].Mix(g.Colors[i+1], k-float64(i))
+}
+
+// gradientOf returns the fill of a shape with a gradient, over the box of its
+// outline, as CSS lays one over a box: its line reaches both far corners.
+func gradientOf(s *doc.Shape, poly []geo.Vec, pal *Palette) *GradientFill {
+	g := s.Gradient()
+	if g == nil || len(poly) == 0 {
+		return nil
+	}
+	colors := make([]Color, len(g.Colors))
+	for i, name := range g.Colors {
+		if IsHex(name) {
+			colors[i] = Hex(name)
+		} else {
+			colors[i] = pal.Swatch(name).Fill
+		}
+	}
+	box := geo.BoxOf(poly)
+	sin, cos := math.Sincos(g.Angle * math.Pi / 180)
+	dir := geo.V(sin, -cos)
+	half := dir.Mul((math.Abs(box.W*dir.X) + math.Abs(box.H*dir.Y)) / 2)
+	c := box.Center()
+	return &GradientFill{From: c.Sub(half), To: c.Add(half), Colors: colors}
+}
+
+// FillAt returns what a shape's fill paints at a point in its space: Alpha 0 for
+// nothing, and known false for what can't be told without looking, as an image.
+func (e *Editor) FillAt(s *doc.Shape, pal *Palette, q geo.Vec) (c Color, known bool) {
+	switch s.Type {
+	case doc.TypeGeo, doc.TypeDraw, doc.TypeNote, doc.TypeFrame, doc.TypeImage:
+	case doc.TypeText, doc.TypeHighlight, doc.TypeLine, doc.TypeArrow, doc.TypeGroup:
+		return Color{}, true
+	default:
+		if e.Geometry(s).Bounds.Contains(q) {
+			return pal.Swatch("grey").Semi, true
+		}
+		return Color{}, true
+	}
+	g := e.Geometry(s)
+	if !g.Closed || !geo.PointInPolygon(q, g.Outline) {
+		return Color{}, true
+	}
+	sw := pal.SwatchOf(s)
+	switch s.Type {
+	case doc.TypeNote:
+		return sw.NoteFill, true
+	case doc.TypeFrame:
+		return sw.FrameFill, true
+	case doc.TypeImage:
+		return Color{}, false
+	}
+	if f := gradientOf(s, g.Outline, pal); f != nil {
+		return f.At(f.Along(q)), true
+	}
+	switch s.Fill {
+	case "semi":
+		return pal.Solid, true
+	case "solid", "pattern":
+		return sw.Semi, true
+	case "fill":
+		return sw.Fill, true
+	}
+	return Color{}, true
+}
+
+// RoundedBox is a box with rounded corners.
+type RoundedBox struct {
+	geo.Box
+	Radius float64
 }
 
 // Ink is a line through points, with its width at each.
@@ -315,8 +419,12 @@ func sortAlong(pts []geo.Vec, from geo.Vec) {
 	}
 }
 
-func fillPrims(fill string, base *geo.Path, poly []geo.Vec, sw Swatch, pal *Palette) []Prim {
-	switch fill {
+// fillPrims draws what a shape fills with.
+func fillPrims(s *doc.Shape, base *geo.Path, poly []geo.Vec, sw Swatch, pal *Palette) []Prim {
+	if g := gradientOf(s, poly, pal); g != nil {
+		return []Prim{{Kind: PrimFill, Path: base, Color: g.Colors[0], Gradient: g}}
+	}
+	switch s.Fill {
 	case "semi":
 		return []Prim{fillWith(base, pal.Solid)}
 	case "solid":
@@ -326,10 +434,10 @@ func fillPrims(fill string, base *geo.Path, poly []geo.Vec, sw Swatch, pal *Pale
 	case "pattern":
 		return []Prim{
 			fillWith(base, sw.Semi),
-			{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Pattern},
+			{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Pattern, Hatched: base},
 		}
 	case "lined-fill":
-		return []Prim{{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Lined}}
+		return []Prim{{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Lined, Hatched: base}}
 	}
 	return nil
 }
@@ -353,15 +461,37 @@ func geoBasePath(s *doc.Shape, w, h float64, poly []geo.Vec) *geo.Path {
 	return (&geo.Path{}).Poly(poly, true)
 }
 
+// geoBox returns the box that a geo shape's path is, if it is one.
+func geoBox(s *doc.Shape, w, h float64) *RoundedBox {
+	switch s.Geo {
+	case "rectangle", "x-box", "check-box":
+	default:
+		return nil
+	}
+	box := &RoundedBox{Box: geo.Box{W: w, H: h}}
+	if s.Dash == "draw" {
+		box.Radius = math.Min(math.Min(strokeOf(s.Size)*s.Scale*2, 10), math.Min(w, h)/2)
+	}
+	return box
+}
+
 func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 	w, h := s.W, s.H+s.GrowY
 	g := e.Geometry(s)
-	sw := pal.Swatch(s.Color)
+	sw := pal.SwatchOf(s)
 	stroke := strokeOf(s.Size) * s.Scale
 	base := geoBasePath(s, w, h, g.Outline)
 	flat, _ := base.Points(10)
-	out := fillPrims(s.Fill, base, flat, sw, pal)
-	out = append(out, outlinePrims(s.Dash, base, flat, true, stroke, sw.Solid, string(s.ID))...)
+	box := geoBox(s, w, h)
+	out := fillPrims(s, base, flat, sw, pal)
+	for i := range out {
+		if out[i].Kind == PrimFill {
+			out[i].Rounded = box
+		}
+	}
+	if !s.NoOutline() {
+		out = append(out, outlinePrims(s.Dash, base, flat, true, stroke, sw.Solid, string(s.ID))...)
+	}
 	inner := &geo.Path{}
 	switch s.Geo {
 	case "x-box":
@@ -374,7 +504,7 @@ func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 		out = append(out, strokeWith(inner, stroke, sw.Solid))
 	}
 	if s.Text != "" {
-		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.Swatch(s.LabelColor).Solid))
+		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s)))
 	}
 	return out
 }
@@ -474,7 +604,7 @@ func (e *Editor) drawPrims(s *doc.Shape, pal *Palette) []Prim {
 	if len(pts) == 0 {
 		return nil
 	}
-	sw := pal.Swatch(s.Color)
+	sw := pal.SwatchOf(s)
 	stroke := strokeOf(s.Size) * s.Scale
 	var pressure []float64
 	if s.IsPen {
@@ -487,7 +617,10 @@ func (e *Editor) drawPrims(s *doc.Shape, pal *Palette) []Prim {
 	var out []Prim
 	smooth := (&geo.Path{}).Smooth(pts, s.IsClosed)
 	if s.IsClosed && s.Fill != "none" {
-		out = append(out, fillPrims(s.Fill, smooth, pts, sw, pal)...)
+		out = append(out, fillPrims(s, smooth, pts, sw, pal)...)
+	}
+	if s.NoOutline() {
+		return out
 	}
 	if s.Dash == "draw" {
 		size := 1 + stroke*1.5
@@ -511,7 +644,7 @@ func (e *Editor) highlightPrims(s *doc.Shape, pal *Palette) []Prim {
 		return nil
 	}
 	size := fontSizeOf(s.Size) * 1.12 * s.Scale
-	c := pal.Swatch(s.Color).Highlight.Alpha(0.75)
+	c := pal.SwatchOf(s).Highlight.Alpha(0.75)
 	sm := smoothStroke(pts, 0.5)
 	if len(sm) == 1 {
 		r := size / 2
@@ -528,7 +661,7 @@ func (e *Editor) linePrims(s *doc.Shape, pal *Palette) []Prim {
 	if len(pts) == 0 {
 		return nil
 	}
-	return outlinePrims(s.Dash, base, pts, false, strokeOf(s.Size)*s.Scale, pal.Swatch(s.Color).Solid, string(s.ID))
+	return outlinePrims(s.Dash, base, pts, false, strokeOf(s.Size)*s.Scale, pal.SwatchOf(s).Solid, string(s.ID))
 }
 
 // --- text, note, frame, image ---
@@ -543,12 +676,12 @@ func (e *Editor) textPrims(s *doc.Shape, pal *Palette) []Prim {
 		b = e.Measure(s.Text, s.Font, size, g.Bounds.W)
 	}
 	b = alignBlock(b, g.Bounds.W, s.TextAlign)
-	return []Prim{{Kind: PrimText, Block: &b, Size: size, Font: s.Font, Color: pal.Swatch(s.Color).Solid, Label: true}}
+	return []Prim{{Kind: PrimText, Block: &b, Size: size, Font: s.Font, Color: pal.InkOf(s), Label: true}}
 }
 
 func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 	g := e.Geometry(s)
-	sw := pal.Swatch(s.Color)
+	sw := pal.SwatchOf(s)
 	box := g.Bounds
 	var out []Prim
 	// A soft shadow, built of paths so that it turns with the shape.
@@ -557,29 +690,65 @@ func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 			d := float64(6-i) * s.Scale
 			sb := geo.Box{X: box.X + 3*s.Scale - d/2, Y: box.Y + d*0.9, W: box.W - 6*s.Scale + d, H: box.H}
 			c := sb.Corners()
-			out = append(out, fillWith(geo.RoundedPoly(c[:], 6*s.Scale), Color{A: 0.022}))
+			shadow := fillWith(geo.RoundedPoly(c[:], 6*s.Scale), Color{A: 0.022})
+			shadow.Rounded = &RoundedBox{sb, 6 * s.Scale}
+			out = append(out, shadow)
 		}
 	}
 	c := box.Corners()
-	out = append(out, fillWith(geo.RoundedPoly(c[:], 6*s.Scale), sw.NoteFill))
+	body := fillWith(geo.RoundedPoly(c[:], 6*s.Scale), sw.NoteFill)
+	body.Rounded = &RoundedBox{box, 6 * s.Scale}
+	out = append(out, body)
 	if s.Text != "" {
-		textColor := sw.NoteText
-		if s.LabelColor != "black" {
-			textColor = pal.Swatch(s.LabelColor).Solid
-		}
-		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, textColor))
+		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s)))
 	}
 	return out
+}
+
+// FrameHeading returns the font of a frame's heading, and its size in the page
+// when it was given one, to read as what the frame holds does. Without one, a
+// heading stays the same size on the screen, as tldraw's does.
+func FrameHeading(s *doc.Shape) (size float64, font string) {
+	var style string
+	if s.MetaValue(doc.MetaFrameSize, &style) {
+		size = fontSizeOf(style) // as a card's title, which is a text shape
+		font = "draw"
+	}
+	s.MetaValue(doc.MetaFrameFont, &font)
+	return size, font
+}
+
+// FrameHeadingFloor is the size of a frame's heading on the screen, which a
+// heading with a size of its own doesn't go below.
+const FrameHeadingFloor = 12.0
+
+// FrameHeadingBox returns what a frame's heading covers in the page, in a picture
+// or view where px of the page make a pixel.
+func (e *Editor) FrameHeadingBox(s *doc.Shape, px float64) geo.Box {
+	size, font := FrameHeading(s)
+	size = math.Max(size, FrameHeadingFloor*px)
+	w := s.W
+	if s.Name != "" && e.Measure != nil {
+		w = math.Min(w, e.Measure(s.Name, font, size, 0).W)
+	}
+	h := size * 1.6
+	return e.PageMat(s.ID).BoundsOf(geo.Box{Y: -h, W: w, H: h})
 }
 
 func (e *Editor) framePrims(s *doc.Shape, pal *Palette) []Prim {
 	box := geo.Box{W: s.W, H: s.H}
 	c := box.Corners()
 	path := (&geo.Path{}).Poly(c[:], true)
-	sw := pal.Swatch(s.Color)
+	sw := pal.SwatchOf(s)
 	stroke := strokeWith(path, 1, sw.FrameStroke)
+	if size, _ := FrameHeading(s); size > 0 {
+		stroke = strokeWith(path, strokeOf("s"), sw.Solid)
+	}
 	stroke.Butt = true
-	return []Prim{fillWith(path, sw.FrameFill), stroke}
+	fill := fillWith(path, sw.FrameFill)
+	fill.Rounded = &RoundedBox{Box: box}
+	stroke.Rounded = fill.Rounded
+	return []Prim{fill, stroke}
 }
 
 func (e *Editor) imagePrims(s *doc.Shape, pal *Palette) []Prim {
@@ -609,39 +778,91 @@ func (e *Editor) unknownPrims(s *doc.Shape, pal *Palette) []Prim {
 
 func (e *Editor) arrowPrims(s *doc.Shape, pal *Palette) []Prim {
 	info := e.Arrow(s)
-	sw := pal.Swatch(s.Color)
+	sw := pal.SwatchOf(s)
 	stroke := strokeWidthOf(s)
 	if len(info.Line) < 2 || info.Start.Dist(info.End) < 0.5 {
 		return nil
 	}
-	body := &geo.Path{}
-	if info.Arc {
-		body.Poly(info.Line, false)
-	} else {
-		body.Poly(info.Line, false)
+	var lb *geo.Box
+	if s.Text != "" {
+		lb = e.arrowLabelBox(s)
+	}
+	// The line stops short of its label, which shows what's behind it, rather than
+	// a box that would stand out on anything but the page.
+	pieces := [][]geo.Vec{info.Line}
+	if lb != nil && !labelAbove(s) {
+		pieces = outsideBox(info.Line, lb.Expand(stroke/2))
 	}
 	var out []Prim
-	out = append(out, outlinePrims(s.Dash, body, info.Line, false, stroke, sw.Solid, string(s.ID))...)
+	for i, piece := range pieces {
+		body := (&geo.Path{}).Poly(piece, false)
+		out = append(out, outlinePrims(s.Dash, body, piece, false, stroke, sw.Solid, fmt.Sprint(s.ID, i))...)
+	}
 	out = append(out, arrowhead(s.HeadEnd, info.Line, false, stroke, sw.Solid)...)
 	out = append(out, arrowhead(s.HeadStart, info.Line, true, stroke, sw.Solid)...)
-	if s.Text != "" {
-		if lb := e.arrowLabelBox(s); lb != nil {
-			c := lb.Corners()
-			out = append(out, fillWith(geo.RoundedPoly(c[:], 4), pal.Background))
-			size := arrowLabelSizeOf(s.Size) * s.Scale
-			b := e.Measure(s.Text, s.Font, size, 0)
-			if b.W > 280*s.Scale {
-				b = e.Measure(s.Text, s.Font, size, 280*s.Scale)
-			}
-			pad := 4.25 * s.Scale
-			b = alignBlock(b, lb.W-2*pad, "middle")
-			out = append(out, Prim{
-				Kind: PrimText, Block: &b, X: lb.X + pad, Y: lb.Y + pad, Size: size, Font: s.Font,
-				Color: pal.Swatch(s.LabelColor).Solid, Label: true,
-			})
-		}
+	if lb != nil {
+		size := arrowLabelSizeOf(s.Size) * s.Scale
+		pad := 4.25 * s.Scale
+		b := alignBlock(e.arrowLabelBlock(s), lb.W-2*pad, "middle")
+		out = append(out, Prim{
+			Kind: PrimText, Block: &b, X: lb.X + pad, Y: lb.Y + pad, Size: size, Font: s.Font,
+			Color: pal.InkOf(s), Label: true,
+		})
 	}
 	return out
+}
+
+// outsideBox returns the pieces of a line outside a box.
+func outsideBox(line []geo.Vec, box geo.Box) [][]geo.Vec {
+	var out [][]geo.Vec
+	var cur []geo.Vec
+	end := func() {
+		if len(cur) > 1 {
+			out = append(out, cur)
+		}
+		cur = nil
+	}
+	for i := 1; i < len(line); i++ {
+		a, b := line[i-1], line[i]
+		if cur == nil {
+			cur = []geo.Vec{a}
+		}
+		t0, t1, in := inBox(a, b, box)
+		if !in {
+			cur = append(cur, b)
+			continue
+		}
+		if t0 > 0 {
+			cur = append(cur, a.Lerp(b, t0))
+		}
+		end()
+		if t1 < 1 {
+			cur = []geo.Vec{a.Lerp(b, t1), b}
+		}
+	}
+	end()
+	return out
+}
+
+// inBox returns the part of a segment in a box, as how far along it goes in and
+// comes out, and whether any of it is.
+func inBox(a, b geo.Vec, box geo.Box) (t0, t1 float64, in bool) {
+	d := b.Sub(a)
+	t1 = 1
+	for _, side := range [4][2]float64{{-d.X, a.X - box.X}, {d.X, box.MaxX() - a.X}, {-d.Y, a.Y - box.Y}, {d.Y, box.MaxY() - a.Y}} {
+		p, q := side[0], side[1]
+		switch {
+		case p == 0:
+			if q < 0 {
+				return 0, 0, false
+			}
+		case p < 0:
+			t0 = math.Max(t0, q/p)
+		default:
+			t1 = math.Min(t1, q/p)
+		}
+	}
+	return t0, t1, t0 < t1
 }
 
 // arrowhead draws a head at an end of a line.

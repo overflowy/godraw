@@ -123,6 +123,7 @@ func (e *Editor) PointerMove(x, y float64, m Mods, t float64) {
 	e.Now = t
 	if e.gesture != nil {
 		e.gesture.move(e)
+		e.settleRoutes(routeFrameBudget)
 		return
 	}
 	e.updateHover()
@@ -809,7 +810,7 @@ func (g *translateGesture) setCloned(e *Editor, on bool) {
 		for _, id := range g.ids {
 			e.put(g.initial[id].Moved())
 		}
-		clones := e.cloneShapes(g.ids, geo.Vec{})
+		clones := e.cloneShapes(g.ids, geo.Vec{}, newShapeID)
 		g.cloned = clones
 		e.Select(clones...)
 		return
@@ -1077,6 +1078,8 @@ type resizeItem struct {
 	rel float64
 	// bounds is its box in the selection's frame.
 	bounds geo.Box
+	// held says that an arrow has an end bound to what isn't resizing with it.
+	held bool
 }
 
 type resizeGesture struct {
@@ -1120,6 +1123,20 @@ func newResize(e *Editor, h Handle) *resizeGesture {
 	}
 	for _, id := range e.topSelected() {
 		add(id)
+	}
+	moving := map[doc.ID]bool{}
+	for _, id := range e.topSelected() {
+		moving[id] = true
+		for _, k := range e.Descendants(id) {
+			moving[k] = true
+		}
+	}
+	for i := range g.items {
+		for _, term := range []string{"start", "end"} {
+			if b := e.bindingOf(g.items[i].id, term); b != nil && !moving[b.To] {
+				g.items[i].held = true
+			}
+		}
 	}
 	return g
 }
@@ -1245,6 +1262,12 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	case doc.TypeArrow:
 		c.Start = geo.V(init.Start.X*lx, init.Start.Y*ly)
 		c.End = geo.V(init.End.X*lx, init.End.Y*ly)
+		if via := init.Via(); via != nil && !it.held {
+			for i, p := range via {
+				via[i] = geo.V(p.X*lx, p.Y*ly)
+			}
+			c.SetVia(via)
+		}
 		c.Bend = init.Bend * math.Sqrt(abs(lx*ly))
 		if lx*ly < 0 {
 			c.Bend = -c.Bend
@@ -1259,6 +1282,14 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	inP := e.parentMat(init.Parent).Invert().Apply(page)
 	c.X, c.Y = inP.X, inP.Y
 	e.put(c)
+	// With an end held where it is, points that moved would no longer lie between
+	// its ends, and a route through them would tie a knot: they stay in the page.
+	if via := init.Via(); via != nil && it.held {
+		for i, p := range via {
+			via[i] = it.mat.Apply(p)
+		}
+		e.put(e.withVia(e.Doc.Shapes[it.id], via))
+	}
 }
 
 // boxFlipOffset returns how far from the scaled origin a box w×h lies on
@@ -1505,7 +1536,7 @@ func (e *Editor) fitLabel(s *doc.Shape) {
 	switch s.Type {
 	case doc.TypeGeo:
 		size := labelSizeOf(s.Size) * s.Scale
-		pad := labelPadding * s.Scale
+		pad := LabelPad(s)
 		text := s.Text
 		if text == "" {
 			s.GrowY = 0
@@ -1515,7 +1546,7 @@ func (e *Editor) fitLabel(s *doc.Shape) {
 		s.GrowY = math.Max(0, b.H+2*pad-s.H)
 	case doc.TypeNote:
 		size := labelSizeOf(s.Size) * s.Scale
-		pad := labelPadding * s.Scale
+		pad := LabelPad(s)
 		b := e.Measure(s.Text+" ", s.Font, size, noteSize*s.Scale-2*pad)
 		s.GrowY = math.Max(0, (b.H+2*pad-noteSize*s.Scale)/s.Scale)
 	}
@@ -1557,22 +1588,19 @@ func (e *Editor) EditBox() (box geo.Box, size float64, font, align string, c Col
 		box = e.Geometry(s).Bounds
 		box.H = math.Max(box.H, size*LineHeight)
 		align = s.TextAlign
-		c = pal.Swatch(s.Color).Solid
+		c = pal.InkOf(s)
 	case doc.TypeNote:
 		size = labelSizeOf(s.Size) * s.Scale
 		box = *e.Geometry(s).Label
 		align = s.Align
-		c = pal.Swatch(s.Color).NoteText
-		if s.LabelColor != "black" {
-			c = pal.Swatch(s.LabelColor).Solid
-		}
+		c = pal.InkOf(s)
 	case doc.TypeGeo:
 		size = labelSizeOf(s.Size) * s.Scale
 		w, h := s.W, s.H+s.GrowY
 		l := e.labelBox(s, w, h, size)
 		box = *l
 		align = s.Align
-		c = pal.Swatch(s.LabelColor).Solid
+		c = pal.InkOf(s)
 	case doc.TypeArrow:
 		size = arrowLabelSizeOf(s.Size) * s.Scale
 		box = *e.arrowLabelBox(s)
@@ -1581,7 +1609,7 @@ func (e *Editor) EditBox() (box geo.Box, size float64, font, align string, c Col
 		box.W += 40
 		box.H = math.Max(box.H, size*LineHeight)
 		align = "middle"
-		c = pal.Swatch(s.LabelColor).Solid
+		c = pal.InkOf(s)
 	case doc.TypeFrame:
 		z := e.Cam().Z
 		size = 12 / z

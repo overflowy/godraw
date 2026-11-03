@@ -225,3 +225,63 @@ func TestSnapshotsAreIndependent(t *testing.T) {
 		t.Error("undoing to the same record should compare equal")
 	}
 }
+
+func TestMetaKeepsTheRest(t *testing.T) {
+	s := NewShape("shape:a", TypeArrow)
+	s.Meta = json.RawMessage(`{"theirs":{"kept":true}}`)
+	s.SetMeta(MetaLabel, "above")
+	var v string
+	if !s.MetaValue(MetaLabel, &v) || v != "above" {
+		t.Errorf("read back %q from %s", v, s.Meta)
+	}
+	s.SetMeta(MetaLabel, nil)
+	if s.MetaValue(MetaLabel, &v) || string(s.Meta) != `{"theirs":{"kept":true}}` {
+		t.Errorf("after removing: %s", s.Meta)
+	}
+	empty := NewShape("shape:b", TypeArrow)
+	if empty.MetaValue(MetaLabel, &v) {
+		t.Error("found a key in no meta")
+	}
+	empty.SetMeta(MetaStraightAt, 0.25)
+	var at float64
+	if !empty.MetaValue(MetaStraightAt, &at) || at != 0.25 {
+		t.Errorf("read back %v from %s", at, empty.Meta)
+	}
+}
+
+// A file holds only the images something shows, or might: an unknown shape's
+// reference counts, and other kinds of asset are left alone.
+func TestWriteDropsUnusedImages(t *testing.T) {
+	d := New()
+	for _, a := range []*Asset{
+		{ID: "asset:used", Type: "image", Src: "data:,"},
+		{ID: "asset:gone", Type: "image", Src: "data:,"},
+		{ID: "asset:raw", Type: "image", Src: "data:,"},
+		{ID: "asset:video", Type: "video", Src: "data:,"},
+	} {
+		d.Assets[a.ID] = a
+	}
+	s := NewShape("shape:i", TypeImage)
+	s.Parent, s.Index, s.AssetID = "page:page", FirstIndex, "asset:used"
+	d.Shapes[s.ID] = s
+	o := NewShape("shape:o", "embed")
+	o.Parent, o.Index = "page:page", IndexBetween(FirstIndex, "")
+	o.Raw = map[string]json.RawMessage{"assetId": json.RawMessage(`"asset:raw"`)}
+	d.Shapes[o.ID] = o
+	var buf bytes.Buffer
+	if err := Write(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Assets["asset:gone"] == nil {
+		t.Error("writing changed the drawing")
+	}
+	back, err := Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[ID]bool{"asset:used": true, "asset:gone": false, "asset:raw": true, "asset:video": true} {
+		if (back.Assets[id] != nil) != want {
+			t.Errorf("%s in the file: %v", id, back.Assets[id] != nil)
+		}
+	}
+}

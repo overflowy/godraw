@@ -388,10 +388,9 @@ func (a *App) iconRow(c *ui.Context, key string, prop editor.StyleProp, cur stri
 
 func (a *App) headRow(c *ui.Context, label string, prop editor.StyleProp, cur string) {
 	e := a.ed
-	heads := []string{"none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar"}
 	ui.Row(c.Key("head-" + label)).Gap(6).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, label).FontSize(12).Width(32).TextColor(c.Theme().TextMuted)
-		ui.Select(c.Key("sel-"+label), &cur, heads).Grow(1).Label(label + " arrowhead").OnChange(func() {
+		ui.Select(c.Key("sel-"+label), &cur, editor.ArrowHeads).Grow(1).MinWidth(0).Label(label + " arrowhead").OnChange(func() {
 			e.SetStyle(prop, cur)
 			a.refocus(c)
 		})
@@ -442,6 +441,7 @@ func (a *App) topLeft(c *ui.Context) {
 		}
 		del.OnClick(func() { e.Delete(); a.refocus(c) })
 		dup.OnClick(func() { e.Duplicate(); a.refocus(c) })
+		a.mcpButton(c)
 		iconButton(c, "more", "ellipsis", "More", false).PopoverMenuButton(a.moreMenu)
 	})
 }
@@ -480,6 +480,9 @@ func (a *App) moreMenu(m *ui.Menu) {
 		}
 	})
 	m.Separator()
+	if a.MCP != nil && m.Item("MCP Server…").Chosen() {
+		a.ShowMCP()
+	}
 	if m.Item("Keyboard Shortcuts").Shortcut(ui.Shift, ui.KeySlash).Chosen() {
 		a.helpOpen = true
 	}

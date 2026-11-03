@@ -30,8 +30,9 @@ type arrowMemo struct {
 	s      *doc.Shape
 	starts [2]*doc.Shape
 	binds  [2]*doc.Binding
-	mats   [3]geo.Mat
+	mats   [2]geo.Mat
 	info   *ArrowInfo
+	geom   *Geometry
 	// What the arrow draws, by theme, as it lies now.
 	display [2][]Prim
 	drawn   [2]bool
@@ -70,6 +71,7 @@ func (e *Editor) bindingsTo(id doc.ID) []*doc.Binding {
 
 // Arrow returns how an arrow lies, from its props and what it is bound to.
 func (e *Editor) Arrow(s *doc.Shape) *ArrowInfo {
+	cacheOf(s) // for a copy that only moves it to be known as the same arrow
 	bs, be := e.bindingOf(s.ID, "start"), e.bindingOf(s.ID, "end")
 	var ts, te *doc.Shape
 	if bs != nil {
@@ -79,22 +81,40 @@ func (e *Editor) Arrow(s *doc.Shape) *ArrowInfo {
 		te = e.Doc.Shapes[be.To]
 	}
 	am := e.PageMat(s.ID)
-	mats := [3]geo.Mat{am}
-	if ts != nil {
-		mats[1] = e.PageMat(ts.ID)
-	}
-	if te != nil {
-		mats[2] = e.PageMat(te.ID)
+	// What an arrow is bound to, as it lies from the arrow: an arrow lies in its own
+	// space, so that all of them moving together changes nothing of it.
+	var mats [2]geo.Mat
+	if ts != nil || te != nil {
+		inv := am.Invert()
+		if ts != nil {
+			mats[0] = inv.Mul(e.PageMat(ts.ID))
+		}
+		if te != nil {
+			mats[1] = inv.Mul(e.PageMat(te.ID))
+		}
 	}
 	// An arrow is computed again when it, its bindings, what it is bound to
-	// or where any of them are changes.
-	if m := e.arrows[s.ID]; m != nil && m.s == s && m.starts == [2]*doc.Shape{ts, te} &&
-		m.binds == [2]*doc.Binding{bs, be} && m.mats == mats {
+	// or where those are from it changes.
+	if m := e.arrows[s.ID]; m != nil && sameForm(m.s, s) && sameForm(m.starts[0], ts) && sameForm(m.starts[1], te) &&
+		m.binds == [2]*doc.Binding{bs, be} && sameMat(m.mats[0], mats[0]) && sameMat(m.mats[1], mats[1]) {
 		return m.info
 	}
 	info := e.computeArrow(s, bs, be, ts, te, am)
 	e.arrows[s.ID] = &arrowMemo{s: s, starts: [2]*doc.Shape{ts, te}, binds: [2]*doc.Binding{bs, be}, mats: mats, info: info}
 	return info
+}
+
+// sameForm says whether two records of a shape, if any, have the same form: they're
+// one record, or one's a copy that only placed it elsewhere (doc.Shape.Moved).
+func sameForm(a, b *doc.Shape) bool {
+	return a == b || a != nil && b != nil && a.Cache != nil && a.Cache == b.Cache
+}
+
+// sameMat says whether two transforms are the same, but for rounding.
+func sameMat(a, b geo.Mat) bool {
+	const near = 1e-7
+	return math.Abs(a.A-b.A) < near && math.Abs(a.B-b.B) < near && math.Abs(a.C-b.C) < near &&
+		math.Abs(a.D-b.D) < near && math.Abs(a.E-b.E) < near && math.Abs(a.F-b.F) < near
 }
 
 // anchorOf returns where a binding points, in the page.
@@ -140,7 +160,7 @@ func (e *Editor) computeArrow(s *doc.Shape, bs, be *doc.Binding, ts, te *doc.Sha
 	}
 
 	if s.Kind == "elbow" {
-		return e.computeElbow(s, info, ts, te, outlineIn)
+		return e.computeElbow(s, info, bs, be, ts, te, inv, outlineIn)
 	}
 
 	dist := a.Dist(b)
@@ -281,42 +301,16 @@ func crossAlong(line, outline []geo.Vec, atEnd bool) (float64, bool) {
 	return 0, false
 }
 
-// computeElbow lays out a right-angled arrow: out from each end along the
-// longer axis, with its bend where elbowMidPoint says.
-func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, ts, te *doc.Shape, outlineIn func(*doc.Shape) []geo.Vec) *ArrowInfo {
-	a, b := info.RawStart, info.RawEnd
-	mid := s.ElbowMidPoint
-	if mid == 0 {
-		mid = 0.5
+func (e *Editor) arrowGeometry(s *doc.Shape) *Geometry {
+	info := e.Arrow(s) // brings its memo up to date with what it is bound to
+	m := e.arrows[s.ID]
+	if m.geom == nil {
+		m.geom = e.computeArrowGeometry(s, info)
 	}
-	d := b.Sub(a)
-	var pts []geo.Vec
-	if math.Abs(d.X) >= math.Abs(d.Y) {
-		x := a.X + d.X*mid
-		pts = []geo.Vec{a, geo.V(x, a.Y), geo.V(x, b.Y), b}
-	} else {
-		y := a.Y + d.Y*mid
-		pts = []geo.Vec{a, geo.V(a.X, y), geo.V(b.X, y), b}
-	}
-	// Clip each bound end to its target, along its first and last legs.
-	if ts != nil {
-		if p, ok := lastCross(pts[0], pts[1], outlineIn(ts)); ok {
-			pts[0] = p
-		}
-	}
-	if te != nil {
-		if p, ok := lastCross(pts[3], pts[2], outlineIn(te)); ok {
-			pts[3] = p.Add(pts[2].Sub(pts[3]).Uni().Mul(strokeWidthOf(s)))
-		}
-	}
-	info.Elbow, info.Line = pts, pts
-	info.Start, info.End = pts[0], pts[3]
-	info.Mid = geo.Med(pts[1], pts[2])
-	return info
+	return m.geom
 }
 
-func (e *Editor) arrowGeometry(s *doc.Shape) *Geometry {
-	info := e.Arrow(s)
+func (e *Editor) computeArrowGeometry(s *doc.Shape, info *ArrowInfo) *Geometry {
 	pts := info.Line
 	box := geo.BoxOf(pts)
 	g := &Geometry{Bounds: box, Outline: pts}
@@ -352,22 +346,69 @@ func (i *ArrowInfo) at(t float64) geo.Vec {
 // arrowLabelBox returns the box of an arrow's label, in the arrow's space.
 func (e *Editor) arrowLabelBox(s *doc.Shape) *geo.Box {
 	info := e.Arrow(s)
-	text := s.Text
-	if text == "" {
-		text = " "
-	}
-	size := arrowLabelSizeOf(s.Size) * s.Scale
-	b := e.Measure(text, s.Font, size, 0)
-	if b.W > 280*s.Scale {
-		b = e.Measure(text, s.Font, size, 280*s.Scale)
-	}
+	b := e.arrowLabelBlock(s)
 	pos := s.LabelPosition
 	if pos == 0 {
 		pos = 0.5
 	}
 	c := info.at(pos)
 	pad := 4.25 * s.Scale
+	if labelAbove(s) {
+		c = c.Add(info.clearOfLine(pos, b.W/2+pad, b.H/2+pad, strokeWidthOf(s)/2+3*s.Scale))
+	}
 	return &geo.Box{X: c.X - b.W/2 - pad, Y: c.Y - b.H/2 - pad, W: b.W + 2*pad, H: b.H + 2*pad}
+}
+
+// arrowLabelBlock lays out an arrow's label, for the room it takes and for drawing.
+func (e *Editor) arrowLabelBlock(s *doc.Shape) TextBlock {
+	text := s.Text
+	if text == "" {
+		text = " "
+	}
+	size := arrowLabelSizeOf(s.Size) * s.Scale
+	b := e.Measure(text, s.Font, size, 0)
+	if w := labelWidth(b.W, size, s.Scale, geo.BoxOf(e.Arrow(s).Line), labelAbove(s)); w < b.W {
+		b = e.Measure(text, s.Font, size, w)
+	}
+	return b
+}
+
+func labelAbove(s *doc.Shape) bool {
+	var side string
+	return s.MetaValue(doc.MetaLabel, &side) && side == "above"
+}
+
+// labelWidth returns how wide an arrow's label may be. On the line, it's what
+// tldraw allows, so that it wraps the same there: a label on an arrow wider than
+// tall leaves some of the arrow showing, by wrapping if it has to. Above the line
+// it's in nothing's way, which tldraw has no way of saying.
+func labelWidth(w, size, scale float64, body geo.Box, above bool) float64 {
+	const margin = 64.0
+	switch {
+	case above:
+		return 280 * scale
+	case body.W > body.H:
+		return max(min(w, margin), min(body.W-margin, w))
+	}
+	return min(w, 16*size)
+}
+
+// clearOfLine returns how far to move a box of half sizes hw and hh off a part
+// of the arrow's way along, so that it clears the line: up, or to the right of
+// a line that runs up and down.
+func (i *ArrowInfo) clearOfLine(pos, hw, hh, gap float64) geo.Vec {
+	t := i.at(math.Min(pos+0.02, 1)).Sub(i.at(math.Max(pos-0.02, 0)))
+	if t.X == 0 && t.Y == 0 {
+		return geo.Vec{}
+	}
+	n := t.Uni().Per()
+	if n.Y > 0 {
+		n = n.Mul(-1)
+	}
+	if math.Abs(n.Y) < 0.2 && n.X < 0 {
+		n = n.Mul(-1)
+	}
+	return n.Mul(math.Abs(n.X)*hw + math.Abs(n.Y)*hh + gap)
 }
 
 // bendFromPoint returns the bend of an arrow whose middle is near p.

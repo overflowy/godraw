@@ -2,7 +2,10 @@ package editor
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+
+	"godraw/internal/doc"
 )
 
 // Color is a color with its alpha, from 0 to 1.
@@ -27,6 +30,55 @@ func Hex(s string) Color {
 func (c Color) Alpha(a float64) Color {
 	c.A *= a
 	return c
+}
+
+// IsHex says whether s is a color Hex can read.
+func IsHex(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	_, err := strconv.ParseUint(s[1:], 16, 32)
+	return err == nil && s[1] != '+' && s[1] != '-'
+}
+
+// Mix returns c moved toward o by t, from 0 to 1, keeping c's alpha.
+func (c Color) Mix(o Color, t float64) Color {
+	at := func(a, b uint8) uint8 { return uint8(math.Round(float64(a) + (float64(b)-float64(a))*t)) }
+	return Color{at(c.R, o.R), at(c.G, o.G), at(c.B, o.B), c.A}
+}
+
+// luminance returns how light a color looks, as WCAG works it out.
+func (c Color) luminance() float64 {
+	ch := func(v uint8) float64 {
+		s := float64(v) / 255
+		if s <= 0.03928 {
+			return s / 12.92
+		}
+		return math.Pow((s+0.055)/1.055, 2.4)
+	}
+	return 0.2126*ch(c.R) + 0.7152*ch(c.G) + 0.0722*ch(c.B)
+}
+
+// Contrast returns how far apart two colors stand, from 1, for one color, to 21,
+// for black on white.
+func Contrast(a, b Color) float64 {
+	la, lb := a.luminance(), b.luminance()
+	return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+}
+
+// NearestColor returns the palette's color closest to a hex one, which is what
+// tldraw shows in its place.
+func NearestColor(hex string) string {
+	c := Hex(hex)
+	best, bestD := Colors[0], math.Inf(1)
+	for _, name := range Colors {
+		s := Light.Swatches[name].Solid
+		dr, dg, db := float64(c.R)-float64(s.R), float64(c.G)-float64(s.G), float64(c.B)-float64(s.B)
+		if d := dr*dr + dg*dg + db*db; d < bestD {
+			best, bestD = name, d
+		}
+	}
+	return best
 }
 
 // CSS returns the color as SVG takes it.
@@ -140,6 +192,44 @@ func (p *Palette) Swatch(name string) Swatch {
 		return s
 	}
 	return p.Swatches["black"]
+}
+
+// custom returns the swatch of a color of a shape's own, the same in each theme but
+// for what it's mixed with, in the proportions the palette's colors have.
+func (p *Palette) custom(c Color) Swatch {
+	on := func(t float64) Color { return p.Background.Mix(c, t) }
+	text := Color{A: 1}
+	if Contrast(c, text) < Contrast(c, Hex("#ffffff")) {
+		text = Hex("#ffffff")
+	}
+	return Swatch{
+		Solid: c, Semi: on(0.18), Pattern: on(0.8), Fill: c, Lined: on(0.8), NoteFill: c, NoteText: text,
+		FrameStroke: on(0.7), FrameFill: on(0.04), FrameText: p.Text, Highlight: c,
+	}
+}
+
+// SwatchOf returns what a shape's color paints with.
+func (p *Palette) SwatchOf(s *doc.Shape) Swatch {
+	var hex string
+	if s.MetaValue(doc.MetaColor, &hex) && IsHex(hex) {
+		return p.custom(Hex(hex))
+	}
+	return p.Swatch(s.Color)
+}
+
+// InkOf returns the color of a shape's text.
+func (p *Palette) InkOf(s *doc.Shape) Color {
+	if s.Type == doc.TypeText {
+		return p.SwatchOf(s).Solid
+	}
+	var hex string
+	if s.MetaValue(doc.MetaLabelColor, &hex) && IsHex(hex) {
+		return Hex(hex)
+	}
+	if s.Type == doc.TypeNote && s.LabelColor == "black" {
+		return p.SwatchOf(s).NoteText
+	}
+	return p.Swatch(s.LabelColor).Solid
 }
 
 // Sizes of the size style, as tldraw has them.

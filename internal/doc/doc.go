@@ -121,7 +121,9 @@ type Shape struct {
 	Raw map[string]json.RawMessage
 
 	// Cache holds what the editor derives from the shape, as its geometry;
-	// a clone starts without it. It belongs to the main thread.
+	// a clone starts without it. It belongs to the main thread, unlike the rest
+	// of a record, which snapshots read elsewhere; the editor empties it once the
+	// record has left the document.
 	Cache any
 }
 
@@ -144,6 +146,115 @@ func (s *Shape) Moved() *Shape {
 // is the same text.
 func (s *Shape) SetText(t string) {
 	s.Text = t
+}
+
+// Keys of a shape's meta, for what this app adds to an arrow that tldraw has no
+// prop for. tldraw keeps them, and shows the arrow without them.
+const (
+	MetaStraight   = "godrawStraight"   // h or v
+	MetaStraightAt = "godrawStraightAt" // 0 to 1 across what both ends share
+	MetaLabel      = "godrawLabel"      // above
+	MetaCard       = "godrawCard"       // box, head or body: a card's part
+	MetaCardH      = "godrawCardH"      // the height asked of a card's box
+	MetaVia        = "godrawVia"        // what an elbow arrow passes through
+	MetaViaAuto    = "godrawViaAuto"    // that the app chose it, to go around something
+	MetaFrameSize  = "godrawFrameSize"  // a frame's size style, for its heading and border
+	MetaFrameFont  = "godrawFrameFont"  // the font of a frame's heading
+
+	// What a file keeps for this app alone, as tldraw's validators take only its own
+	// colors and dashes. There, a shape shows as its props say, without these.
+	MetaColor      = "godrawColor"      // #rrggbb, in place of color
+	MetaLabelColor = "godrawLabelColor" // #rrggbb, in place of labelColor
+	MetaNoOutline  = "godrawNoOutline"  // that a shape draws no outline
+	MetaGradient   = "godrawGradient"   // what a shape fills with, in place of fill
+	MetaPadding    = "godrawPadding"    // how far a label sits in from its box
+)
+
+// MetaValue reads a key of the shape's meta into v, and says whether it could.
+func (s *Shape) MetaValue(key string, v any) bool {
+	if len(s.Meta) <= 2 {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(s.Meta, &m) != nil {
+		return false
+	}
+	raw, ok := m[key]
+	return ok && json.Unmarshal(raw, v) == nil
+}
+
+// SetMeta sets a key of the shape's meta, or removes it if v is nil. The rest
+// of the meta stays.
+func (s *Shape) SetMeta(key string, v any) {
+	m := map[string]json.RawMessage{}
+	if len(s.Meta) > 0 && json.Unmarshal(s.Meta, &m) != nil {
+		return
+	}
+	if v == nil {
+		if _, ok := m[key]; !ok {
+			return
+		}
+		delete(m, key)
+	} else {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		m[key] = raw
+	}
+	if b, err := json.Marshal(m); err == nil {
+		s.Meta = b
+	}
+}
+
+// Gradient is a fill that blends colors, evenly spaced along a line. Angle is that
+// line's direction, in degrees as CSS has them: 180 runs top to bottom, 90 left to
+// right.
+type Gradient struct {
+	Colors []string `json:"colors"`
+	Angle  float64  `json:"angle"`
+}
+
+// Gradient returns what a shape fills with instead of its fill, if anything.
+func (s *Shape) Gradient() *Gradient {
+	var g Gradient
+	if !s.MetaValue(MetaGradient, &g) || len(g.Colors) < 2 {
+		return nil
+	}
+	return &g
+}
+
+// NoOutline says that a shape draws no outline, whatever its dash.
+func (s *Shape) NoOutline() bool {
+	var none bool
+	return s.MetaValue(MetaNoOutline, &none) && none
+}
+
+// Via returns the points an elbow arrow passes through, in its own space.
+func (s *Shape) Via() []geo.Vec {
+	var pts [][2]float64
+	if !s.MetaValue(MetaVia, &pts) {
+		return nil
+	}
+	out := make([]geo.Vec, len(pts))
+	for i, p := range pts {
+		out[i] = geo.V(p[0], p[1])
+	}
+	return out
+}
+
+// SetVia sets the points an elbow arrow passes through, in its own space.
+func (s *Shape) SetVia(via []geo.Vec) {
+	s.SetMeta(MetaViaAuto, nil)
+	if len(via) == 0 {
+		s.SetMeta(MetaVia, nil)
+		return
+	}
+	pts := make([][2]float64, len(via))
+	for i, p := range via {
+		pts[i] = [2]float64{p.X, p.Y}
+	}
+	s.SetMeta(MetaVia, pts)
 }
 
 // Binding ties an end of an arrow to a shape.

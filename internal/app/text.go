@@ -11,11 +11,23 @@ import (
 	"godraw/internal/editor"
 )
 
-const drawFamily = "Shantell Sans"
+const (
+	drawFamily  = "Shantell Sans"
+	sansFamily  = "IBM Plex Sans"
+	serifFamily = "IBM Plex Serif"
+	monoFamily  = "IBM Plex Mono"
+)
 
 var registerFonts = sync.OnceFunc(func() {
-	if err := ui.RegisterFont(assets.DrawFont, drawFamily); err != nil {
-		panic(err)
+	for family, data := range map[string][]byte{
+		drawFamily:  assets.DrawFont,
+		sansFamily:  assets.SansFont,
+		serifFamily: assets.SerifFont,
+		monoFamily:  assets.MonoFont,
+	} {
+		if err := ui.RegisterFont(data, family); err != nil {
+			panic(err)
+		}
 	}
 })
 
@@ -25,11 +37,11 @@ func family(font string) string {
 	case "draw":
 		return drawFamily
 	case "serif":
-		return "Georgia, serif"
+		return serifFamily
 	case "mono":
-		return "monospace"
+		return monoFamily
 	}
-	return "system-ui"
+	return sansFamily
 }
 
 type measureKey struct {
@@ -89,6 +101,18 @@ func layoutBlock(text, font string, size, width float64) editor.TextBlock {
 	}
 	out.H = float64(len(out.Lines)) * line
 	return out
+}
+
+// paintTheme returns the theme that the canvas paints with: t, with a font smaller
+// than any text it paints. A Painter.RichText's lines are at least as tall as the
+// theme's font, with their glyphs as far down them, so that small text would fall
+// away from where it's meant to be. RichText it is all the same, rather than layouts
+// kept from frame to frame: the text system lets go of its fonts when it has made
+// too many, as a zoom does, and painting a layout made before that crashes.
+func paintTheme(t *ui.Theme) *ui.Theme {
+	painted := *t
+	painted.FontSize = 1
+	return &painted
 }
 
 // naturalHeight returns the height a font's line takes, in its size, without

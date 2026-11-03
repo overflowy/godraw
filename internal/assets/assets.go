@@ -1,14 +1,27 @@
-// Package assets holds what the app embeds: its handwriting font and its
-// icons.
+// Package assets holds what the app embeds: its fonts and its icons.
 package assets
 
 import "embed"
 
-// DrawFont is Shantell Sans, the font of the "draw" style (SIL OFL, see
-// fonts/OFL.txt).
-//
-//go:embed fonts/ShantellSans.ttf
-var DrawFont []byte
+// The fonts of the font styles are tldraw's own, so that text takes the same
+// room there as here.
+var (
+	// DrawFont is Shantell Sans Informal (SIL OFL, see fonts/OFL-ShantellSans.txt).
+	//
+	//go:embed fonts/ShantellSans-Informal-Regular.ttf
+	DrawFont []byte
+
+	// SansFont, SerifFont and MonoFont are IBM Plex, as IBM released it (SIL OFL,
+	// see fonts/OFL-IBMPlex.txt). Plex is a reserved name, so these files stay
+	// unchanged, in their format too. tldraw's regular weight is Medium.
+	//
+	//go:embed fonts/IBMPlexSans-Medium.ttf
+	SansFont []byte
+	//go:embed fonts/IBMPlexSerif-Medium.ttf
+	SerifFont []byte
+	//go:embed fonts/IBMPlexMono-Medium.ttf
+	MonoFont []byte
+)
 
 // Icons holds Lucide's icons (ISC, see icons/LICENSE).
 //

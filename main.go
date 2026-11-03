@@ -80,6 +80,8 @@ func menu() *mygo.Menu {
 			{Label: "Export as PNG…", Accelerator: "CmdOrCtrl+Shift+E", Click: act(func(a *app.App) { a.ExportPNG() })},
 			{Label: "Export as SVG…", Click: act(func(a *app.App) { a.ExportSVG() })},
 			{Label: "Copy as PNG", Accelerator: "CmdOrCtrl+Shift+C", Click: act(func(a *app.App) { a.CopyPNG() })},
+			mygo.Separator(),
+			{Label: "MCP Server…", Click: act(func(a *app.App) { a.ShowMCP() })},
 		}},
 		{Role: mygo.RoleEditMenu},
 		{Label: "View", Submenu: []*mygo.MenuItem{
@@ -128,6 +130,7 @@ func main() {
 			log.Printf("godraw: %s: %v", path, err)
 		}
 	}
+	agents := &canvases{}
 	docs = mygo.NewDocuments(mygo.DocumentsOptions[*doc.Drawing]{
 		Types: []mygo.DocumentType{{Name: "tldraw Drawing", Extensions: []string{"tldr"}}},
 		New:   doc.New,
@@ -141,13 +144,19 @@ func main() {
 		Window: func(d *mygo.Document[*doc.Drawing]) *mygo.Window {
 			w := &window{doc: d}
 			w.app = app.New(d.Content().Snapshot(), w)
+			w.app.MCP = agents.Status
 			w.win = mygo.NewWindow(mygo.WindowOptions{
 				Width: 1280, Height: 820, MinWidth: 640, MinHeight: 420,
 				StateKey: "drawing",
 				Content:  ui.View(w.app.View),
 			})
 			windows[w.win] = w
-			w.win.OnClosed(func() { delete(windows, w.win) })
+			c := agents.add(w)
+			w.win.OnFocus(func() { agents.front(c) })
+			w.win.OnClosed(func() {
+				delete(windows, w.win)
+				agents.remove(c)
+			})
 			// Dropped drawings open; dropped images land where they fall.
 			w.win.OnFileDrop(func(e *mygo.FileDropEvent) {
 				var images []string
@@ -167,8 +176,10 @@ func main() {
 			return w.win
 		},
 	})
+	agents.docs = docs
 	mygo.App.WhenReady(func() {
 		mygo.App.SetMenu(menu())
+		go serveMCP(agents)
 		if len(files) == 0 {
 			return
 		}
