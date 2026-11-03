@@ -157,7 +157,7 @@ func (e *Editor) settleRoutes(budget time.Duration) RouteChanges {
 // an elbow arrow's, or any clear route if its own runs into something or itself.
 func (e *Editor) betterVia(s *doc.Shape) ([]geo.Vec, bool) {
 	route := e.routeOf(s)
-	stuck := e.routeIsTaken(s, route) || crossesItself(route)
+	stuck := e.routeIsTaken(s, route) || CrossesItself(route)
 	return e.findVia(s, func(c *doc.Shape, r []geo.Vec) bool {
 		return (stuck || len(r) < len(route)) && !e.routeRunsAlongArrow(c, r)
 	})
@@ -181,7 +181,7 @@ func (e *Editor) findVia(s *doc.Shape, will func(c *doc.Shape, route []geo.Vec) 
 		for _, via := range e.viaCandidates(s, margin) {
 			c := e.withVia(s, via)
 			r := e.routeOf(c)
-			if !e.routeComesWithin(c, r, margin-0.5) && will(c, r) && !crossesItself(r) && geo.PolyLength(r) <= longest {
+			if !e.routeComesWithin(c, r, margin-0.5) && will(c, r) && !CrossesItself(r) && geo.PolyLength(r) <= longest {
 				return via, true
 			}
 		}
@@ -256,11 +256,12 @@ func (e *Editor) viaCandidates(s *doc.Shape, margin float64) [][]geo.Vec {
 	return list
 }
 
-// crossesItself says whether a route crosses or runs back along its own way.
-func crossesItself(pts []geo.Vec) bool {
+// CrossesItself says whether a line crosses or runs back along its own way: what a
+// route is taken around, and what an agent is warned of.
+func CrossesItself(pts []geo.Vec) bool {
 	for i := 1; i < len(pts); i++ {
 		for j := i + 1; j < len(pts); j++ {
-			if runsAlong(pts[i-1:i+1], pts[j-1:j+1]) {
+			if SharedLength(pts[i-1:i+1], pts[j-1:j+1], routeBeside) >= routeAlong {
 				return true
 			}
 			if j > i+1 {
@@ -271,6 +272,27 @@ func crossesItself(pts []geo.Vec) bool {
 		}
 	}
 	return false
+}
+
+// SharedLength returns how long two lines run along each other, within a gap.
+func SharedLength(a, b []geo.Vec, gap float64) float64 {
+	total := 0.0
+	for i := 1; i < len(a); i++ {
+		p, d := a[i-1], a[i].Sub(a[i-1])
+		l := d.Len()
+		if l < 1 {
+			continue
+		}
+		u := d.Mul(1 / l)
+		for j := 1; j < len(b); j++ {
+			q0, q1 := b[j-1].Sub(p), b[j].Sub(p)
+			if math.Abs(q0.Dot(u.Per())) > gap || math.Abs(q1.Dot(u.Per())) > gap {
+				continue
+			}
+			total += geo.Overlap(q0.Dot(u), q1.Dot(u), 0, l)
+		}
+	}
+	return total
 }
 
 // withVia returns a copy of an arrow that passes through points of the page.
@@ -312,6 +334,9 @@ const (
 
 // How far along an arrow or an edge a route may run before it reads as one with it.
 const routeAlong = 24.0
+
+// How near a route has to run back beside itself to read as running along itself.
+const routeBeside = 4.0
 
 // NeedlessVia returns how many turns an elbow arrow's via points add to a route
 // that would be clear without them, or 0 if that's not what they do.

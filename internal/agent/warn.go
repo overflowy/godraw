@@ -639,7 +639,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 		}
 	}
 	// A knot says more than that the way without it is shorter.
-	if s.Kind == "elbow" && crossesItself(pts) {
+	if s.Kind == "elbow" && editor.CrossesItself(pts) {
 		if len(s.Via) > 0 {
 			r.warn("%s's route crosses itself; its via may be out of place: set via again, or via:[] clears it", name)
 		} else {
@@ -651,25 +651,6 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 		r.warnAt(rankLayout, "%s's via takes it %s out of its way, and the way without it is clear; via:[] clears it", name, num(d))
 	}
 	r.checkCrossings(s, name, m, info, pts, bs, be, items)
-}
-
-// crossesItself says whether a line crosses or runs back along its own path.
-func crossesItself(pts []geo.Vec) bool {
-	for i := 1; i < len(pts); i++ {
-		a := pts[i-1 : i+1]
-		for j := i + 1; j < len(pts); j++ {
-			b := pts[j-1 : j+1]
-			if j > i+1 {
-				if _, ok := geo.SegmentsCross(a[0], a[1], b[0], b[1]); ok {
-					return true
-				}
-			}
-			if sharedLength(a, b) >= minAlong {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // checkCrossings tells of an arrow running through a box it doesn't join, or
@@ -774,12 +755,12 @@ func runAlong(pts []geo.Vec, b geo.Box) (string, float64) {
 		p, q := pts[i-1], pts[i]
 		for side, y := range []float64{b.Y, b.MaxY()} {
 			if math.Abs(p.Y-y) <= alongGap && math.Abs(q.Y-y) <= alongGap {
-				sides[side] += overlap(p.X, q.X, b.X, b.MaxX())
+				sides[side] += geo.Overlap(p.X, q.X, b.X, b.MaxX())
 			}
 		}
 		for side, x := range []float64{b.X, b.MaxX()} {
 			if math.Abs(p.X-x) <= alongGap && math.Abs(q.X-x) <= alongGap {
-				sides[2+side] += overlap(p.Y, q.Y, b.Y, b.MaxY())
+				sides[2+side] += geo.Overlap(p.Y, q.Y, b.Y, b.MaxY())
 			}
 		}
 	}
@@ -790,11 +771,6 @@ func runAlong(pts []geo.Vec, b geo.Box) (string, float64) {
 		}
 	}
 	return names[best], sides[best]
-}
-
-// overlap returns how much two ranges share, each given by its ends in any order.
-func overlap(a, b, lo, hi float64) float64 {
-	return max(min(max(a, b), max(lo, hi))-max(min(a, b), min(lo, hi)), 0)
 }
 
 // checkShared tells of two arrows drawn over each other for so long that they
@@ -840,7 +816,7 @@ func (r *run) checkShared(ids []doc.ID, touched map[doc.ID]bool) {
 				trunk = into
 			}
 			if sameFrom != sameInto {
-				if trunk.find(i) != trunk.find(j) && sharedLength(a.pts, b.pts) >= minSharedAt {
+				if trunk.find(i) != trunk.find(j) && editor.SharedLength(a.pts, b.pts, alongGap) >= minSharedAt {
 					trunk.join(i, j)
 				}
 				continue
@@ -848,7 +824,7 @@ func (r *run) checkShared(ids []doc.ID, touched map[doc.ID]bool) {
 			if len(r.shared) >= maxFound {
 				continue
 			}
-			if n := sharedLength(a.pts, b.pts); n >= minSharedAt {
+			if n := editor.SharedLength(a.pts, b.pts, alongGap); n >= minSharedAt {
 				r.shared = append(r.shared, fmt.Sprintf("%s and %s share a line for %s, so they read as one arrow; fromAt, toAt or via parts them", shortID(a.id), shortID(b.id), num(n)))
 			}
 		}
@@ -914,27 +890,6 @@ func (s sets) find(i int) int {
 func (s sets) join(i, j int) {
 	a, b := s.find(i), s.find(j)
 	s[max(a, b)] = min(a, b)
-}
-
-// sharedLength returns how long two lines run along each other.
-func sharedLength(a, b []geo.Vec) float64 {
-	total := 0.0
-	for i := 1; i < len(a); i++ {
-		p, d := a[i-1], a[i].Sub(a[i-1])
-		l := d.Len()
-		if l < 1 {
-			continue
-		}
-		u := d.Mul(1 / l)
-		for j := 1; j < len(b); j++ {
-			q0, q1 := b[j-1].Sub(p), b[j].Sub(p)
-			if math.Abs(q0.Dot(u.Per())) > alongGap || math.Abs(q1.Dot(u.Per())) > alongGap {
-				continue
-			}
-			total += overlap(q0.Dot(u), q1.Dot(u), 0, l)
-		}
-	}
-	return total
 }
 
 // minContrast is how far apart a text or line and what's behind it have to stand

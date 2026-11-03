@@ -741,7 +741,7 @@ type translateGesture struct {
 func newTranslate(e *Editor) *translateGesture {
 	e.begin()
 	g := &translateGesture{initial: map[doc.ID]*doc.Shape{}, selBefore: slices.Clone(e.sel)}
-	for _, id := range e.topSelected() {
+	for _, id := range e.sorted(e.topSelected()) {
 		if s := e.Doc.Shapes[id]; s != nil && !s.Locked {
 			g.ids = append(g.ids, id)
 			g.initial[id] = s
@@ -1030,9 +1030,11 @@ func newRotate(e *Editor) *rotateGesture {
 	e.begin()
 	g := &rotateGesture{initial: map[doc.ID]*doc.Shape{}, mats: map[doc.ID]geo.Mat{}}
 	for _, id := range e.topSelected() {
-		g.ids = append(g.ids, id)
-		g.initial[id] = e.Doc.Shapes[id]
-		g.mats[id] = e.PageMat(id)
+		if s := e.Doc.Shapes[id]; s != nil && !s.Locked {
+			g.ids = append(g.ids, id)
+			g.initial[id] = s
+			g.mats[id] = e.PageMat(id)
+		}
 	}
 	box, r := e.SelectionBox()
 	g.center = geo.Rotate(r).Apply(box.Center())
@@ -1075,6 +1077,8 @@ type resizeItem struct {
 	bounds geo.Box
 	// held says that an arrow has an end bound to what isn't resizing with it.
 	held bool
+	// binds is the arrows' bindings that turn over with it, as they were.
+	binds []*doc.Binding
 }
 
 type resizeGesture struct {
@@ -1130,6 +1134,12 @@ func newResize(e *Editor, h Handle) *resizeGesture {
 		for _, term := range []string{"start", "end"} {
 			if b := e.bindingOf(g.items[i].id, term); b != nil && !moving[b.To] {
 				g.items[i].held = true
+			}
+		}
+		// An arrow stays on what it's bound to if that turns over, or if it turns too.
+		for _, b := range e.bindingsTo(g.items[i].id) {
+			if turnsOver(g.items[i].init) || moving[b.From] {
+				g.items[i].binds = append(g.items[i].binds, b)
 			}
 		}
 	}
@@ -1214,9 +1224,22 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	abs := func(v float64) float64 { return math.Abs(v) }
 	switch init.Type {
 	case doc.TypeGeo:
-		c.W, c.H = math.Max(abs(init.W*lx), 1), math.Max(abs((init.H+init.GrowY)*ly), 1)
-		c.GrowY = 0
-		offset = boxFlipOffset(c.W, c.H, lx, ly)
+		c.W = math.Max(abs(init.W*lx), 1)
+		// What its label grew it by stays the label's, unless a height is asked for.
+		if abs(ly) != 1 {
+			c.H, c.GrowY = math.Max(abs((init.H+init.GrowY)*ly), 1), 0
+		}
+		asked := c.H + c.GrowY
+		// Only turned over, it has the form it had.
+		if abs(lx) != 1 || abs(ly) != 1 {
+			e.fitLabel(c)
+		}
+		offset = boxFlipOffset(c.W, asked, lx, ly)
+		// What its label takes beyond that goes away from what holds still.
+		down := inv.ApplyDir(geo.Rotate(turn).ApplyDir(geo.V(0, 1)))
+		if anchor.Sub(moved).Dot(down) > offset.Y+asked/2+1e-6 {
+			offset.Y -= c.H + c.GrowY - asked
+		}
 		c.FlipX, c.FlipY = init.FlipX != (lx < 0), init.FlipY != (ly < 0)
 	case doc.TypeFrame:
 		c.W, c.H = math.Max(abs(init.W*lx), 1), math.Max(abs(init.H*ly), 1)
@@ -1240,10 +1263,7 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 			g := e.Geometry(init)
 			c.AutoSize = false
 			c.W = math.Max(abs(g.Bounds.W*lx)/init.Scale, 8)
-			offset = boxFlipOffset(c.W*init.Scale, g.Bounds.H, lx, 1)
-			if ly < 0 {
-				offset.Y = 0
-			}
+			offset = boxFlipOffset(c.W*init.Scale, e.Geometry(c).Bounds.H, lx, ly)
 		}
 	case doc.TypeDraw, doc.TypeHighlight:
 		c.ScaleX, c.ScaleY = orOne(init.ScaleX)*lx, orOne(init.ScaleY)*ly
@@ -1272,12 +1292,23 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 		c.W, c.H = math.Max(abs(init.W*lx), 1), math.Max(abs(init.H*ly), 1)
 		offset = boxFlipOffset(c.W, c.H, lx, ly)
 	}
+	if g := init.Gradient; g != nil && (lx < 0 || ly < 0) {
+		angle := g.Angle
+		if lx < 0 {
+			angle = -angle
+		}
+		if ly < 0 {
+			angle = 180 - angle
+		}
+		c.Gradient = &doc.Gradient{Colors: g.Colors, Angle: math.Mod(angle+360, 360)}
+	}
 	// In the page, then in the parent.
 	page := fwd.Apply(moved)
 	page = page.Add(geo.Rotate(turn).Apply(offset))
 	inP := e.parentMat(init.Parent).Invert().Apply(page)
 	c.X, c.Y = inP.X, inP.Y
 	e.put(c)
+	e.mirrorAnchors(it, lx, ly)
 	// With an end held where it is, points that moved would no longer lie between
 	// its ends, and a route through them would tie a knot: they stay in the page.
 	if init.Via != nil && it.held {
@@ -1286,6 +1317,43 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 			via[i] = it.mat.Apply(p)
 		}
 		e.put(e.withVia(e.Doc.Shapes[it.id], via))
+	}
+}
+
+// turnsOver says whether a shape's form mirrors with a negative scale. A note, a text
+// or a frame only goes to the other side of what it turned around, as it reads as
+// it did.
+func turnsOver(s *doc.Shape) bool {
+	switch s.Type {
+	case doc.TypeNote, doc.TypeText, doc.TypeFrame:
+		return false
+	}
+	return true
+}
+
+// mirrorAnchors keeps arrows on the part of a shape they were bound to as it turns
+// over. They're as they were if it turns back, so that a drag there and back is no
+// change.
+func (e *Editor) mirrorAnchors(it resizeItem, lx, ly float64) {
+	for _, b := range it.binds {
+		a := b.Anchor
+		if lx < 0 {
+			a.X = 1 - a.X
+		}
+		if ly < 0 {
+			a.Y = 1 - a.Y
+		}
+		now := e.Doc.Bindings[b.ID]
+		if now == nil || now.Anchor == a {
+			continue
+		}
+		nb := b
+		if a != b.Anchor {
+			c := *b
+			c.Anchor = a
+			nb = &c
+		}
+		e.putBinding(nb)
 	}
 }
 
@@ -1497,7 +1565,7 @@ func (e *Editor) createNoteAt(p geo.Vec) doc.ID {
 // StartEditing starts editing a shape's text.
 func (e *Editor) StartEditing(id doc.ID) {
 	s := e.Doc.Shapes[id]
-	if s == nil || e.ReadOnly {
+	if s == nil || e.ReadOnly || !textEditable(s) {
 		return
 	}
 	e.begin()
@@ -2019,7 +2087,7 @@ func (g *eraserGesture) hit(e *Editor, a, b geo.Vec) {
 				}
 			}
 			bounds := e.PageBounds(id).Expand(margin + 12)
-			if !bounds.Contains(a) && !bounds.Contains(b) {
+			if !geo.BoxHitsPolyline(bounds, []geo.Vec{a, b}, false) {
 				continue
 			}
 			g0 := e.Geometry(s)

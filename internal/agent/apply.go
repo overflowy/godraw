@@ -2100,6 +2100,8 @@ func (r *run) set(o *op) error {
 	if err != nil {
 		return err
 	}
+	// A group that one of them left with too little has gone since it was done.
+	done = slices.DeleteFunc(done, func(id doc.ID) bool { return r.e.Doc.Shapes[id] == nil })
 	r.markChanged(done)
 	if f.Behind != nil || f.Over != nil {
 		return r.orderBeside(done, f)
@@ -2118,6 +2120,13 @@ func (r *run) setOne(id doc.ID, o *op) error {
 		if err := r.refuses(s, o, name); err != nil {
 			return err
 		}
+	}
+	// A lock holds from when it's on, so the rest of what the op says comes first.
+	locking := f.Locked != nil && *f.Locked
+	if locking {
+		rest := *f
+		rest.Locked = nil
+		f = &rest
 	}
 	if c := r.cardOf(id); c != nil {
 		if _, ok := r.before[id]; !ok {
@@ -2223,6 +2232,11 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	}
 	if f.Rot != nil {
 		r.turn(id, *f.Rot*math.Pi/180)
+	}
+	if locking {
+		c := r.e.Doc.Shapes[id].Moved()
+		c.Locked = true
+		r.e.Put(c)
 	}
 	return nil
 }
@@ -2757,9 +2771,7 @@ func (r *run) setCamera(o *op) error {
 	r.camera = true
 	t := o.Camera
 	if !t.broad() && len(t.list) == 1 && t.list[0] == "fit" {
-		if !r.dry {
-			r.e.ZoomToFit()
-		}
+		r.e.ZoomToFit()
 		return nil
 	}
 	if !t.broad() && len(t.list) == 0 {
@@ -2777,9 +2789,7 @@ func (r *run) setCamera(o *op) error {
 			box = box.Union(r.e.PageBounds(id))
 		}
 	}
-	if !r.dry {
-		r.e.ZoomToBox(box, 2)
-	}
+	r.e.ZoomToBox(box, 2)
 	return nil
 }
 

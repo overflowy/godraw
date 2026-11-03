@@ -3,6 +3,7 @@ package editor
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"godraw/internal/doc"
@@ -32,14 +33,14 @@ var ErrBusy = errors.New("canvas busy")
 func (e *Editor) Busy() bool { return e.gesture != nil || e.Editing != "" }
 
 // Batch runs edits a program makes as one step of undo: if fn fails, or
-// panics, nothing it did stays. The selection and focused group stay as they
-// were, less what fn deleted, unless fn left the page.
+// panics, nothing it did stays, the camera included. The selection and focused
+// group stay as they were, less what fn deleted, unless fn left the page.
 func (e *Editor) Batch(fn func() error) (err error) {
 	if e.Busy() {
 		return ErrBusy
 	}
 	e.commit() // what a slider left open
-	sel, focus, page := slices.Clone(e.sel), e.FocusedGroup, e.Page
+	sel, focus, page, cams := slices.Clone(e.sel), e.FocusedGroup, e.Page, maps.Clone(e.cams)
 	e.begin()
 	defer func() {
 		if r := recover(); r != nil {
@@ -47,6 +48,7 @@ func (e *Editor) Batch(fn func() error) (err error) {
 		}
 		if err != nil {
 			e.rollback()
+			e.FocusedGroup, e.cams = focus, cams
 			return
 		}
 		e.sel, e.FocusedGroup = nil, ""
@@ -77,8 +79,17 @@ func (e *Editor) FitLabel(s *doc.Shape) { e.fitLabel(s) }
 // MoveBy moves a shape by a distance in the page, within a Batch.
 func (e *Editor) MoveBy(id doc.ID, d geo.Vec) { e.moveBy(id, d) }
 
-// Reparent moves a shape to another parent, keeping where it is in the page.
-func (e *Editor) Reparent(id, parent doc.ID) { e.reparent(id, parent) }
+// Reparent moves a shape to another parent, keeping where it is in the page. A
+// group it leaves with too little to be one goes.
+func (e *Editor) Reparent(id, parent doc.ID) {
+	s := e.Doc.Shapes[id]
+	if s == nil {
+		return
+	}
+	from := s.Parent
+	e.reparent(id, parent)
+	e.cleanGroups(map[doc.ID]bool{from: true})
+}
 
 // VisualBounds returns a shape's box in the page, with room for its stroke.
 func (e *Editor) VisualBounds(id doc.ID) geo.Box { return e.visualBounds(id) }

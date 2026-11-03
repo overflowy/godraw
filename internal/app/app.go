@@ -34,6 +34,8 @@ type Host interface {
 	Update(fn func())
 	// Window returns the window, nil in tests.
 	Window() *mygo.Window
+	// Name returns the name of the document: its file's, or that of an untitled one.
+	Name() string
 }
 
 // App is one window's state.
@@ -288,6 +290,7 @@ func (a *App) input(c *ui.Context, ev ui.InputEvent) bool {
 	switch ev.Kind {
 	case ui.InputPointerDown:
 		a.canvasHandle.Focus(c)
+		a.endRename() // this press closes the list, and is the start of something else
 		e.PointerDown(x, y, ev.Button, ev.Clicks, modsOf(ev.Mods), t)
 		// The right button's menu opens as the framework's: only its press
 		// is the editor's, for what it selects.

@@ -58,6 +58,9 @@ func (e *Editor) groupGeometry(s *doc.Shape) *Geometry {
 	var box geo.Box
 	first := true
 	for _, id := range e.Children(s.ID) {
+		if e.holdsNothing(id) {
+			continue
+		}
 		k := e.Doc.Shapes[id]
 		b := inv.Mul(e.PageMat(id)).BoundsOf(e.Geometry(k).Bounds)
 		if first {
@@ -70,6 +73,21 @@ func (e *Editor) groupGeometry(s *doc.Shape) *Geometry {
 	return &Geometry{Bounds: box, Outline: c[:], Closed: true}
 }
 
+// holdsNothing says whether a shape is a group with nothing in it but such groups,
+// as a file can have, which has no box to count.
+func (e *Editor) holdsNothing(id doc.ID) bool {
+	s := e.Doc.Shapes[id]
+	if s == nil || s.Type != doc.TypeGroup {
+		return false
+	}
+	for _, k := range e.Children(id) {
+		if !e.holdsNothing(k) {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 	switch s.Type {
 	case doc.TypeGeo:
@@ -77,6 +95,10 @@ func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 		pts := geoOutline(s.Geo, w, h, string(s.ID))
 		if r := radiusOf(s, w, h); r > 0 {
 			pts, _ = geo.RoundedPoly(pts, r).Points(8)
+		}
+		m := mirror(s, w, h)
+		for i, p := range pts {
+			pts[i] = m.Apply(p)
 		}
 		g := &Geometry{Bounds: geo.Box{W: w, H: h}, Outline: pts, Closed: true, Filled: s.Fill != "none"}
 		if s.Text != "" {
@@ -128,6 +150,19 @@ func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 		return &Geometry{Bounds: box, Outline: c[:], Closed: true, Filled: true}
 	}
 	return &Geometry{}
+}
+
+// mirror returns what turns a shape's form over in its w×h box, as its flips say. A
+// label stays as it is, to read.
+func mirror(s *doc.Shape, w, h float64) geo.Mat {
+	m := geo.Identity
+	if s.FlipX {
+		m = geo.Translate(w, 0).Mul(geo.Scale(-1, 1))
+	}
+	if s.FlipY {
+		m = geo.Translate(0, h).Mul(geo.Scale(1, -1)).Mul(m)
+	}
+	return m
 }
 
 // labelBox places a shape's label in a box w×h, by its alignments.

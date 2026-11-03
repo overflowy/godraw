@@ -185,22 +185,22 @@ func IndexBetween(a, b string) string {
 	return ia + midpoint(fa, "")
 }
 
-// IndicesBetween returns n indices in order between a and b.
-func IndicesBetween(a, b string, n int) []string {
-	out := make([]string, 0, n)
-	cur := a
-	for i := range n {
-		if b != "" && i == n-1 {
-			cur = IndexBetween(cur, b)
-		} else if b != "" {
-			// Split the room that is left, so that many indices stay short.
-			cur = IndexBetween(cur, b)
-		} else {
-			cur = IndexBetween(cur, "")
-		}
-		out = append(out, cur)
+// validIndex says whether a string is an index: a head, an integer part as long as
+// it says, and digits, which is what making others from it counts on.
+func validIndex(s string) bool {
+	if s == "" {
+		return false
 	}
-	return out
+	n := intLen(s[0])
+	if n == 0 || n > len(s) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if strings.IndexByte(digits, s[i]) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // NewID returns a new id of a kind of record, as "shape:…".

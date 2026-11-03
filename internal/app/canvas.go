@@ -485,22 +485,14 @@ func (s *scene) culled(sh *doc.Shape) bool {
 }
 
 func (s *scene) opacityOf(sh *doc.Shape) float64 {
-	o := sh.Opacity
-	if s.e.Erasing[sh.ID] {
-		o *= 0.3
+	o := s.e.OpacityOf(sh)
+	if len(s.e.Erasing) == 0 {
+		return o
 	}
-	// A group's opacity fades what it holds.
-	cur := sh
-	for !doc.IsPageID(cur.Parent) {
-		p := s.e.Doc.Shapes[cur.Parent]
-		if p == nil {
-			break
-		}
-		o *= p.Opacity
-		if s.e.Erasing[p.ID] {
+	for cur := sh; cur != nil; cur = s.e.Doc.Shapes[cur.Parent] {
+		if s.e.Erasing[cur.ID] {
 			o *= 0.3
 		}
-		cur = p
 	}
 	return o
 }
@@ -848,7 +840,7 @@ func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 	}
 	name := sh.Name
 	if name == "" {
-		name = "Frame"
+		name = editor.FrameDefaultName
 	}
 	page, font := editor.FrameHeading(sh)
 	floor := float32(editor.FrameHeadingFloor) * s.pixel()

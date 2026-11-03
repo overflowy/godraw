@@ -25,12 +25,14 @@ import (
 // workers post until the main thread runs it, here the test's (pump).
 type testHost struct {
 	saved  []*doc.Drawing
+	name   string
 	mu     sync.Mutex
 	queued []func()
 }
 
 func (h *testHost) Changed(d *doc.Drawing) { h.saved = append(h.saved, d) }
 func (h *testHost) Window() *mygo.Window   { return nil }
+func (h *testHost) Name() string           { return h.name }
 
 func (h *testHost) Update(fn func()) {
 	h.mu.Lock()

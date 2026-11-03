@@ -99,9 +99,7 @@ func (a *App) shortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(0, ui.KeyEnter) {
 		if ids := e.Selection(); len(ids) == 1 {
-			if s := e.Doc.Shapes[ids[0]]; s != nil && s.Type != doc.TypeGroup && s.Type != doc.TypeDraw && s.Type != doc.TypeHighlight && s.Type != doc.TypeLine && s.Type != doc.TypeImage {
-				e.StartEditing(ids[0])
-			}
+			e.StartEditing(ids[0])
 		}
 	}
 

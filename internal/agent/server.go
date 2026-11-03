@@ -131,19 +131,21 @@ const notHandled = "JSON RPC not handled"
 // skip. A notification gets no answer, so it is accepted and dropped.
 //
 // It steps in after the SDK, so that what the SDK checks first still comes
-// first, and what it knows needn't be listed here too. A batch stays refused.
+// first, and what it knows needn't be listed here too. A batch stays refused, as does
+// a call too long to be one nobody knows, of which it keeps only the start: the
+// bodies that come through here can hold images.
 func answerUnknown(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var sent bytes.Buffer
+		var sent capped
 		r.Body = io.NopCloser(io.TeeReader(r.Body, &sent))
 		held := &heldRefusal{ResponseWriter: w}
 		next.ServeHTTP(held, r)
 		if !held.refused {
 			return
 		}
-		msg, err := jsonrpc.DecodeMessage(sent.Bytes())
+		msg, err := jsonrpc.DecodeMessage(sent.buf.Bytes())
 		req, isReq := msg.(*jsonrpc.Request)
-		if err != nil || !isReq || !bytes.HasPrefix(held.body.Bytes(), []byte(notHandled)) {
+		if err != nil || sent.over || !isReq || !bytes.HasPrefix(held.body.Bytes(), []byte(notHandled)) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write(held.body.Bytes()) // a client that's gone has nothing to be told
 			return
@@ -164,6 +166,25 @@ func answerUnknown(next http.Handler) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(out)
 	})
+}
+
+// maxUnknownBody is more than a call to a method nobody knows should take.
+const maxUnknownBody = 64 << 10
+
+// capped keeps what's written to it, up to maxUnknownBody, and says if there was more.
+type capped struct {
+	buf  bytes.Buffer
+	over bool
+}
+
+func (c *capped) Write(b []byte) (int, error) {
+	if room := maxUnknownBody - c.buf.Len(); len(b) > room {
+		c.over = true
+		c.buf.Write(b[:room])
+	} else {
+		c.buf.Write(b)
+	}
+	return len(b), nil
 }
 
 // heldRefusal holds back a 400 until it is known what to answer instead.

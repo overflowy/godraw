@@ -122,6 +122,11 @@ func (b Box) Union(o Box) Box {
 // Expand returns the box grown by d on every side.
 func (b Box) Expand(d float64) Box { return Box{b.X - d, b.Y - d, b.W + 2*d, b.H + 2*d} }
 
+// Overlap returns how much of the span from a to b lies in the span from lo to hi.
+func Overlap(a, b, lo, hi float64) float64 {
+	return max(min(max(a, b), max(lo, hi))-max(min(a, b), min(lo, hi)), 0)
+}
+
 // BoxOf returns the smallest box around points, or a zero box for none.
 func BoxOf(pts []Vec) Box {
 	if len(pts) == 0 {

@@ -236,6 +236,10 @@ func (r *run) setAll(ids []doc.ID, o *op, broad bool) ([]doc.ID, error) {
 	took := map[string]bool{}
 	done := make([]doc.ID, 0, len(ids))
 	for _, id := range ids {
+		// A group that an earlier one left with too little has gone.
+		if r.e.Doc.Shapes[id] == nil {
+			continue
+		}
 		one := o
 		if broad {
 			if one = r.fit(id, o, took, refused, why); one == nil {

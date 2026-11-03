@@ -456,9 +456,9 @@ func geoBasePath(s *doc.Shape, w, h float64, poly []geo.Vec) *geo.Path {
 	case "oval":
 		return ovalPath(w, h)
 	case "heart":
-		return heartPath(w, h)
+		return heartPath(w, h).Transform(mirror(s, w, h))
 	case "cloud":
-		return cloudPath(w, h, string(s.ID))
+		return cloudPath(w, h, string(s.ID)).Transform(mirror(s, w, h))
 	}
 	if r := radiusOf(s, w, h); r > 0 {
 		c := geo.Box{W: w, H: h}.Corners()
@@ -524,12 +524,21 @@ func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 		inner.Move(geo.V(w/2-k*0.27, h/2)).Line(geo.V(w/2-k*0.07, h/2+k*0.2)).Line(geo.V(w/2+k*0.27, h/2-k*0.2))
 	}
 	if len(inner.Segs) > 0 {
-		out = append(out, strokeWith(inner, stroke, sw.Solid))
+		out = append(out, strokeWith(inner.Transform(mirror(s, w, h)), stroke, sw.Solid))
 	}
 	if s.Text != "" {
 		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s), pal))
 	}
 	return out
+}
+
+// OpacityOf returns how opaque a shape paints: its own opacity, faded by what holds it.
+func (e *Editor) OpacityOf(s *doc.Shape) float64 {
+	o := s.Opacity
+	for p := e.Doc.Shapes[s.Parent]; p != nil; p = e.Doc.Shapes[p.Parent] {
+		o *= p.Opacity
+	}
+	return o
 }
 
 // labelPrim draws a shape's label in its box.
@@ -745,6 +754,9 @@ func FrameHeading(s *doc.Shape) (size float64, font string) {
 // FrameHeadingFloor is the size of a frame's heading on the screen, which a
 // heading with a size of its own doesn't go below.
 const FrameHeadingFloor = 12.0
+
+// FrameDefaultName is what the heading of a frame without a name says.
+const FrameDefaultName = "Frame"
 
 // FrameHeadingBox returns what a frame's heading covers in the page, in a picture
 // or view where px of the page make a pixel.

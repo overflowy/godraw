@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -155,7 +156,11 @@ func renderFrame(side int, scale float64, paint func(p *ui.Painter, r ui.Rect)) 
 }
 
 func (a *App) exportName(ext string) string {
-	name := a.ed.Doc.Name
+	name := a.host.Name()
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	if name == "" {
+		name = a.ed.Doc.Name
+	}
 	if name == "" {
 		name = "drawing"
 	}

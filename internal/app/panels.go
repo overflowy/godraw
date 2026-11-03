@@ -421,6 +421,10 @@ func (a *App) topLeft(c *ui.Context) {
 			a.pagesOpen = !a.pagesOpen
 		}
 		ui.Popover(c, b, &a.pagesOpen, func() { a.pagesMenu(c) })
+		// What closes the list ends a rename in it: its field, and Enter, are gone.
+		if a.renamingPage != "" && (!a.pagesOpen || e.Doc.Page(a.renamingPage) == nil) {
+			a.endRename()
+		}
 
 		undo := iconButton(c, "undo", "undo-2", "Undo — ⌘Z", false)
 		if !e.CanUndo() {
@@ -488,6 +492,16 @@ func (a *App) moreMenu(m *ui.Menu) {
 	}
 }
 
+// endRename takes what a page's rename came to, as a step of undo of its own.
+func (a *App) endRename() {
+	if a.renamingPage == "" {
+		return
+	}
+	a.ed.EndOpen()
+	a.ed.RenamePage(a.renamingPage, a.renameText)
+	a.renamingPage = ""
+}
+
 func (a *App) pagesMenu(c *ui.Context) {
 	e := a.ed
 	t := c.Theme()
@@ -498,8 +512,11 @@ func (a *App) pagesMenu(c *ui.Context) {
 			row.Children(func() {
 				if a.renamingPage == id {
 					in := ui.TextInput(c.Key("rename"), &a.renameText).Grow(1).AutoFocus().Label("Page name")
-					if in.Submitted() || c.Shortcut(0, ui.KeyEscape) {
-						e.RenamePage(id, a.renameText)
+					if in.Submitted() {
+						a.endRename()
+					}
+					// It takes Escape before the list does, which a second one closes.
+					if in.Shortcut(0, ui.KeyEscape) {
 						a.renamingPage = ""
 					}
 					return

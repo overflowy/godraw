@@ -33,6 +33,8 @@ func (w *window) Update(fn func()) {
 
 func (w *window) Window() *mygo.Window { return w.win }
 
+func (w *window) Name() string { return w.doc.Name() }
+
 // openDrawing opens a drawing in a window of its own, off the main thread.
 var openDrawing func(path string)
 

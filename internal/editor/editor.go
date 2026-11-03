@@ -237,14 +237,13 @@ type entry struct {
 	bindings              map[doc.ID]change[doc.Binding]
 	assets                map[doc.ID]change[doc.Asset]
 	pages                 *change[[]*doc.Page]
-	name                  *change[string]
 	selBefore             []doc.ID
 	selAfter              []doc.ID
 	pageBefore, pageAfter doc.ID
 }
 
 func (x *entry) empty() bool {
-	return len(x.shapes) == 0 && len(x.bindings) == 0 && len(x.assets) == 0 && x.pages == nil && x.name == nil
+	return len(x.shapes) == 0 && len(x.bindings) == 0 && len(x.assets) == 0 && x.pages == nil
 }
 
 // begin opens a transaction, into which edits go until commit or rollback.
@@ -387,13 +386,6 @@ func (e *Editor) apply(x *entry, back bool) {
 			e.Doc.Pages = slices.Clone(*x.pages.after)
 		}
 	}
-	if x.name != nil {
-		if back {
-			e.Doc.Name = *x.name.before
-		} else {
-			e.Doc.Name = *x.name.after
-		}
-	}
 	e.kids = nil
 	e.bindFrom, e.bindTo = nil, nil
 	if back {
@@ -405,6 +397,9 @@ func (e *Editor) apply(x *entry, back bool) {
 		e.Page = e.Doc.Pages[0].ID
 	}
 	e.sel = slices.DeleteFunc(e.sel, func(id doc.ID) bool { return e.Doc.Shapes[id] == nil })
+	if e.FocusedGroup != "" && e.PageOf(e.FocusedGroup) != e.Page {
+		e.FocusedGroup = ""
+	}
 }
 
 // CanUndo reports whether there is something to undo.
@@ -517,6 +512,9 @@ func (e *Editor) removeShape(id doc.ID) {
 	}
 	delete(e.Doc.Shapes, id)
 	e.moveKid(before, nil)
+	if e.FocusedGroup == id {
+		e.FocusedGroup = ""
+	}
 }
 
 func (e *Editor) putBinding(b *doc.Binding) {
@@ -566,15 +564,6 @@ func (e *Editor) setPages(pages []*doc.Page) {
 	}
 	e.tx.pages = &change[[]*doc.Page]{&before, &after}
 	e.Doc.Pages = after
-}
-
-// SetDocName renames the drawing.
-func (e *Editor) SetDocName(name string) {
-	e.transact(func() {
-		before := e.Doc.Name
-		e.tx.name = &change[string]{&before, &name}
-		e.Doc.Name = name
-	})
 }
 
 // --- structure ---

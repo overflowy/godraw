@@ -77,8 +77,47 @@ func Read(r io.Reader) (*Drawing, error) {
 	for _, a := range f.Assets {
 		d.Assets[a.ID] = a
 	}
+	if err := check(d); err != nil {
+		return nil, err
+	}
 	slices.SortStableFunc(d.Pages, func(a, b *Page) int { return strings.Compare(a.Index, b.Index) })
 	return d, nil
+}
+
+// check refuses what no save of the app writes and the editor counts on not meeting:
+// a hand's edits that would hang it or panic it later, far from the cause.
+func check(d *Drawing) error {
+	for _, p := range d.Pages {
+		if !validIndex(p.Index) {
+			return fmt.Errorf("page %s: bad index %q", p.ID, p.Index)
+		}
+	}
+	// Shapes known not to be in a loop, however far up they go.
+	free := make(map[ID]bool, len(d.Shapes))
+	for _, s := range sortedByID(d.Shapes) {
+		if !validIndex(s.Index) {
+			return fmt.Errorf("shape %s: bad index %q", s.ID, s.Index)
+		}
+		for _, pt := range s.Points {
+			if !validIndex(pt.Index) {
+				return fmt.Errorf("shape %s: point %s has bad index %q", s.ID, pt.ID, pt.Index)
+			}
+		}
+		if s.Gradient != nil && len(s.Gradient.Colors) < 2 {
+			return fmt.Errorf("shape %s: a gradient needs 2 colors or more, and has %d", s.ID, len(s.Gradient.Colors))
+		}
+		path := map[ID]bool{}
+		for cur := s; cur != nil && !free[cur.ID]; cur = d.Shapes[cur.Parent] {
+			if path[cur.ID] {
+				return fmt.Errorf("shape %s is inside itself", cur.ID)
+			}
+			path[cur.ID] = true
+		}
+		for id := range path {
+			free[id] = true
+		}
+	}
+	return nil
 }
 
 func knownType(t string) bool {

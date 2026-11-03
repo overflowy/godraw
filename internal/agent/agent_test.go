@@ -2439,7 +2439,7 @@ func TestWarnsOfARouteCrossingItself(t *testing.T) {
 	// What's in the way of the route without it keeps the via there.
 	e := newEditor()
 	out := wantWarnings(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"m2","x":110,"y":150,"w":80,"h":100},{"add":"rectangle","id":"b","x":200,"y":300,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[1,0.5],"toAt":[0,0.5],"via":[[300,-80]]}]`, "s's route crosses itself; its via may be out of place")
-	if !crossesItself(arrowLine(e, "s")) {
+	if !editor.CrossesItself(arrowLine(e, "s")) {
 		t.Errorf("no crossing in %v:\n%s", arrowLine(e, "s"), out)
 	}
 	wantWarnings(t, e, `[{"set":"s","via":[]}]`)
@@ -2453,7 +2453,7 @@ func TestWarnsOfARouteCrossingItself(t *testing.T) {
 		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(20, 0)}, true},
 		{[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(0, 100)}, false},
 	} {
-		if got := crossesItself(c.pts); got != c.want {
+		if got := editor.CrossesItself(c.pts); got != c.want {
 			t.Errorf("%v: got %v", c.pts, got)
 		}
 	}

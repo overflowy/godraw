@@ -273,6 +273,87 @@ func TestSnapshotsAreIndependent(t *testing.T) {
 	}
 }
 
+// What a hand can do to a file, that the editor can't go on from. Each comes with
+// what the message has to name.
+func TestReadRefusesWhatWouldBreakTheEditor(t *testing.T) {
+	shapes := func(lines ...string) string {
+		return `{"godrawFileFormatVersion":1,"name":"","gridSize":10,"pages":[{"id":"page:p","name":"P","index":"a1"}],"shapes":[` + strings.Join(lines, ",") + `],"bindings":[],"assets":[]}`
+	}
+	const ok = `{"id":"shape:ok","type":"geo","parent":"page:p","index":"a1"}`
+	for _, c := range []struct{ name, file, has string }{
+		{"own parent", shapes(`{"id":"shape:a","type":"group","parent":"shape:a","index":"a1"}`), "shape:a"},
+		{"parents round", shapes(ok, `{"id":"shape:a","type":"group","parent":"shape:b","index":"a1"}`, `{"id":"shape:b","type":"group","parent":"shape:c","index":"a1"}`, `{"id":"shape:c","type":"frame","parent":"shape:a","index":"a1"}`), "inside itself"},
+		{"no index", shapes(`{"id":"shape:a","type":"geo","parent":"page:p"}`), "shape:a"},
+		{"index of a single head", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"A"}`), "shape:a"},
+		{"index that's too short", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"c1"}`), "shape:a"},
+		{"index with a stray", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"a1!"}`), "shape:a"},
+		{"index with no head", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"1a"}`), "shape:a"},
+		{"page's index", `{"godrawFileFormatVersion":1,"pages":[{"id":"page:p","name":"P","index":"!"}],"shapes":[]}`, "page:p"},
+		{"line point's index", shapes(`{"id":"shape:a","type":"line","parent":"page:p","index":"a1","points":[{"id":"p","index":"!"}]}`), "shape:a"},
+		{"one color", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"a1","gradient":{"colors":["#ff0000"],"angle":0}}`), "shape:a"},
+		{"no colors", shapes(`{"id":"shape:a","type":"geo","parent":"page:p","index":"a1","gradient":{"colors":[],"angle":0}}`), "shape:a"},
+	} {
+		_, err := Read(strings.NewReader(c.file))
+		if err == nil {
+			t.Errorf("%s: read", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.has) {
+			t.Errorf("%s: %v doesn't say %q", c.name, err, c.has)
+		}
+	}
+}
+
+// Whatever indexes come to, a file that has them reads, and they go on working.
+func TestIndexesThatWereMadeAreValid(t *testing.T) {
+	for _, start := range []string{FirstIndex, "a0", "Zz", "b00", "a1V", "z" + strings.Repeat("z", 26)} {
+		if !validIndex(start) {
+			t.Errorf("%q isn't valid", start)
+		}
+		lo, hi := start, ""
+		for i := range 300 {
+			next := IndexBetween(lo, hi)
+			if !validIndex(next) {
+				t.Fatalf("%q made %q, which isn't valid", start, next)
+			}
+			if i%3 == 0 {
+				hi = next
+			} else {
+				lo = next
+			}
+		}
+	}
+}
+
+// A valid index goes through every way of making one.
+func TestValidIndexesDontPanic(t *testing.T) {
+	const pick = "aAzZbY019yV"
+	var keys []string
+	for _, a := range pick {
+		for _, b := range pick {
+			for _, c := range pick {
+				if k := string([]rune{a, b, c}); validIndex(k) {
+					keys = append(keys, k)
+				}
+				if k := string([]rune{a, b}); validIndex(k) {
+					keys = append(keys, k)
+				}
+			}
+		}
+	}
+	keys = append(keys, "A"+strings.Repeat("0", 26), "A"+strings.Repeat("z", 26), "z"+strings.Repeat("0", 26), "z"+strings.Repeat("z", 26))
+	if len(keys) == 0 {
+		t.Fatal("none")
+	}
+	for _, a := range keys {
+		IndexBetween(a, "")
+		IndexBetween("", a)
+		for _, b := range keys {
+			IndexBetween(a, b)
+		}
+	}
+}
+
 // A file holds only the images something shows.
 func TestWriteDropsUnusedImages(t *testing.T) {
 	d := New()

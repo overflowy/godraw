@@ -66,6 +66,9 @@ func (e *Editor) ContentBounds() (geo.Box, bool) {
 	var box geo.Box
 	ok := false
 	for _, id := range e.Children(e.Page) {
+		if e.holdsNothing(id) {
+			continue
+		}
 		b := e.PageBounds(id)
 		if !ok {
 			box, ok = b, true
@@ -434,8 +437,8 @@ func (e *Editor) deleteShapes(ids []doc.ID) {
 		}
 		e.deleteTree(id)
 	}
-	e.sel = slices.DeleteFunc(slices.Clone(e.sel), func(id doc.ID) bool { return e.Doc.Shapes[id] == nil })
 	e.cleanGroups(parents)
+	e.sel = slices.DeleteFunc(slices.Clone(e.sel), func(id doc.ID) bool { return e.Doc.Shapes[id] == nil })
 }
 
 // deleteTree deletes a shape and what it holds, and lets arrows go of it.
@@ -626,6 +629,7 @@ func (e *Editor) Paste(data []byte, at *geo.Vec) error {
 	if err != nil {
 		return err
 	}
+	e.EndOpen()
 	e.transact(func() {
 		idmap := map[doc.ID]doc.ID{}
 		for id := range d.Shapes {
@@ -702,12 +706,25 @@ func (e *Editor) scratchOf(d *doc.Drawing) *Editor {
 	return s
 }
 
+// EndOpen finishes what's under way, so that what comes next is a step of its own and
+// not part of a transaction that may yet roll back, as an empty new text's does. It's
+// for what the window does, not for a Batch, whose transaction is to stay open.
+func (e *Editor) EndOpen() {
+	if g := e.gesture; g != nil {
+		e.gesture = nil
+		g.up(e)
+	}
+	e.StopEditing()
+	e.commit() // what a slider left open
+}
+
 // PasteText adds a text shape, at the middle of the view.
 func (e *Editor) PasteText(text string) {
 	text = strings.TrimRight(text, "\r\n")
 	if text == "" || e.ReadOnly {
 		return
 	}
+	e.EndOpen()
 	e.transact(func() {
 		s := doc.NewShape(doc.NewID("shape"), doc.TypeText)
 		e.applyNext(s)
@@ -728,6 +745,7 @@ func (e *Editor) InsertImage(name, mime string, data []byte, w, h float64, at *g
 	if e.ReadOnly {
 		return
 	}
+	e.EndOpen()
 	e.transact(func() {
 		asset := &doc.Asset{
 			ID: doc.NewID("asset"), W: w, H: h, Name: name, Mime: mime,
@@ -884,8 +902,9 @@ func (e *Editor) Reorder(how string) {
 	}
 	byParent := map[doc.ID][]doc.ID{}
 	for _, id := range e.topSelected() {
-		p := e.Doc.Shapes[id].Parent
-		byParent[p] = append(byParent[p], id)
+		if s := e.Doc.Shapes[id]; !s.Locked {
+			byParent[s.Parent] = append(byParent[s.Parent], id)
+		}
 	}
 	e.transact(func() {
 		for parent, ids := range byParent {
@@ -1227,15 +1246,43 @@ func (e *Editor) DeletePage(id doc.ID) {
 	})
 }
 
-// MoveToPage moves the selection to another page.
+// MoveToPage moves the selection to another page, but for what's locked. Arrows
+// let go of what's no longer on their page, staying where they show, and groups left
+// with too little go.
 func (e *Editor) MoveToPage(id doc.ID) {
-	if len(e.sel) == 0 || e.Doc.Page(id) == nil || id == e.Page {
+	if len(e.sel) == 0 || e.ReadOnly || e.Doc.Page(id) == nil || id == e.Page {
+		return
+	}
+	ids := slices.DeleteFunc(e.sorted(e.topSelected()), func(s doc.ID) bool { return e.Doc.Shapes[s].Locked })
+	if len(ids) == 0 {
 		return
 	}
 	e.transact(func() {
-		for _, s := range e.sorted(e.topSelected()) {
+		moving := map[doc.ID]bool{}
+		parents := map[doc.ID]bool{}
+		for _, s := range ids {
+			moving[s] = true
+			parents[e.Doc.Shapes[s].Parent] = true
+			for _, k := range e.Descendants(s) {
+				moving[k] = true
+			}
+		}
+		for s := range moving {
+			for _, b := range e.bindingsTo(s) {
+				if !moving[b.From] {
+					e.unbind(b.From, b.Terminal)
+				}
+			}
+			for _, term := range []string{"start", "end"} {
+				if b := e.bindingOf(s, term); b != nil && !moving[b.To] {
+					e.unbind(s, term)
+				}
+			}
+		}
+		for _, s := range ids {
 			e.reparent(s, id)
 		}
+		e.cleanGroups(parents)
 		e.SelectNone()
 	})
 }
@@ -1249,6 +1296,7 @@ func (e *Editor) ExportBounds() (geo.Box, []doc.ID, bool) {
 	if len(ids) == 0 {
 		ids = e.Children(e.Page)
 	}
+	ids = slices.DeleteFunc(slices.Clone(ids), e.holdsNothing)
 	if len(ids) == 0 {
 		return geo.Box{}, nil, false
 	}
@@ -1344,8 +1392,8 @@ func (e *Editor) SVGOf(box geo.Box, ids []doc.ID, dark bool) []byte {
 	fmt.Fprintf(&b, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="%s"/>`, box.X, box.Y, box.W, box.H, pal.Background.CSS())
 	clips := 0
 	opacity := func(s *doc.Shape) string {
-		if s.Opacity < 1 {
-			return fmt.Sprintf(` opacity="%.3g"`, s.Opacity)
+		if o := e.OpacityOf(s); o < 1 {
+			return fmt.Sprintf(` opacity="%.3g"`, o)
 		}
 		return ""
 	}
@@ -1355,17 +1403,8 @@ func (e *Editor) SVGOf(box geo.Box, ids []doc.ID, dark bool) []byte {
 		for _, p := range e.Display(s, pal) {
 			e.svgPrim(&b, p, m)
 		}
-		if s.Type == doc.TypeFrame && s.Name != "" {
-			size, font := FrameHeading(s)
-			color := pal.Text
-			if size > 0 {
-				color = pal.SwatchOf(s).Solid
-			}
-			if size == 0 {
-				size = FrameHeadingFloor
-			}
-			o := m.Apply(geo.V(0, -size/2))
-			fmt.Fprintf(&b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s">%s</text>`, o.X, o.Y, svgFontFamily(font), size, color.CSS(), xmlEscape(s.Name))
+		if s.Type == doc.TypeFrame {
+			svgFrameHeading(&b, s, m, pal)
 		}
 		b.WriteString(`</g>`)
 	}, func(f *doc.Shape) {
@@ -1378,6 +1417,23 @@ func (e *Editor) SVGOf(box geo.Box, ids []doc.ID, dark bool) []byte {
 	})
 	b.WriteString(`</svg>`)
 	return b.Bytes()
+}
+
+// svgFrameHeading writes a frame's heading, as the canvas shows it.
+func svgFrameHeading(b *bytes.Buffer, s *doc.Shape, m geo.Mat, pal *Palette) {
+	name := s.Name
+	if name == "" {
+		name = FrameDefaultName
+	}
+	size, font := FrameHeading(s)
+	color, alpha := pal.Text, ` fill-opacity="0.65"`
+	if size > 0 {
+		color, alpha = pal.SwatchOf(s).Solid, ""
+	}
+	size = math.Max(size, FrameHeadingFloor)
+	o := m.Apply(geo.V(0, -size/2))
+	fmt.Fprintf(b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.4g" fill="%s"%s transform="rotate(%.2f %.2f %.2f)">%s</text>`,
+		o.X, o.Y, svgFontFamily(font), size, color.CSS(), alpha, m.Rotation()*180/math.Pi, o.X, o.Y, xmlEscape(name))
 }
 
 func xmlEscape(s string) string {
@@ -1480,8 +1536,16 @@ func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {
 		if p.FlipY {
 			sy = -1
 		}
-		fmt.Fprintf(b, `<image x="0" y="0" width="%.2f" height="%.2f" href="%s" preserveAspectRatio="none" transform="translate(%.2f %.2f) rotate(%.2f) translate(%.2f %.2f) scale(%g %g) translate(%.2f %.2f)"/>`,
-			p.Box.W, p.Box.H, xmlEscape(a.Src), o.X, o.Y, deg, p.Box.W/2, p.Box.H/2, sx, sy, -p.Box.W/2, -p.Box.H/2)
+		fmt.Fprintf(b, `<g transform="translate(%.2f %.2f) rotate(%.2f) translate(%.2f %.2f) scale(%g %g) translate(%.2f %.2f)">`,
+			o.X, o.Y, deg, p.Box.W/2, p.Box.H/2, sx, sy, -p.Box.W/2, -p.Box.H/2)
+		if c := p.Crop; c != nil {
+			// The part it shows over the box: the image is a unit square in the view.
+			fmt.Fprintf(b, `<svg width="%.2f" height="%.2f" viewBox="%g %g %g %g" preserveAspectRatio="none"><image width="1" height="1" href="%s" preserveAspectRatio="none"/></svg>`,
+				p.Box.W, p.Box.H, c.TopLeft.X, c.TopLeft.Y, c.BottomRight.X-c.TopLeft.X, c.BottomRight.Y-c.TopLeft.Y, xmlEscape(a.Src))
+		} else {
+			fmt.Fprintf(b, `<image width="%.2f" height="%.2f" href="%s" preserveAspectRatio="none"/>`, p.Box.W, p.Box.H, xmlEscape(a.Src))
+		}
+		b.WriteString(`</g>`)
 	}
 }
 

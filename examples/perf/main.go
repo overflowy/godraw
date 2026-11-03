@@ -35,6 +35,7 @@ type host struct{ win *mygo.Window }
 func (h *host) Changed(*doc.Drawing) {}
 func (h *host) Update(fn func())     { h.win.Update(fn) }
 func (h *host) Window() *mygo.Window { return h.win }
+func (h *host) Name() string         { return "perf" }
 
 // part is a stretch of the script: what moves, for each frame the window can show.
 type part struct {
