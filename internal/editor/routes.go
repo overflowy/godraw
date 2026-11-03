@@ -32,11 +32,10 @@ type RouteChanges struct {
 func (e *Editor) routesNow() map[doc.ID]*viaRoute {
 	var out map[doc.ID]*viaRoute
 	for id, s := range e.Doc.Shapes {
-		if s.Type != doc.TypeArrow || (s.Kind != "elbow" && len(s.Via()) == 0) {
+		if s.Type != doc.TypeArrow || (s.Kind != "elbow" && len(s.Via) == 0) {
 			continue
 		}
-		var axis string
-		if s.MetaValue(doc.MetaStraight, &axis) {
+		if s.Straight != "" {
 			continue
 		}
 		start, end, ok := e.routeEnds(s)
@@ -47,7 +46,7 @@ func (e *Editor) routesNow() map[doc.ID]*viaRoute {
 			out = map[doc.ID]*viaRoute{}
 		}
 		via := e.pageVia(s)
-		out[id] = &viaRoute{from: e.bindingOf(id, "start").To, to: e.bindingOf(id, "end").To, start: start, end: end, via: via, now: via, auto: viaIsAuto(s)}
+		out[id] = &viaRoute{from: e.bindingOf(id, "start").To, to: e.bindingOf(id, "end").To, start: start, end: end, via: via, now: via, auto: s.ViaAuto}
 	}
 	return out
 }
@@ -65,16 +64,11 @@ func (e *Editor) routeEnds(s *doc.Shape) (start, end geo.Vec, ok bool) {
 	return e.anchorOf(bs, ts), e.anchorOf(be, te), true
 }
 
-func viaIsAuto(s *doc.Shape) bool {
-	var auto bool
-	return s.MetaValue(doc.MetaViaAuto, &auto) && auto
-}
-
 func (e *Editor) pageVia(s *doc.Shape) []geo.Vec {
 	m := e.PageMat(s.ID)
-	via := s.Via()
-	for i, p := range via {
-		via[i] = m.Apply(p)
+	var via []geo.Vec
+	for _, p := range s.Via {
+		via = append(via, m.Apply(p))
 	}
 	return via
 }
@@ -141,7 +135,7 @@ func (e *Editor) settleRoutes(budget time.Duration) RouteChanges {
 		}
 		c := e.withVia(s, want)
 		if auto && len(want) > 0 {
-			c.SetMeta(doc.MetaViaAuto, true)
+			c.ViaAuto = true
 		}
 		e.put(c)
 		was.now = want
@@ -322,7 +316,7 @@ const routeAlong = 24.0
 // NeedlessVia returns how many turns an elbow arrow's via points add to a route
 // that would be clear without them, or 0 if that's not what they do.
 func (e *Editor) NeedlessVia(s *doc.Shape) int {
-	if s.Kind != "elbow" || len(s.Via()) == 0 {
+	if s.Kind != "elbow" || len(s.Via) == 0 {
 		return 0
 	}
 	plain := s.Clone()
@@ -338,14 +332,14 @@ func (e *Editor) NeedlessVia(s *doc.Shape) int {
 // ViaDetour returns how far an elbow arrow's via points lie off a route that would
 // be clear without them, if that's far, or 0.
 func (e *Editor) ViaDetour(s *doc.Shape) float64 {
-	if s.Kind != "elbow" || len(s.Via()) == 0 {
+	if s.Kind != "elbow" || len(s.Via) == 0 {
 		return 0
 	}
 	plain := s.Clone()
 	plain.SetVia(nil)
 	route := e.routeOf(plain)
 	far := 0.0
-	for _, p := range s.Via() {
+	for _, p := range s.Via {
 		near := math.Inf(1)
 		for i := 1; i < len(route); i++ {
 			near = min(near, distToSegment(p, route[i-1], route[i]))

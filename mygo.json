@@ -4,6 +4,6 @@
   "version": "0.1.0",
   "out": "build",
   "fileAssociations": [
-    { "ext": ["tldr"], "name": "tldraw Drawing", "mimeType": "application/vnd.tldraw+json" }
+    { "ext": ["godraw"], "name": "godraw Drawing", "mimeType": "application/vnd.godraw+json" }
   ]
 }

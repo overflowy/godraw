@@ -1257,8 +1257,9 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	case doc.TypeArrow:
 		c.Start = geo.V(init.Start.X*lx, init.Start.Y*ly)
 		c.End = geo.V(init.End.X*lx, init.End.Y*ly)
-		if via := init.Via(); via != nil && !it.held {
-			for i, p := range via {
+		if init.Via != nil && !it.held {
+			via := make([]geo.Vec, len(init.Via))
+			for i, p := range init.Via {
 				via[i] = geo.V(p.X*lx, p.Y*ly)
 			}
 			c.SetVia(via)
@@ -1279,8 +1280,9 @@ func (e *Editor) resizeItem(it resizeItem, sx, sy float64, anchor geo.Vec, fwd, 
 	e.put(c)
 	// With an end held where it is, points that moved would no longer lie between
 	// its ends, and a route through them would tie a knot: they stay in the page.
-	if via := init.Via(); via != nil && it.held {
-		for i, p := range via {
+	if init.Via != nil && it.held {
+		via := make([]geo.Vec, len(init.Via))
+		for i, p := range init.Via {
 			via[i] = it.mat.Apply(p)
 		}
 		e.put(e.withVia(e.Doc.Shapes[it.id], via))
@@ -1725,9 +1727,9 @@ func (e *Editor) bindTerminal(arrow doc.ID, term string, target doc.ID, p geo.Ve
 	a := geo.V((q.X-box.X)/math.Max(box.W, 1e-6), (q.Y-box.Y)/math.Max(box.H, 1e-6))
 	precise := exact || math.Abs(a.X-0.5) > 0.25 || math.Abs(a.Y-0.5) > 0.25
 	b := e.bindingOf(arrow, term)
-	nb := &doc.Binding{ID: doc.NewID("binding"), Type: "arrow", From: arrow, To: target, Terminal: term, Anchor: a, IsExact: exact, IsPrecise: precise}
+	nb := &doc.Binding{ID: doc.NewID("binding"), From: arrow, To: target, Terminal: term, Anchor: a, IsExact: exact, IsPrecise: precise}
 	if b != nil {
-		nb.ID, nb.Meta, nb.Raw = b.ID, b.Meta, b.Raw
+		nb.ID = b.ID
 	}
 	e.putBinding(nb)
 }
@@ -1969,7 +1971,6 @@ func (g *freehand) move(e *Editor) {
 func (g *freehand) up(e *Editor) {
 	s := e.Doc.Shapes[g.id]
 	e.update(g.id, func(c *doc.Shape) {
-		c.IsComplete = true
 		if s.Type == doc.TypeDraw {
 			pts := strokePoints(s)
 			// A stroke that ends where it began closes, and can take a fill.

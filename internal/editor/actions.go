@@ -196,14 +196,11 @@ func setStyleOf(s *doc.Shape, p StyleProp, v string) {
 	switch p {
 	case StyleColor:
 		s.Color = v
-		s.SetMeta(doc.MetaColor, nil)
 	case StyleFill:
 		s.Fill = v
-		s.SetMeta(doc.MetaGradient, nil)
-		s.SetMeta(doc.MetaFill, nil)
+		s.Gradient = nil
 	case StyleDash:
 		s.Dash = v
-		s.SetMeta(doc.MetaNoOutline, nil)
 	case StyleSize:
 		s.Size = v
 	case StyleFont:
@@ -733,7 +730,7 @@ func (e *Editor) InsertImage(name, mime string, data []byte, w, h float64, at *g
 	}
 	e.transact(func() {
 		asset := &doc.Asset{
-			ID: doc.NewID("asset"), Type: "image", W: w, H: h, Name: name, Mime: mime,
+			ID: doc.NewID("asset"), W: w, H: h, Name: name, Mime: mime,
 			Src: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
 		}
 		e.putAsset(asset)

@@ -101,11 +101,11 @@ func (i *ArrowInfo) At(t float64) geo.Vec { return i.at(t) }
 // the shape's box.
 func (e *Editor) Bind(arrow doc.ID, terminal string, target doc.ID, anchor geo.Vec) {
 	nb := &doc.Binding{
-		ID: doc.NewID("binding"), Type: "arrow", From: arrow, To: target, Terminal: terminal,
+		ID: doc.NewID("binding"), From: arrow, To: target, Terminal: terminal,
 		Anchor: anchor, IsPrecise: anchor != geo.V(0.5, 0.5),
 	}
 	if b := e.bindingOf(arrow, terminal); b != nil {
-		nb.ID, nb.Meta, nb.Raw = b.ID, b.Meta, b.Raw
+		nb.ID = b.ID
 	}
 	e.putBinding(nb)
 }

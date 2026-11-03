@@ -1,0 +1,14 @@
+{"godrawFileFormatVersion":1,"name":"fixture","gridSize":10,
+"pages":[
+{"id":"page:page","name":"First","index":"a1"},
+{"id":"page:p2","name":"Second","index":"a2"}],
+"shapes":[
+{"id":"shape:arrow","type":"arrow","index":"a4","parent":"page:page","x":10,"y":20,"opacity":1,"scale":1,"color":"black","labelColor":"black","fill":"none","dash":"draw","size":"m","font":"draw","kind":"arc","headStart":"none","headEnd":"arrow","start":[0,0],"end":[100,0],"bend":20,"labelPosition":0.5,"elbowMidPoint":0.5,"text":"x\nsecond line"},
+{"id":"shape:draw","type":"draw","index":"a2","parent":"page:page","x":10,"y":20,"opacity":1,"scale":1,"color":"green","fill":"none","dash":"draw","size":"s","segments":[{"type":"free","path":"AAAAAAAAAAAAAAA/AEMAPQAAgEZAxQAAQEngSQAA","dim":3}],"isPen":true,"scaleX":1,"scaleY":1},
+{"id":"shape:draw2d","type":"draw","index":"a3","parent":"page:page","x":10,"y":20,"opacity":1,"scale":1,"color":"green","fill":"none","dash":"solid","size":"m","segments":[{"type":"free","path":"AAAAAAAAAAAAQwA9gEZAxUBJ4Ek=","dim":2}],"scaleX":2,"scaleY":1},
+{"id":"shape:geo","type":"geo","index":"a1","parent":"page:page","x":10,"y":20,"opacity":1,"scale":1,"w":300,"h":120,"geo":"cloud","color":"blue","labelColor":"red","fill":"pattern","dash":"dashed","size":"l","font":"mono","align":"start","valign":"end","text":"A label\nsecond line"},
+{"id":"shape:line","type":"line","index":"a6","parent":"page:page","x":10,"y":20,"opacity":1,"scale":1,"color":"black","dash":"draw","size":"m","spline":"cubic","points":[{"id":"a","index":"a1"},{"id":"b","index":"a2","x":50,"y":50},{"id":"c","index":"a3","x":100}]}],
+"bindings":[
+{"id":"binding:b1","from":"shape:arrow","to":"shape:geo","terminal":"end","anchor":[0.25,0.75],"isPrecise":true}],
+"assets":[]
+}

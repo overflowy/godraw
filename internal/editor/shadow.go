@@ -20,7 +20,7 @@ const (
 
 // ShadowReach returns how far past a shape's box its shadow can reach.
 func ShadowReach(s *doc.Shape) float64 {
-	sh := s.Shadow()
+	sh := s.Shadow
 	if sh == nil {
 		return 0
 	}

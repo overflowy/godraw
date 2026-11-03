@@ -74,7 +74,7 @@ type Style struct {
 	Opacity                                      float64
 }
 
-// DefaultStyle is the style of a new canvas, tldraw's.
+// DefaultStyle is the style of a new canvas.
 func DefaultStyle() Style {
 	return Style{
 		Color: "black", Fill: "none", Dash: "draw", Size: "m", Font: "draw", Align: "middle", VAlign: "middle", TextAlign: "start",

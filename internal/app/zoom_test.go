@@ -269,8 +269,8 @@ func TestGradientPaintsAlongItsLine(t *testing.T) {
 			s := doc.NewShape(doc.NewID("shape"), doc.TypeGeo)
 			s.Parent, s.Index, s.Geo, s.Fill, s.Dash = "page:page", doc.FirstIndex, c.geo, "fill", "solid"
 			s.X, s.Y, s.W, s.H, s.Rotation = c.x, c.y, c.w, c.h, c.rot
-			s.SetMeta(doc.MetaNoOutline, true)
-			s.SetMeta(doc.MetaGradient, doc.Gradient{Colors: []string{"#000000", "#ff0000", "#ffffff"}, Angle: c.angle})
+			s.Dash = "none"
+			s.Gradient = &doc.Gradient{Colors: []string{"#000000", "#ff0000", "#ffffff"}, Angle: c.angle}
 			d.Shapes[s.ID] = s
 			a, tt := canvasOnly(d, editor.Camera{Z: c.z})
 			e := a.Editor()

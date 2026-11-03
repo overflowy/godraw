@@ -6,7 +6,7 @@ import (
 )
 
 // Shape order is kept in fractional indices, strings that sort between any
-// two others, which is what .tldr files store: a letter whose distance from
+// two others, which is what files store: a letter whose distance from
 // 'a' (upward) or 'Z' (downward) gives the length of the integer part, then
 // the digits of the integer part, then a fraction.
 

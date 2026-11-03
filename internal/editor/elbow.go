@@ -33,7 +33,7 @@ func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, bs, be *doc.Binding
 	if mid == 0 {
 		mid = 0.5
 	}
-	stops := slices.Concat([]geo.Vec{a}, s.Via(), []geo.Vec{b})
+	stops := slices.Concat([]geo.Vec{a}, s.Via, []geo.Vec{b})
 	out := e.elbowSide(bs, ts, inv, a, stops[1])
 	in := e.elbowSide(be, te, inv, b, stops[len(stops)-2])
 	if len(stops) == 2 && out == (geo.Vec{}) && in == (geo.Vec{}) {

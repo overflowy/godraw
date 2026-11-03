@@ -1,5 +1,5 @@
-// godraw is a local whiteboard in the manner of tldraw, drawn with MyGo's
-// native UI. It reads and writes tldraw's .tldr files.
+// godraw is a local whiteboard, drawn with MyGo's native UI. Its drawings are
+// .godraw files.
 package main
 
 import (
@@ -120,7 +120,7 @@ func fileArgs() []string {
 }
 
 // isDrawing reports whether a path names a drawing.
-func isDrawing(path string) bool { return strings.EqualFold(filepath.Ext(path), ".tldr") }
+func isDrawing(path string) bool { return strings.EqualFold(filepath.Ext(path), ".godraw") }
 
 func main() {
 	files := fileArgs()
@@ -132,7 +132,7 @@ func main() {
 	}
 	agents := &canvases{}
 	docs = mygo.NewDocuments(mygo.DocumentsOptions[*doc.Drawing]{
-		Types: []mygo.DocumentType{{Name: "tldraw Drawing", Extensions: []string{"tldr"}}},
+		Types: []mygo.DocumentType{{Name: "godraw Drawing", Extensions: []string{"godraw"}}},
 		New:   doc.New,
 		// With files to open, no untitled document comes up beside them.
 		NoUntitled: len(files) > 0,

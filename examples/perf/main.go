@@ -2,7 +2,7 @@
 // measuring frames as they are on the GPU. It prints how long the frames of each
 // part of the script took, and what took it.
 //
-//	go run ./examples/perf [-n 500] [-file some.tldr] [-fit=false]
+//	go run ./examples/perf [-n 500] [-file some.godraw] [-fit=false]
 package main
 
 import (

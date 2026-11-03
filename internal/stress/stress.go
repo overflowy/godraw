@@ -103,7 +103,7 @@ func arrow(d *doc.Drawing, add func(*doc.Shape, doc.ID) *doc.Shape, id, from, to
 	add(s, page)
 	for term, target := range map[string]doc.ID{"start": from, "end": to} {
 		b := &doc.Binding{
-			ID: doc.ID("binding:" + string(id) + term), Type: "arrow", From: id, To: target,
+			ID: doc.ID("binding:" + string(id) + term), From: id, To: target,
 			Terminal: term, Anchor: geo.V(0.5, 0.5),
 		}
 		d.Bindings[b.ID] = b

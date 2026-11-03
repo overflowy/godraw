@@ -87,7 +87,7 @@ func (g *GradientFill) At(t float64) Color {
 // gradientOf returns the fill of a shape with a gradient, over the box of its
 // outline, as CSS lays one over a box: its line reaches both far corners.
 func gradientOf(s *doc.Shape, poly []geo.Vec, pal *Palette) *GradientFill {
-	g := s.Gradient()
+	g := s.Gradient
 	if g == nil || len(poly) == 0 {
 		return nil
 	}
@@ -113,11 +113,6 @@ func (e *Editor) FillAt(s *doc.Shape, pal *Palette, q geo.Vec) (c Color, known b
 	switch s.Type {
 	case doc.TypeGeo, doc.TypeDraw, doc.TypeNote, doc.TypeFrame, doc.TypeImage:
 	case doc.TypeText, doc.TypeHighlight, doc.TypeLine, doc.TypeArrow, doc.TypeGroup:
-		return Color{}, true
-	default:
-		if e.Geometry(s).Bounds.Contains(q) {
-			return pal.Swatch("grey").Semi, true
-		}
 		return Color{}, true
 	}
 	g := e.Geometry(s)
@@ -205,10 +200,8 @@ func (e *Editor) prims(s *doc.Shape, pal *Palette) []Prim {
 		out = e.imagePrims(s, pal)
 	case doc.TypeGroup:
 		return nil
-	default:
-		out = e.unknownPrims(s, pal)
 	}
-	if sh := s.Shadow(); sh != nil {
+	if sh := s.Shadow; sh != nil {
 		out = append(e.shadowPrims(s, sh, pal), out...)
 	}
 	return out
@@ -483,7 +476,7 @@ func radiusOf(s *doc.Shape, w, h float64) float64 {
 	if s.Geo != "rectangle" {
 		return 0
 	}
-	return math.Min(s.Radius(), math.Min(w, h)/2)
+	return math.Min(s.Radius, math.Min(w, h)/2)
 }
 
 // geoBox returns the box that a geo shape's path is, if it is one.
@@ -737,14 +730,15 @@ func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 
 // FrameHeading returns the font of a frame's heading, and its size in the page
 // when it was given one, to read as what the frame holds does. Without one, a
-// heading stays the same size on the screen, as tldraw's does.
+// heading stays the same size on the screen.
 func FrameHeading(s *doc.Shape) (size float64, font string) {
-	var style string
-	if s.MetaValue(doc.MetaFrameSize, &style) {
-		size = fontSizeOf(style) // as a card's title, which is a text shape
+	if s.FrameSize != "" {
+		size = fontSizeOf(s.FrameSize) // as a card's title, which is a text shape
 		font = "draw"
 	}
-	s.MetaValue(doc.MetaFrameFont, &font)
+	if s.FrameFont != "" {
+		font = s.FrameFont
+	}
 	return size, font
 }
 
@@ -788,20 +782,6 @@ func (e *Editor) imagePrims(s *doc.Shape, pal *Palette) []Prim {
 		return []Prim{fillWith((&geo.Path{}).Poly(c[:], true), pal.Swatch("grey").Semi)}
 	}
 	return []Prim{{Kind: PrimImage, Asset: s.AssetID, Box: box, FlipX: s.FlipX, FlipY: s.FlipY, Crop: s.Crop}}
-}
-
-// unknownPrims draws a shape of a type this app keeps but does not know,
-// as a labeled box.
-func (e *Editor) unknownPrims(s *doc.Shape, pal *Palette) []Prim {
-	g := e.Geometry(s)
-	c := g.Bounds.Corners()
-	path := (&geo.Path{}).Poly(c[:], true)
-	label := e.Measure(s.Type, "sans", 14, 0)
-	return []Prim{
-		fillWith(path, pal.Swatch("grey").Semi),
-		strokeWith(path, 1, pal.Swatch("grey").Solid),
-		{Kind: PrimText, Block: &label, X: 8, Y: 8, Size: 14, Font: "sans", Color: pal.Swatch("grey").Solid},
-	}
 }
 
 // --- arrows ---

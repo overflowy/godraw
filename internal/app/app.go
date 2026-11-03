@@ -395,8 +395,7 @@ func (a *App) paste() {
 	has := func(f transfer.Format) bool {
 		return slices.Contains(formats, f)
 	}
-	// As in tldraw, what is pasted comes where it was if that shows, not at
-	// the pointer.
+	// What is pasted comes where it was if that shows, not at the pointer.
 	var at *geo.Vec
 	switch {
 	case has(transfer.Format(editor.ClipboardFormat)):

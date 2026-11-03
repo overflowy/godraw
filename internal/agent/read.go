@@ -189,7 +189,7 @@ func line(e *editor.Editor, id doc.ID) string {
 		}
 	}
 	if s.Type != doc.TypeFrame && s.Type != doc.TypeGroup && s.Type != doc.TypeImage {
-		for _, v := range []struct{ val, def string }{{colorName(s), "black"}, {fillName(s), "none"}, {dashName(s), "draw"}, {s.Size, "m"}} {
+		for _, v := range []struct{ val, def string }{{s.Color, "black"}, {fillName(s), "none"}, {dashName(s), "draw"}, {s.Size, "m"}} {
 			if v.val != "" && v.val != v.def {
 				b.WriteByte(' ')
 				b.WriteString(v.val)
@@ -214,22 +214,12 @@ func line(e *editor.Editor, id doc.ID) string {
 	return b.String()
 }
 
-// colorName is a shape's color as an op says it.
-func colorName(s *doc.Shape) string {
-	var hex string
-	if s.MetaValue(doc.MetaColor, &hex) {
-		return hex
-	}
-	return s.Color
-}
-
 func fillName(s *doc.Shape) string {
-	if g := s.Gradient(); g != nil {
+	if g := s.Gradient; g != nil {
 		return "gradient " + strings.Join(g.Colors, ",") + " angle " + num(g.Angle)
 	}
-	var hex string
-	if s.MetaValue(doc.MetaFill, &hex) {
-		return "fill " + hex
+	if editor.IsHex(s.Fill) {
+		return "fill " + s.Fill
 	}
 	return s.Fill
 }
@@ -283,12 +273,9 @@ func details(e *editor.Editor, list names) (string, error) {
 			kv("font", s.Font)
 			kv("align", s.Align)
 			kv("valign", s.VAlign)
-			labelColor := s.LabelColor
-			s.MetaValue(doc.MetaLabelColor, &labelColor)
-			kv("labelColor", labelColor)
-			var padding float64
-			if s.MetaValue(doc.MetaPadding, &padding) {
-				kv("padding", num(padding))
+			kv("labelColor", s.LabelColor)
+			if s.Padding != nil {
+				kv("padding", num(*s.Padding))
 			}
 		case doc.TypeText:
 			kv("font", s.Font)
@@ -303,7 +290,7 @@ func details(e *editor.Editor, list names) (string, error) {
 			if s.Kind == "elbow" {
 				m := e.PageMat(id)
 				var via []string
-				for _, p := range s.Via() {
+				for _, p := range s.Via {
 					p = m.Apply(p)
 					via = append(via, "["+num(p.X)+","+num(p.Y)+"]")
 				}
@@ -314,25 +301,16 @@ func details(e *editor.Editor, list names) (string, error) {
 				kv("bend", num(s.Bend))
 			}
 			kv("font", s.Font)
-			var side, axis string
-			if s.MetaValue(doc.MetaLabel, &side) {
-				kv("label", side)
-			}
-			if s.MetaValue(doc.MetaStraight, &axis) {
-				kv("straight", axis)
-				var at float64
-				if s.MetaValue(doc.MetaStraightAt, &at) {
-					kv("at", ratio(at))
+			kv("label", s.LabelSide)
+			if s.Straight != "" {
+				kv("straight", s.Straight)
+				if s.StraightAt != nil {
+					kv("at", ratio(*s.StraightAt))
 				}
 			}
 		case doc.TypeFrame:
-			var size, font string
-			if s.MetaValue(doc.MetaFrameSize, &size) {
-				kv("size", size)
-			}
-			if s.MetaValue(doc.MetaFrameFont, &font) {
-				kv("font", font)
-			}
+			kv("size", s.FrameSize)
+			kv("font", s.FrameFont)
 		case doc.TypeLine:
 			kv("spline", s.Spline)
 			kv("vertices", strconv.Itoa(len(s.Points)))
@@ -358,13 +336,13 @@ func details(e *editor.Editor, list names) (string, error) {
 		if s.Opacity != 1 {
 			kv("opacity", ratio(s.Opacity))
 		}
-		if v := s.Radius(); v > 0 {
+		if v := s.Radius; v > 0 {
 			kv("radius", num(v))
 		}
-		if sh := s.Shadow(); sh != nil {
+		if sh := s.Shadow; sh != nil {
 			kv("shadow", shadowText(sh))
 		}
-		if n := len(s.Runs()); n > 0 {
+		if n := len(s.Runs); n > 0 {
 			kv("runs", strconv.Itoa(n))
 		}
 		if kids := e.Children(id); len(kids) > 0 {

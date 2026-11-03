@@ -33,7 +33,7 @@ const (
 // shape's own, wrapping at width. Runs lay it out only when it's the shape's own.
 func (e *Editor) TextBlockOf(s *doc.Shape, text string, size, width float64) TextBlock {
 	if text == s.Text || text == s.Text+" " {
-		if runs := s.Runs(); runs != nil {
+		if runs := s.Runs; runs != nil {
 			return e.layoutRuns(runs, s.Font, size, width)
 		}
 	}

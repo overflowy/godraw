@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"godraw/internal/geo"
 )
 
 func readFixture(t *testing.T) *Drawing {
 	t.Helper()
-	f, err := os.Open("testdata/tldraw.tldr")
+	f, err := os.Open("testdata/fixture.godraw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,9 +27,8 @@ func readFixture(t *testing.T) *Drawing {
 	return d
 }
 
-// The fixture was written with tldraw's own encoders and passes its
-// validators, so this reads what tldraw writes.
-func TestReadsWhatTldrawWrites(t *testing.T) {
+// The fixture has a shape of each form a file holds.
+func TestReadsFixture(t *testing.T) {
 	d := readFixture(t)
 	if d.Name != "fixture" || len(d.Pages) != 2 || d.Pages[0].Name != "First" {
 		t.Errorf("document %q pages %+v", d.Name, d.Pages)
@@ -35,8 +37,8 @@ func TestReadsWhatTldrawWrites(t *testing.T) {
 	if g == nil || g.Geo != "cloud" || g.Dash != "dashed" || g.Fill != "pattern" || g.Size != "l" || g.Font != "mono" || g.Align != "start" || g.VAlign != "end" || g.W != 300 {
 		t.Errorf("geo %+v", g)
 	}
-	if g.Text != "Bold label\nsecond line" {
-		t.Errorf("rich text read as %q", g.Text)
+	if g.Text != "A label\nsecond line" {
+		t.Errorf("text read as %q", g.Text)
 	}
 	want := []PointZ{{0, 0, .5}, {3.5, 1.25, .5}, {10, -4, .5}, {20.5, 7.75, .5}}
 	for _, id := range []ID{"shape:draw", "shape:draw2d"} {
@@ -70,48 +72,86 @@ func TestReadsWhatTldrawWrites(t *testing.T) {
 	}
 }
 
-// Writing keeps what this app doesn't model: formatted text it didn't edit,
-// shapes of types it doesn't know, page meta.
-func TestRoundTripKeepsWhatItDoesNotModel(t *testing.T) {
+// A file holds all a shape has, whatever it is, and what is zero stays zero.
+func TestRoundTripKeepsEverything(t *testing.T) {
 	d := readFixture(t)
+	padding, at := 0.0, 0.25
+	all := NewShape("shape:all", TypeGeo)
+	all.Parent, all.Opacity, all.Color, all.LabelColor, all.Fill = "page:page", 0, "#ff8800", "#123456", "#10163a"
+	all.Dash, all.Padding, all.Radius = "none", &padding, 12
+	all.Gradient = &Gradient{Colors: []string{"blue", "#ffffff"}, Angle: 90}
+	all.Shadow = &Shadow{Y: 4, Blur: 12, Color: "#000000", Opacity: 0.35}
+	all.SetRuns([]Run{{Text: "E = mc"}, {Text: "2", Sup: true, Scale: 0.7}})
+	all.Card, all.CardH = "box", 80
+	d.Shapes[all.ID] = all
+	elbow := NewShape("shape:elbow", TypeArrow)
+	elbow.Parent, elbow.Kind, elbow.LabelSide, elbow.Straight, elbow.StraightAt = "page:page", "elbow", "above", "h", &at
+	elbow.Via, elbow.ViaAuto = []geo.Vec{geo.V(1, 2), geo.V(0, -3)}, true
+	d.Shapes[elbow.ID] = elbow
+	frame := NewShape("shape:frame", TypeFrame)
+	frame.Parent, frame.FrameSize, frame.FrameFont = "page:page", "l", "serif"
+	d.Shapes[frame.ID] = frame
+
 	var b bytes.Buffer
 	if err := Write(&b, d); err != nil {
 		t.Fatal(err)
 	}
-	out := b.String()
-	if !strings.Contains(out, `"marks":[{"type":"bold"}]`) {
-		t.Error("bold mark lost from unedited text")
-	}
-	if !strings.Contains(out, `"url":"https://example.com"`) {
-		t.Error("embed lost")
-	}
-	if !strings.Contains(out, `"hello":"kept"`) {
-		t.Error("page meta lost")
-	}
-	d2, err := Read(bytes.NewReader(b.Bytes()))
+	back, err := Read(bytes.NewReader(b.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d2.Shapes) != len(d.Shapes) || len(d2.Bindings) != len(d.Bindings) || len(d2.Pages) != len(d.Pages) {
-		t.Errorf("round trip: %d shapes %d bindings %d pages", len(d2.Shapes), len(d2.Bindings), len(d2.Pages))
+	if back.Name != d.Name || back.GridSize != d.GridSize || !reflect.DeepEqual(back.Pages, d.Pages) || !reflect.DeepEqual(back.Bindings, d.Bindings) {
+		t.Errorf("came back %+v", back)
 	}
-	if d2.Shapes["shape:geo"].Text != d.Shapes["shape:geo"].Text {
-		t.Error("text changed")
+	if len(back.Shapes) != len(d.Shapes) {
+		t.Errorf("%d shapes, had %d", len(back.Shapes), len(d.Shapes))
 	}
-
-	// Edited, its text is new, and nothing claims the old formatting.
-	s := d.Shapes["shape:geo"].Clone()
-	s.SetText("plain now")
-	d.Shapes[s.ID] = s
-	b.Reset()
-	if err := Write(&b, d); err != nil {
+	for id, s := range d.Shapes {
+		got := back.Shapes[id]
+		if got == nil {
+			t.Errorf("%s lost", id)
+			continue
+		}
+		// What a draw shape's points hold is checked on its own.
+		c, g := *s, *got
+		c.Segments, g.Segments = nil, nil
+		if !reflect.DeepEqual(&c, &g) {
+			t.Errorf("%s came back\n%+v\nnot\n%+v", id, g, c)
+		}
+	}
+	var again bytes.Buffer
+	if err := Write(&again, back); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(b.String(), "Bold label") {
-		t.Error("old text written after an edit")
+	if !bytes.Equal(b.Bytes(), again.Bytes()) {
+		t.Error("written again, the file differs")
 	}
 	if !json.Valid(b.Bytes()) {
 		t.Error("invalid JSON")
+	}
+	// A line a record, for a diff to show what changed.
+	if n := strings.Count(b.String(), "\n"); n < len(d.Shapes)+len(d.Pages)+len(d.Bindings) {
+		t.Errorf("%d lines", n)
+	}
+}
+
+// A stroke keeps its pressure if it has any, and doesn't spend room on it if not.
+func TestSegmentsSayWhetherTheyHavePressure(t *testing.T) {
+	for _, c := range []struct {
+		z   float64
+		dim int
+	}{{0.5, 2}, {0.8, 3}} {
+		b, err := json.Marshal(Segment{Type: "free", Points: []PointZ{{1, 2, c.z}, {3, 4, c.z}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s Segment
+		if err := json.Unmarshal(b, &s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Dim != c.dim || len(s.Points) != 2 || math.Abs(s.Points[1].Z-c.z) > 0.01 || s.Points[1].X != 3 {
+			t.Errorf("pressure %v came back %+v", c.z, s)
+		}
 	}
 }
 
@@ -191,7 +231,14 @@ func TestIndexOrder(t *testing.T) {
 }
 
 func TestReadRejectsOtherFiles(t *testing.T) {
-	for _, s := range []string{"not json", `{"foo":1}`, `{"tldrawFileFormatVersion":99,"records":[]}`} {
+	for _, s := range []string{
+		"not json",
+		`{"foo":1}`,
+		`{"godrawFileFormatVersion":1,"records":[]}`,
+		`{"godrawFileFormatVersion":99,"pages":[{"id":"page:a"}]}`,
+		`{"godrawFileFormatVersion":1,"pages":[{"id":"page:a"}],"shapes":[{"id":"shape:a","type":"embed"}]}`,
+		`{"godrawFileFormatVersion":1,"pages":[{"id":"page:a"}],"shapes":[null]}`,
+	} {
 		if _, err := Read(strings.NewReader(s)); err == nil {
 			t.Errorf("read %q without an error", s)
 		}
@@ -226,48 +273,18 @@ func TestSnapshotsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestMetaKeepsTheRest(t *testing.T) {
-	s := NewShape("shape:a", TypeArrow)
-	s.Meta = json.RawMessage(`{"theirs":{"kept":true}}`)
-	s.SetMeta(MetaLabel, "above")
-	var v string
-	if !s.MetaValue(MetaLabel, &v) || v != "above" {
-		t.Errorf("read back %q from %s", v, s.Meta)
-	}
-	s.SetMeta(MetaLabel, nil)
-	if s.MetaValue(MetaLabel, &v) || string(s.Meta) != `{"theirs":{"kept":true}}` {
-		t.Errorf("after removing: %s", s.Meta)
-	}
-	empty := NewShape("shape:b", TypeArrow)
-	if empty.MetaValue(MetaLabel, &v) {
-		t.Error("found a key in no meta")
-	}
-	empty.SetMeta(MetaStraightAt, 0.25)
-	var at float64
-	if !empty.MetaValue(MetaStraightAt, &at) || at != 0.25 {
-		t.Errorf("read back %v from %s", at, empty.Meta)
-	}
-}
-
-// A file holds only the images something shows, or might: an unknown shape's
-// reference counts, and other kinds of asset are left alone.
+// A file holds only the images something shows.
 func TestWriteDropsUnusedImages(t *testing.T) {
 	d := New()
 	for _, a := range []*Asset{
-		{ID: "asset:used", Type: "image", Src: "data:,"},
-		{ID: "asset:gone", Type: "image", Src: "data:,"},
-		{ID: "asset:raw", Type: "image", Src: "data:,"},
-		{ID: "asset:video", Type: "video", Src: "data:,"},
+		{ID: "asset:used", Src: "data:,"},
+		{ID: "asset:gone", Src: "data:,"},
 	} {
 		d.Assets[a.ID] = a
 	}
 	s := NewShape("shape:i", TypeImage)
 	s.Parent, s.Index, s.AssetID = "page:page", FirstIndex, "asset:used"
 	d.Shapes[s.ID] = s
-	o := NewShape("shape:o", "embed")
-	o.Parent, o.Index = "page:page", IndexBetween(FirstIndex, "")
-	o.Raw = map[string]json.RawMessage{"assetId": json.RawMessage(`"asset:raw"`)}
-	d.Shapes[o.ID] = o
 	var buf bytes.Buffer
 	if err := Write(&buf, d); err != nil {
 		t.Fatal(err)
@@ -279,7 +296,7 @@ func TestWriteDropsUnusedImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[ID]bool{"asset:used": true, "asset:gone": false, "asset:raw": true, "asset:video": true} {
+	for id, want := range map[ID]bool{"asset:used": true, "asset:gone": false} {
 		if (back.Assets[id] != nil) != want {
 			t.Errorf("%s in the file: %v", id, back.Assets[id] != nil)
 		}

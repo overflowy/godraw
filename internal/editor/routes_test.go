@@ -32,9 +32,9 @@ func (h *harness) pair(via geo.Vec) (a, b, arrow *doc.Shape) {
 
 func (h *harness) pageVia(id doc.ID) []geo.Vec {
 	m := h.PageMat(id)
-	via := h.shape(id).Via()
-	for i, p := range via {
-		via[i] = m.Apply(p)
+	var via []geo.Vec
+	for _, p := range h.shape(id).Via {
+		via = append(via, m.Apply(p))
 	}
 	return via
 }

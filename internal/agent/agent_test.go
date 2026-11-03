@@ -483,9 +483,8 @@ func TestStraightArrows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var axis string
-	if !d.Shapes["shape:s"].MetaValue(doc.MetaStraight, &axis) || axis != "h" {
-		t.Errorf("straight back from the file is %q", axis)
+	if got := d.Shapes["shape:s"].Straight; got != "h" {
+		t.Errorf("straight back from the file is %q", got)
 	}
 
 	// Asking for anchors, or off, ends it; so does letting an end go.
@@ -493,7 +492,7 @@ func TestStraightArrows(t *testing.T) {
 		e := newEditor()
 		ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","straight":"h"}]`)
 		ops(t, e, "["+change+"]")
-		if e.Doc.Shapes["shape:s"].MetaValue(doc.MetaStraight, &axis) {
+		if e.Doc.Shapes["shape:s"].Straight != "" {
 			t.Errorf("%s left it straight", change)
 		}
 	}
@@ -516,8 +515,8 @@ func TestArrowLabelSide(t *testing.T) {
 	if lb := *e.ArrowLabelBox(e.Doc.Shapes["shape:across"]); lb != centered {
 		t.Errorf("back to center is %v, was %v", lb, centered)
 	}
-	if meta := string(e.Doc.Shapes["shape:across"].Meta); strings.Contains(meta, doc.MetaLabel) {
-		t.Errorf("meta keeps %s", meta)
+	if side := e.Doc.Shapes["shape:across"].LabelSide; side != "" {
+		t.Errorf("it keeps %s", side)
 	}
 }
 
@@ -1153,7 +1152,7 @@ func TestImages(t *testing.T) {
 	}
 }
 
-// What an agent draws is a file tldraw and the app can open again.
+// What an agent draws is a file the app can open again.
 func TestFileRoundTrip(t *testing.T) {
 	e := newEditor()
 	ops(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"name":"F"},
@@ -1647,11 +1646,11 @@ func TestVia(t *testing.T) {
 	}
 	// Going back to an arc forgets it, and an empty list clears it.
 	ops(t, e, `[{"set":"s","via":[]}]`)
-	if e.Doc.Shapes[shapeID("s")].Via() != nil {
+	if e.Doc.Shapes[shapeID("s")].Via != nil {
 		t.Error("via:[] didn't clear")
 	}
 	ops(t, e, `[{"set":"s","via":[[300,-40]]},{"set":"s","kind":"arc"}]`)
-	if e.Doc.Shapes[shapeID("s")].Via() != nil {
+	if e.Doc.Shapes[shapeID("s")].Via != nil {
 		t.Error("an arc kept via")
 	}
 }
@@ -1668,7 +1667,7 @@ func TestViaLasts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := back.Shapes[shapeID("s")].Via(); len(v) != 1 || v[0] != geo.V(100, -40) {
+	if v := back.Shapes[shapeID("s")].Via; len(v) != 1 || v[0] != geo.V(100, -40) {
 		t.Errorf("saved as %v", v)
 	}
 	ops(t, e, `[{"dup":"s","dx":0,"dy":300},{"set":"s","dx":10,"dy":20}]`)
@@ -1677,9 +1676,9 @@ func TestViaLasts(t *testing.T) {
 	}
 	var copied bool
 	for id, s := range e.Doc.Shapes {
-		if id != shapeID("s") && len(s.Via()) == 1 {
+		if id != shapeID("s") && len(s.Via) == 1 {
 			m := e.PageMat(id)
-			copied = m.Apply(s.Via()[0]) == geo.V(100, 260)
+			copied = m.Apply(s.Via[0]) == geo.V(100, 260)
 		}
 	}
 	if !copied {
@@ -1784,13 +1783,10 @@ func TestFrameSize(t *testing.T) {
 	if !strings.Contains(got, "size l") || !strings.Contains(got, "font sans") {
 		t.Errorf("read: %s", got)
 	}
-	// Kept in the file, for tldraw's strict props not to see it.
+	// It stays through a file.
 	var buf bytes.Buffer
 	if err := doc.Write(&buf, e.Doc); err != nil {
 		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), `"props":{"w":300,"h":200,"name":"API","color":"blue","size"`) {
-		t.Error("size went into the frame's props")
 	}
 	back, err := doc.Read(&buf)
 	if err != nil {
@@ -2517,14 +2513,6 @@ func TestFindCards(t *testing.T) {
 	}
 }
 
-// An elbow arrow from a shape back to itself says it won't look the same in tldraw.
-func TestSelfLoopWarns(t *testing.T) {
-	out := ops(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":200,"h":100},{"add":"arrow","id":"x","from":"a","to":"a","kind":"elbow","fromAt":[1,0.5],"toAt":[0.5,0]}]`)
-	if !strings.Contains(out, "x loops back to a; tldraw") {
-		t.Errorf("no word of it:\n%s", out)
-	}
-}
-
 // An image as big as the limit gets through as a data: URL.
 func TestLargeRequestGetsThrough(t *testing.T) {
 	if maxRequest < maxImage*4/3+1024 {
@@ -2710,7 +2698,7 @@ func kinds(prims []editor.Prim, k editor.PrimKind) []editor.Prim {
 	return out
 }
 
-// Without an outline a shape only fills, and the file still says what tldraw takes.
+// Without an outline a shape only fills.
 func TestNoOutline(t *testing.T) {
 	e := newEditor()
 	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100,"color":"blue","fill":"fill","dash":"none"},{"add":"draw","id":"d","d":"M200 0C260 0 260 80 200 80Z","fill":"fill","color":"blue","dash":"none"}]`)
@@ -2720,8 +2708,8 @@ func TestNoOutline(t *testing.T) {
 		if len(prims) != 1 || prims[0].Kind != editor.PrimFill || prims[0].Ink != nil {
 			t.Errorf("%s draws %d prims", id, len(prims))
 		}
-		if s.Dash != "solid" {
-			t.Errorf("%s has dash %q in its file", id, s.Dash)
+		if s.Dash != "none" {
+			t.Errorf("%s has dash %q", id, s.Dash)
 		}
 	}
 	if got, _ := details(e, names{"r"}); !strings.Contains(got, "no-outline") {
@@ -2766,14 +2754,13 @@ func TestNoOutline(t *testing.T) {
 	}
 }
 
-// A color of a shape's own paints all a palette color does, and tldraw is told the
-// nearest of its own.
+// A color of a shape's own paints all a palette color does.
 func TestCustomColors(t *testing.T) {
 	e := newEditor()
 	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100,"color":"#FF8800","labelColor":"#123456","fill":"fill","text":"Hi"}]`)
 	s := e.Doc.Shapes["shape:r"]
-	if s.Color != "orange" || s.LabelColor != "black" {
-		t.Errorf("the file says %s and %s", s.Color, s.LabelColor)
+	if s.Color != "#ff8800" || s.LabelColor != "#123456" {
+		t.Errorf("it holds %s and %s", s.Color, s.LabelColor)
 	}
 	want, ink := editor.Hex("#ff8800"), editor.Hex("#123456")
 	for _, pal := range []*editor.Palette{editor.Light, editor.Dark} {
@@ -2801,7 +2788,7 @@ func TestCustomColors(t *testing.T) {
 	}
 	// A palette color takes over again, from an op or the style panel.
 	ops(t, e, `[{"set":"r","labelColor":"red"}]`)
-	if e.Doc.Shapes["shape:r"].MetaValue(doc.MetaLabelColor, new(string)) {
+	if editor.IsHex(e.Doc.Shapes["shape:r"].LabelColor) {
 		t.Error("labelColor kept its hex")
 	}
 	e.Select("shape:r")
@@ -2852,7 +2839,7 @@ func TestGradient(t *testing.T) {
 	if e.Display(e.Doc.Shapes["shape:k-box"], editor.Light)[0].Gradient == nil {
 		t.Error("a card doesn't fill with it")
 	}
-	// tldraw sees what fills in its place, and a press on it hits it.
+	// A fill is set with it, and a press on it hits it.
 	if s := e.Doc.Shapes["shape:r"]; s.Fill != "fill" || !e.Geometry(s).Filled {
 		t.Errorf("fill %q", s.Fill)
 	}
@@ -2863,7 +2850,7 @@ func TestGradient(t *testing.T) {
 	if !ok || !bytes.Contains(svg, []byte(`<linearGradient`)) || !bytes.Contains(svg, []byte(`stop-color="#ffffff"`)) {
 		t.Errorf("SVG: %.200s", svg)
 	}
-	if back := roundTrip(t, e); back.Shapes["shape:s"].Gradient() == nil {
+	if back := roundTrip(t, e); back.Shapes["shape:s"].Gradient == nil {
 		t.Error("lost in the file")
 	}
 
@@ -2875,17 +2862,17 @@ func TestGradient(t *testing.T) {
 	}
 	ops(t, e, `[{"set":"r","fill":"solid"},{"set":"s","gradient":[]}]`)
 	for _, id := range []doc.ID{"shape:r", "shape:s"} {
-		if e.Doc.Shapes[id].Gradient() != nil {
+		if e.Doc.Shapes[id].Gradient != nil {
 			t.Errorf("%s keeps it", id)
 		}
 	}
 	e.Select("shape:d")
 	e.SetStyle(editor.StyleFill, "solid")
-	if e.Doc.Shapes["shape:d"].Gradient() != nil {
+	if e.Doc.Shapes["shape:d"].Gradient != nil {
 		t.Error("the style panel can't clear it")
 	}
 	ops(t, e, `[{"set":"k","gradient":["#101010","#202020"],"gradientAngle":45}]`)
-	if g := e.Doc.Shapes["shape:k-box"].Gradient(); g == nil || g.Angle != 45 {
+	if g := e.Doc.Shapes["shape:k-box"].Gradient; g == nil || g.Angle != 45 {
 		t.Errorf("a card's: %+v", g)
 	}
 
@@ -3064,12 +3051,12 @@ func TestFillTakesAHexApartFromTheOutline(t *testing.T) {
 	if got := editor.Light.SwatchOf(s).Solid.CSS(); got != "#7aa2ff" {
 		t.Errorf("outline paints %s", got)
 	}
-	// It's the same in either theme, and what tldraw reads stays one of its own.
+	// It's the same in either theme.
 	if got, _ := e.FillAt(s, editor.Dark, geo.V(50, 30)); got.CSS() != "#10163a" {
 		t.Errorf("dark fill paints %s", got.CSS())
 	}
-	if s.Fill != "solid" {
-		t.Errorf("file says fill %q", s.Fill)
+	if s.Fill != "#10163a" {
+		t.Errorf("it holds fill %q", s.Fill)
 	}
 	box := e.Doc.Shapes[shapeID("c-box")]
 	if got, _ := e.FillAt(box, editor.Light, geo.V(10, 10)); got.CSS() != "#10163a" {
@@ -3084,7 +3071,7 @@ func TestFillTakesAHexApartFromTheOutline(t *testing.T) {
 		t.Error("a palette fill left the hex behind")
 	}
 	ops(t, e, `[{"set":"a","fill":"#112233"},{"set":"a","gradient":["#000000","#ffffff"]}]`)
-	if s := e.Doc.Shapes[shapeID("a")]; s.Gradient() == nil || s.MetaValue(doc.MetaFill, new(string)) {
+	if s := e.Doc.Shapes[shapeID("a")]; s.Gradient == nil || editor.IsHex(s.Fill) {
 		t.Error("a gradient didn't take over from the hex")
 	}
 	if _, err := tryOps(e, `[{"add":"star","fill":"#12"}]`); err == nil || !strings.Contains(err.Error(), "#rrggbb") {
@@ -3094,7 +3081,7 @@ func TestFillTakesAHexApartFromTheOutline(t *testing.T) {
 	ops(t, e, `[{"set":"a","fill":"#112233"}]`)
 	e.Select(shapeID("a"))
 	e.SetStyle(editor.StyleFill, "fill")
-	if s := e.Doc.Shapes[shapeID("a")]; s.MetaValue(doc.MetaFill, new(string)) {
+	if s := e.Doc.Shapes[shapeID("a")]; editor.IsHex(s.Fill) {
 		t.Error("the panel's fill left the hex behind")
 	}
 }
@@ -3110,7 +3097,7 @@ func TestDupWithChanges(t *testing.T) {
 	if got := cardOf(e, shapeID("c2")); got == nil || got.head.Text != "Two" || got.body.Text != "First" {
 		t.Errorf("c2: %+v", got)
 	}
-	if got := cardOf(e, shapeID("c3")); got == nil || colorName(got.head) != "red" {
+	if got := cardOf(e, shapeID("c3")); got == nil || got.head.Color != "red" {
 		t.Errorf("c3: %+v", got)
 	}
 	if got := e.Doc.Shapes[shapeID("c1-head")]; got.Text != "One" {
@@ -3174,11 +3161,11 @@ func TestNamedStylesLast(t *testing.T) {
 		{"add":"rectangle","id":"r","w":100,"h":50,"use":"body","x":0,"y":100},
 		{"add":"star","id":"s","w":50,"h":50,"x":200,"y":0},{"set":"s","use":"body"}]`)
 	a := e.Doc.Shapes[shapeID("a")]
-	if a.Font != "serif" || a.Size != "s" || a.Scale != 0.85 || colorName(a) != "red" {
-		t.Errorf("a: %s %s %v %s", a.Font, a.Size, a.Scale, colorName(a))
+	if a.Font != "serif" || a.Size != "s" || a.Scale != 0.85 || a.Color != "red" {
+		t.Errorf("a: %s %s %v %s", a.Font, a.Size, a.Scale, a.Color)
 	}
-	if r := e.Doc.Shapes[shapeID("r")]; r.Radius() != 8 || r.Scale != 1 {
-		t.Errorf("r: radius %v scale %v", r.Radius(), r.Scale)
+	if r := e.Doc.Shapes[shapeID("r")]; r.Radius != 8 || r.Scale != 1 {
+		t.Errorf("r: radius %v scale %v", r.Radius, r.Scale)
 	}
 	if s := e.Doc.Shapes[shapeID("s")]; s.Font != "serif" {
 		t.Errorf("set didn't use it: %s", s.Font)
@@ -3451,7 +3438,7 @@ func TestRadiusAndShadow(t *testing.T) {
 	if len(e.Geometry(e.Doc.Shapes[shapeID("sq")]).Outline) != 4 {
 		t.Error("a square one changed")
 	}
-	if e.Doc.Shapes[shapeID("c-box")].Radius() != 12 {
+	if e.Doc.Shapes[shapeID("c-box")].Radius != 12 {
 		t.Error("the card didn't pass on its radius")
 	}
 	// What a shadow reaches counts in what a picture shows.
@@ -3482,7 +3469,7 @@ func TestRadiusAndShadow(t *testing.T) {
 	}
 	// It clears, and a radius does.
 	ops(t, e, `[{"set":"e","shadow":{}},{"set":"r","radius":0}]`)
-	if e.Doc.Shapes[shapeID("e")].Shadow() != nil {
+	if e.Doc.Shapes[shapeID("e")].Shadow != nil {
 		t.Error("the shadow stayed")
 	}
 	if len(e.Geometry(e.Doc.Shapes[shapeID("r")]).Outline) != 4 {
@@ -3490,7 +3477,7 @@ func TestRadiusAndShadow(t *testing.T) {
 	}
 	// A group reaches what it holds, and a style can say them.
 	ops(t, e, `[{"style":{"radius":5,"shadow":{"blur":4}}},{"add":"rectangle","id":"st","x":0,"y":700,"w":40,"h":40}]`)
-	if s := e.Doc.Shapes[shapeID("st")]; s.Radius() != 5 || s.Shadow() == nil {
+	if s := e.Doc.Shapes[shapeID("st")]; s.Radius != 5 || s.Shadow == nil {
 		t.Error("style didn't say them")
 	}
 	for _, tc := range []struct{ ops, want string }{
@@ -3564,28 +3551,22 @@ func TestRunsMixStyles(t *testing.T) {
 	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":600,"text":["a",{"text":"2","sub":true}]},
 		{"add":"card","id":"c","x":300,"y":600,"title":["T",{"text":"1","sub":true}],"body":["b",{"text":"2","sup":true}]},
 		{"add":"arrow","id":"ar","from":"r","to":"c","text":["x",{"text":"2","sup":true}]}]`)
-	if got := e.Doc.Shapes[shapeID("c-body")]; got.Text != "b2" || len(got.Runs()) != 2 {
-		t.Errorf("card body: %q %v", got.Text, got.Runs())
+	if got := e.Doc.Shapes[shapeID("c-body")]; got.Text != "b2" || len(got.Runs) != 2 {
+		t.Errorf("card body: %q %v", got.Text, got.Runs)
 	}
 	// New text has no use for the runs of the old; the same text keeps them.
 	ops(t, e, `[{"set":"a","text":"h = 6.6e-34 J"}]`)
-	if len(e.Doc.Shapes[shapeID("a")].Runs()) != 3 {
+	if len(e.Doc.Shapes[shapeID("a")].Runs) != 3 {
 		t.Error("the same text lost its runs")
 	}
 	ops(t, e, `[{"set":"a","text":"plain now"}]`)
-	if s := e.Doc.Shapes[shapeID("a")]; s.Runs() != nil || s.MetaValue(doc.MetaRuns, &[]doc.Run{}) {
+	if s := e.Doc.Shapes[shapeID("a")]; s.Runs != nil {
 		t.Error("new text kept the runs")
-	}
-	// A file edited elsewhere keeps its meta, and the runs no longer add up.
-	s := e.Doc.Shapes[shapeID("n")].Clone()
-	s.Text = "other"
-	if s.Runs() != nil {
-		t.Error("runs of another text")
 	}
 	// Plain strings alone are plain text.
 	ops(t, e, `[{"add":"text","id":"p","text":["a","b"],"x":0,"y":900}]`)
-	if s := e.Doc.Shapes[shapeID("p")]; s.Text != "ab" || s.Runs() != nil {
-		t.Errorf("p: %q %v", s.Text, s.Runs())
+	if s := e.Doc.Shapes[shapeID("p")]; s.Text != "ab" || s.Runs != nil {
+		t.Errorf("p: %q %v", s.Text, s.Runs)
 	}
 	for _, tc := range []struct{ ops, want string }{
 		{`[{"add":"text","text":[]}]`, "a text is a string"},
@@ -3681,7 +3662,7 @@ func TestExport(t *testing.T) {
 	}
 }
 
-// All of it stays through a file, and what tldraw would read is its own.
+// All of it stays through a file.
 func TestLooksSurviveAFile(t *testing.T) {
 	e := newEditor()
 	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":50,"fill":"#102030","radius":10,"shadow":{"blur":8,"y":2,"color":"#ff0000"}},
@@ -3695,15 +3676,11 @@ func TestLooksSurviveAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := d.Shapes[shapeID("r")]
-	if r.Fill != "solid" || r.Radius() != 10 || r.Shadow() == nil || r.Shadow().Y != 2 || r.Shadow().Color != "#ff0000" {
-		t.Errorf("r came back as fill %s radius %v shadow %+v", r.Fill, r.Radius(), r.Shadow())
-	}
-	var hex string
-	if !r.MetaValue(doc.MetaFill, &hex) || hex != "#102030" {
-		t.Errorf("fill came back as %q", hex)
+	if r.Fill != "#102030" || r.Radius != 10 || r.Shadow == nil || r.Shadow.Y != 2 || r.Shadow.Color != "#ff0000" {
+		t.Errorf("r came back as fill %s radius %v shadow %+v", r.Fill, r.Radius, r.Shadow)
 	}
 	tt := d.Shapes[shapeID("t")]
-	if runs := tt.Runs(); len(runs) != 2 || !runs[1].Sup || runs[1].Color != "#00ff00" || tt.Text != "x2" {
+	if runs := tt.Runs; len(runs) != 2 || !runs[1].Sup || runs[1].Color != "#00ff00" || tt.Text != "x2" {
 		t.Errorf("t came back as %q %+v", tt.Text, runs)
 	}
 }

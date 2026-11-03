@@ -1,5 +1,5 @@
-// Package doc is the document: its records, as tldraw has them, and the
-// .tldr file they are read from and written to.
+// Package doc is the document: its records, and the .godraw file they are read
+// from and written to.
 //
 // Committed records are immutable: an edit clones a record and replaces it.
 // A snapshot of a drawing is then a copy of its maps, cheap enough to take
@@ -7,7 +7,6 @@
 package doc
 
 import (
-	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -36,7 +35,7 @@ const (
 type PointZ struct{ X, Y, Z float64 }
 
 // Segment is a run of points of a freehand stroke: type "free" or
-// "straight", from drawing with Shift.
+// "straight", from drawing with Shift. A file holds its points encoded.
 type Segment struct {
 	Type   string
 	Points []PointZ
@@ -45,87 +44,98 @@ type Segment struct {
 
 // LinePoint is a vertex of a line shape.
 type LinePoint struct {
-	ID, Index string
-	X, Y      float64
+	ID    string  `json:"id"`
+	Index string  `json:"index"`
+	X     float64 `json:"x,omitempty"`
+	Y     float64 `json:"y,omitempty"`
 }
 
 // Crop is the part of an image a shape shows, as fractions of it.
 type Crop struct {
-	TopLeft, BottomRight geo.Vec
-	IsCircle             bool
+	TopLeft     geo.Vec `json:"topLeft,omitzero"`
+	BottomRight geo.Vec `json:"bottomRight,omitzero"`
+	IsCircle    bool    `json:"isCircle,omitempty"`
 }
 
-// Shape is a shape on the canvas: a flat union of the props of every type,
-// of which each type reads its own. Props this app does not model stay in
-// Raw and go back to the file, and shapes of types it does not know stay
-// whole, as tldraw's embeds and bookmarks.
+// Shape is a shape on the canvas: a flat union of the props of every type, of
+// which each type reads its own. In a file, what is zero is left out.
 type Shape struct {
-	ID       ID
-	Type     string
-	Parent   ID
-	Index    string
-	X, Y     float64
-	Rotation float64
-	Opacity  float64
-	Locked   bool
-	Meta     json.RawMessage
+	ID       ID      `json:"id"`
+	Type     string  `json:"type"`
+	Parent   ID      `json:"parent"`
+	Index    string  `json:"index"`
+	X        float64 `json:"x,omitempty"`
+	Y        float64 `json:"y,omitempty"`
+	Rotation float64 `json:"rotation,omitempty"`
+	Opacity  float64 `json:"opacity,omitempty"`
+	Locked   bool    `json:"locked,omitempty"`
 
-	W, H, GrowY float64
-	Scale       float64
+	W     float64 `json:"w,omitempty"`
+	H     float64 `json:"h,omitempty"`
+	GrowY float64 `json:"growY,omitempty"`
+	Scale float64 `json:"scale,omitempty"`
 
-	Geo        string
-	Color      string
-	LabelColor string
-	Fill       string
-	Dash       string
-	Size       string
-	Font       string
-	Align      string // horizontal alignment of labels
-	VAlign     string
-	TextAlign  string // of text shapes
-	AutoSize   bool
-	URL        string
-	Name       string
-	FlipX      bool
-	FlipY      bool
+	Geo        string    `json:"geo,omitempty"`
+	Color      string    `json:"color,omitempty"`      // a palette color or #rrggbb
+	LabelColor string    `json:"labelColor,omitempty"` // a palette color or #rrggbb
+	Fill       string    `json:"fill,omitempty"`       // a kind of fill or #rrggbb
+	Gradient   *Gradient `json:"gradient,omitempty"`   // what it fills with, in place of fill
+	Dash       string    `json:"dash,omitempty"`       // none draws no outline
+	Size       string    `json:"size,omitempty"`
+	Font       string    `json:"font,omitempty"`
+	Align      string    `json:"align,omitempty"` // horizontal alignment of labels
+	VAlign     string    `json:"valign,omitempty"`
+	TextAlign  string    `json:"textAlign,omitempty"` // of text shapes
+	Padding    *float64  `json:"padding,omitempty"`   // how far a label sits in from its box
+	Radius     float64   `json:"radius,omitempty"`    // how round a rectangle's corners are
+	Shadow     *Shadow   `json:"shadow,omitempty"`    // what it casts or glows with
+	AutoSize   bool      `json:"autoSize,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	FlipX      bool      `json:"flipX,omitempty"`
+	FlipY      bool      `json:"flipY,omitempty"`
 
-	// Text is the shape's text. RichText, when not nil, is the rich text
-	// document it came from, and goes back to the file while Text is
-	// still what it held (richOf).
-	Text     string
-	RichText json.RawMessage
-	richOf   string
+	Text string `json:"text,omitempty"`
+	Runs []Run  `json:"runs,omitempty"` // the parts of Text with styles of their own
 
-	Segments       []Segment
-	IsComplete     bool
-	IsClosed       bool
-	IsPen          bool
-	ScaleX, ScaleY float64
+	Segments []Segment `json:"segments,omitempty"`
+	IsClosed bool      `json:"isClosed,omitempty"`
+	IsPen    bool      `json:"isPen,omitempty"`
+	ScaleX   float64   `json:"scaleX,omitempty"`
+	ScaleY   float64   `json:"scaleY,omitempty"`
 
-	Kind           string // arc or elbow
-	HeadStart      string
-	HeadEnd        string
-	Start, End     geo.Vec
-	Bend           float64
-	LabelPosition  float64
-	ElbowMidPoint  float64
-	FontAdjustment *float64
+	Kind          string    `json:"kind,omitempty"` // arc or elbow
+	HeadStart     string    `json:"headStart,omitempty"`
+	HeadEnd       string    `json:"headEnd,omitempty"`
+	Start         geo.Vec   `json:"start,omitzero"`
+	End           geo.Vec   `json:"end,omitzero"`
+	Bend          float64   `json:"bend,omitempty"`
+	LabelPosition float64   `json:"labelPosition,omitempty"`
+	LabelSide     string    `json:"labelSide,omitempty"` // above, or on the line
+	ElbowMidPoint float64   `json:"elbowMidPoint,omitempty"`
+	Via           []geo.Vec `json:"via,omitempty"`      // what an elbow passes through, in its own space
+	ViaAuto       bool      `json:"viaAuto,omitempty"`  // that the app chose Via, to go around something
+	Straight      string    `json:"straight,omitempty"` // h or v: that it runs level
+	StraightAt    *float64  `json:"straightAt,omitempty"`
 
-	Spline string
-	Points []LinePoint
+	Spline string      `json:"spline,omitempty"`
+	Points []LinePoint `json:"points,omitempty"`
 
-	AssetID ID
-	Crop    *Crop
-	AltText string
-	Playing bool
+	AssetID ID     `json:"assetId,omitempty"`
+	Crop    *Crop  `json:"crop,omitempty"`
+	AltText string `json:"altText,omitempty"`
 
-	Raw map[string]json.RawMessage
+	Card  string  `json:"card,omitempty"`  // box, head or body: a card's part
+	CardH float64 `json:"cardH,omitempty"` // the height asked of a card's box
+
+	FrameSize string `json:"frameSize,omitempty"` // a frame's size style, for its heading and border
+	FrameFont string `json:"frameFont,omitempty"` // the font of a frame's heading
 
 	// Cache holds what the editor derives from the shape, as its geometry;
 	// a clone starts without it. It belongs to the main thread, unlike the rest
 	// of a record, which snapshots read elsewhere; the editor empties it once the
 	// record has left the document.
-	Cache any
+	Cache any `json:"-"`
 }
 
 // Clone returns a copy to edit. Slices are shared: replace them, rather
@@ -143,76 +153,12 @@ func (s *Shape) Moved() *Shape {
 	return &c
 }
 
-// SetText sets the text, leaving RichText to be rebuilt from it unless it
-// is the same text. Other text has no use for the runs of the last.
+// SetText sets the text. Other text has no use for the runs of the last.
 func (s *Shape) SetText(t string) {
 	if t != s.Text {
-		s.SetMeta(MetaRuns, nil)
+		s.Runs = nil
 	}
 	s.Text = t
-}
-
-// Keys of a shape's meta, for what this app adds to an arrow that tldraw has no
-// prop for. tldraw keeps them, and shows the arrow without them.
-const (
-	MetaStraight   = "godrawStraight"   // h or v
-	MetaStraightAt = "godrawStraightAt" // 0 to 1 across what both ends share
-	MetaLabel      = "godrawLabel"      // above
-	MetaCard       = "godrawCard"       // box, head or body: a card's part
-	MetaCardH      = "godrawCardH"      // the height asked of a card's box
-	MetaVia        = "godrawVia"        // what an elbow arrow passes through
-	MetaViaAuto    = "godrawViaAuto"    // that the app chose it, to go around something
-	MetaFrameSize  = "godrawFrameSize"  // a frame's size style, for its heading and border
-	MetaFrameFont  = "godrawFrameFont"  // the font of a frame's heading
-
-	// What a file keeps for this app alone, as tldraw's validators take only its own
-	// colors and dashes. There, a shape shows as its props say, without these.
-	MetaColor      = "godrawColor"      // #rrggbb, in place of color
-	MetaLabelColor = "godrawLabelColor" // #rrggbb, in place of labelColor
-	MetaNoOutline  = "godrawNoOutline"  // that a shape draws no outline
-	MetaGradient   = "godrawGradient"   // what a shape fills with, in place of fill
-	MetaPadding    = "godrawPadding"    // how far a label sits in from its box
-	MetaFill       = "godrawFill"       // #rrggbb, in place of fill
-	MetaRadius     = "godrawRadius"     // how round a rectangle's corners are
-	MetaShadow     = "godrawShadow"     // what a shape casts or glows with
-	MetaRuns       = "godrawRuns"       // the parts of a text with styles of their own
-)
-
-// MetaValue reads a key of the shape's meta into v, and says whether it could.
-func (s *Shape) MetaValue(key string, v any) bool {
-	if len(s.Meta) <= 2 {
-		return false
-	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(s.Meta, &m) != nil {
-		return false
-	}
-	raw, ok := m[key]
-	return ok && json.Unmarshal(raw, v) == nil
-}
-
-// SetMeta sets a key of the shape's meta, or removes it if v is nil. The rest
-// of the meta stays.
-func (s *Shape) SetMeta(key string, v any) {
-	m := map[string]json.RawMessage{}
-	if len(s.Meta) > 0 && json.Unmarshal(s.Meta, &m) != nil {
-		return
-	}
-	if v == nil {
-		if _, ok := m[key]; !ok {
-			return
-		}
-		delete(m, key)
-	} else {
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return
-		}
-		m[key] = raw
-	}
-	if b, err := json.Marshal(m); err == nil {
-		s.Meta = b
-	}
 }
 
 // Gradient is a fill that blends colors, evenly spaced along a line. Angle is that
@@ -223,27 +169,8 @@ type Gradient struct {
 	Angle  float64  `json:"angle"`
 }
 
-// Gradient returns what a shape fills with instead of its fill, if anything.
-func (s *Shape) Gradient() *Gradient {
-	var g Gradient
-	if !s.MetaValue(MetaGradient, &g) || len(g.Colors) < 2 {
-		return nil
-	}
-	return &g
-}
-
-// NoOutline says that a shape draws no outline, whatever its dash.
-func (s *Shape) NoOutline() bool {
-	var none bool
-	return s.MetaValue(MetaNoOutline, &none) && none
-}
-
-// Radius returns how round a rectangle's corners were asked to be, or 0.
-func (s *Shape) Radius() float64 {
-	var r float64
-	s.MetaValue(MetaRadius, &r)
-	return r
-}
+// NoOutline says that a shape draws no outline.
+func (s *Shape) NoOutline() bool { return s.Dash == "none" }
 
 // Shadow is what a shape casts, or with no offset and a bright color, glows with.
 type Shadow struct {
@@ -252,15 +179,6 @@ type Shadow struct {
 	Blur    float64 `json:"blur,omitempty"`
 	Color   string  `json:"color,omitempty"`
 	Opacity float64 `json:"opacity,omitempty"`
-}
-
-// Shadow returns what a shape casts, if anything.
-func (s *Shape) Shadow() *Shadow {
-	var sh Shadow
-	if !s.MetaValue(MetaShadow, &sh) {
-		return nil
-	}
-	return &sh
 }
 
 // Run is a part of a text with a style of its own. What it leaves empty is the
@@ -274,26 +192,6 @@ type Run struct {
 	Sub   bool    `json:"sub,omitempty"`
 }
 
-// Runs returns the parts of a shape's text, if it has any and they still add up
-// to it: tldraw keeps the meta of a text it edits.
-func (s *Shape) Runs() []Run {
-	var runs []Run
-	if !s.MetaValue(MetaRuns, &runs) {
-		return nil
-	}
-	n := 0
-	for _, r := range runs {
-		if !strings.HasPrefix(s.Text[n:], r.Text) {
-			return nil
-		}
-		n += len(r.Text)
-	}
-	if n != len(s.Text) {
-		return nil
-	}
-	return runs
-}
-
 // SetRuns gives a shape a text in parts.
 func (s *Shape) SetRuns(runs []Run) {
 	var b strings.Builder
@@ -301,69 +199,45 @@ func (s *Shape) SetRuns(runs []Run) {
 		b.WriteString(r.Text)
 	}
 	s.Text = b.String()
-	s.SetMeta(MetaRuns, runs)
+	s.Runs = runs
 }
 
-// Via returns the points an elbow arrow passes through, in its own space.
-func (s *Shape) Via() []geo.Vec {
-	var pts [][2]float64
-	if !s.MetaValue(MetaVia, &pts) {
-		return nil
-	}
-	out := make([]geo.Vec, len(pts))
-	for i, p := range pts {
-		out[i] = geo.V(p[0], p[1])
-	}
-	return out
-}
-
-// SetVia sets the points an elbow arrow passes through, in its own space.
+// SetVia sets the points an elbow arrow passes through, in its own space, which
+// are then its own and not the app's choice.
 func (s *Shape) SetVia(via []geo.Vec) {
-	s.SetMeta(MetaViaAuto, nil)
-	if len(via) == 0 {
-		s.SetMeta(MetaVia, nil)
-		return
+	s.ViaAuto = false
+	s.Via = nil
+	if len(via) > 0 {
+		s.Via = via
 	}
-	pts := make([][2]float64, len(via))
-	for i, p := range via {
-		pts[i] = [2]float64{p.X, p.Y}
-	}
-	s.SetMeta(MetaVia, pts)
 }
 
 // Binding ties an end of an arrow to a shape.
 type Binding struct {
-	ID        ID
-	Type      string
-	From, To  ID
-	Terminal  string // start or end
-	Anchor    geo.Vec
-	IsExact   bool
-	IsPrecise bool
-	Snap      string
-	Meta      json.RawMessage
-	Raw       map[string]json.RawMessage
+	ID        ID      `json:"id"`
+	From      ID      `json:"from"`
+	To        ID      `json:"to"`
+	Terminal  string  `json:"terminal"` // start or end
+	Anchor    geo.Vec `json:"anchor,omitzero"`
+	IsExact   bool    `json:"isExact,omitempty"`
+	IsPrecise bool    `json:"isPrecise,omitempty"`
 }
 
 // Page is a page of the drawing.
 type Page struct {
-	ID    ID
-	Name  string
-	Index string
-	Meta  json.RawMessage
+	ID    ID     `json:"id"`
+	Name  string `json:"name"`
+	Index string `json:"index"`
 }
 
-// Asset is a file a shape shows, kept in the drawing as a data URL.
+// Asset is an image a shape shows, kept in the drawing as a data URL.
 type Asset struct {
-	ID   ID
-	Type string
-	W, H float64
-	Name string
-	Mime string
-	Src  string
-	// Raw is the record from the file, kept for what this app does not
-	// model.
-	Raw map[string]json.RawMessage
+	ID   ID      `json:"id"`
+	W    float64 `json:"w,omitempty"`
+	H    float64 `json:"h,omitempty"`
+	Name string  `json:"name,omitempty"`
+	Mime string  `json:"mime,omitempty"`
+	Src  string  `json:"src,omitempty"`
 }
 
 // Drawing is a whole document. The records in its maps are immutable, and
@@ -371,13 +245,10 @@ type Asset struct {
 type Drawing struct {
 	Name     string
 	GridSize float64
-	Meta     json.RawMessage
 	Pages    []*Page
 	Shapes   map[ID]*Shape
 	Bindings map[ID]*Binding
 	Assets   map[ID]*Asset
-	// Others are records of types this app leaves alone.
-	Others []json.RawMessage
 }
 
 // New returns a drawing of one empty page.
@@ -426,7 +297,7 @@ func (d *Drawing) Page(id ID) *Page {
 // IsPageID reports whether id names a page.
 func IsPageID(id ID) bool { return len(id) > 5 && id[:5] == "page:" }
 
-// NewShape returns a shape of a type with tldraw's default props.
+// NewShape returns a shape of a type with its default props.
 func NewShape(id ID, typ string) *Shape {
 	s := &Shape{
 		ID: id, Type: typ, Opacity: 1, Scale: 1, Index: FirstIndex,

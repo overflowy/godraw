@@ -171,9 +171,8 @@ func (r *run) settleArrows() {
 			return
 		}
 		seen[id] = true
-		var axis string
-		if s.MetaValue(doc.MetaStraight, &axis) {
-			r.level(s, axis)
+		if s.Straight != "" {
+			r.level(s, s.Straight)
 		}
 	}
 	ids := make([]doc.ID, 0)
@@ -196,8 +195,7 @@ func (r *run) level(s *doc.Shape, axis string) {
 	bs, be := r.e.BindingOf(s.ID, "start"), r.e.BindingOf(s.ID, "end")
 	if bs == nil || be == nil {
 		c := s.Clone()
-		c.SetMeta(doc.MetaStraight, nil)
-		c.SetMeta(doc.MetaStraightAt, nil)
+		c.Straight, c.StraightAt = "", nil
 		r.e.Put(c)
 		return
 	}
@@ -222,7 +220,9 @@ func (r *run) levelAnchors(s *doc.Shape, axis string, bs, be *doc.Binding) (aa, 
 	}
 	a, b := r.e.PageBounds(bs.To), r.e.PageBounds(be.To)
 	at := 0.5
-	s.MetaValue(doc.MetaStraightAt, &at)
+	if s.StraightAt != nil {
+		at = *s.StraightAt
+	}
 	ax, bx := anchorX(bs), anchorX(be)
 	if axis == "h" {
 		lo, hi := math.Max(a.Y, b.Y), math.Min(a.MaxY(), b.MaxY())
@@ -303,10 +303,9 @@ func checkWholePage(e *editor.Editor) (list []string, capped bool) {
 	for _, id := range ids {
 		touched[id] = true
 		s := e.Doc.Shapes[id]
-		var axis string
-		if s.Type == doc.TypeArrow && s.MetaValue(doc.MetaStraight, &axis) {
+		if s.Type == doc.TypeArrow && s.Straight != "" {
 			if bs, be := e.BindingOf(id, "start"), e.BindingOf(id, "end"); bs != nil && be != nil {
-				r.levelAnchors(s, axis, bs, be)
+				r.levelAnchors(s, s.Straight, bs, be)
 			}
 		}
 	}
@@ -629,8 +628,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 			}
 		}
 	}
-	var axis string
-	if len(pts) == 2 && !s.MetaValue(doc.MetaStraight, &axis) {
+	if len(pts) == 2 && s.Straight == "" {
 		d := pts[1].Sub(pts[0])
 		dx, dy := math.Abs(d.X), math.Abs(d.Y)
 		switch {
@@ -642,7 +640,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 	}
 	// A knot says more than that the way without it is shorter.
 	if s.Kind == "elbow" && crossesItself(pts) {
-		if len(s.Via()) > 0 {
+		if len(s.Via) > 0 {
 			r.warn("%s's route crosses itself; its via may be out of place: set via again, or via:[] clears it", name)
 		} else {
 			r.warn("%s's route crosses itself; another side or via reroutes it", name)
@@ -651,9 +649,6 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 		r.warnAt(rankLayout, "%s's via adds %d turns, and the way without it is clear; via:[] clears it", name, n)
 	} else if d := r.e.ViaDetour(s); d > 0 {
 		r.warnAt(rankLayout, "%s's via takes it %s out of its way, and the way without it is clear; via:[] clears it", name, num(d))
-	}
-	if s.Kind == "elbow" && bs != nil && be != nil && bs.To == be.To {
-		r.warnAt(rankLayout, "%s loops back to %s; tldraw routes a loop like this through the shape", name, r.name(bs.To))
 	}
 	r.checkCrossings(s, name, m, info, pts, bs, be, items)
 }
@@ -1044,12 +1039,12 @@ func (r *run) inked(s *doc.Shape) ([]geo.Vec, string) {
 			return nil, ""
 		}
 		b := r.inkBox(s)
-		switch role := ""; {
+		switch {
 		case s.Type != doc.TypeText:
 			return along(b), "label"
-		case s.MetaValue(doc.MetaCard, &role) && role == "head":
+		case s.Card == "head":
 			return along(b), "title"
-		case role == "body":
+		case s.Card == "body":
 			return along(b), "body"
 		}
 		return along(b), "text"
@@ -1131,11 +1126,9 @@ func (r *run) inkOf(s *doc.Shape, pal *editor.Palette) editor.Color {
 // inkName says that color as an op does.
 func (r *run) inkName(s *doc.Shape) string {
 	if s.Type == doc.TypeText || s.Type == doc.TypeLine || s.Type == doc.TypeFrame || (s.Type == doc.TypeArrow && s.Text == "") {
-		return colorName(s)
+		return s.Color
 	}
-	name := s.LabelColor
-	s.MetaValue(doc.MetaLabelColor, &name)
-	return name
+	return s.LabelColor
 }
 
 // opacityOf returns how opaque a shape paints, with what holds it.

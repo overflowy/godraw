@@ -127,17 +127,7 @@ func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 		c := box.Corners()
 		return &Geometry{Bounds: box, Outline: c[:], Closed: true, Filled: true}
 	}
-	// A type this app does not know, such as an embed: a box.
-	w, h := s.W, s.H
-	if w == 0 {
-		w = 100
-	}
-	if h == 0 {
-		h = 100
-	}
-	box := geo.Box{W: w, H: h}
-	c := box.Corners()
-	return &Geometry{Bounds: box, Outline: c[:], Closed: true, Filled: true}
+	return &Geometry{}
 }
 
 // labelBox places a shape's label in a box w×h, by its alignments.
@@ -163,9 +153,10 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 
 // LabelPad returns how far a shape's label sits in from its box.
 func LabelPad(s *doc.Shape) float64 {
-	pad := float64(labelPadding)
-	s.MetaValue(doc.MetaPadding, &pad)
-	return pad * s.Scale
+	if s.Padding != nil {
+		return *s.Padding * s.Scale
+	}
+	return labelPadding * s.Scale
 }
 
 // strokePoints returns the points of a freehand shape in its space.

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"math"
 	"math/rand/v2"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -358,7 +357,7 @@ func TestArrowBend(t *testing.T) {
 	h.SetTool(ToolArrow)
 	h.drag(100, 100, 300, 100)
 	id := h.Selection()[0]
-	// By its middle handle, downward: tldraw's sign for this is positive.
+	// By its middle handle, downward: that bends it positive.
 	h.drag(200, 100, 200, 150)
 	s := h.shape(id)
 	if !near(s.Bend, 50) {
@@ -406,7 +405,7 @@ func TestFreehand(t *testing.T) {
 	for _, v := range h.Doc.Shapes {
 		s = v
 	}
-	if s == nil || !s.IsComplete || len(s.Segments) == 0 || len(s.Segments[0].Points) < 3 {
+	if s == nil || len(s.Segments) == 0 || len(s.Segments[0].Points) < 3 {
 		t.Fatalf("stroke %+v", s)
 	}
 	if !near(s.X, 100) || !near(s.Y, 100) {
@@ -975,84 +974,6 @@ func TestSaveRoundTripOfEdits(t *testing.T) {
 	}
 }
 
-// TestWriteSample writes a drawing of every kind of record where
-// GODRAW_SAMPLE says, for checking against tldraw's own validators.
-func TestWriteSample(t *testing.T) {
-	path := os.Getenv("GODRAW_SAMPLE")
-	if path == "" {
-		t.Skip("GODRAW_SAMPLE not set")
-	}
-	h := newHarness(t)
-	for i, k := range GeoKinds {
-		h.SetGeoTool(k)
-		h.Next.Dash = []string{"draw", "dashed", "dotted", "solid"}[i%4]
-		h.Next.Fill = []string{"none", "semi", "solid", "pattern", "fill"}[i%5]
-		h.Next.Color = Colors[i%len(Colors)]
-		h.drag(float64(i)*110, 0, float64(i)*110+100, 90)
-	}
-	first := h.Selection()[0]
-	h.StartEditing(first)
-	h.EditText = "label\nsecond line"
-	h.EditChanged()
-	h.StopEditing()
-	a := h.rect(0, 200, 100, 100)
-	b := h.rect(400, 200, 100, 100)
-	h.SetTool(ToolArrow)
-	h.Next.HeadStart, h.Next.HeadEnd, h.Next.Kind = "dot", "triangle", "arc"
-	h.drag(50, 250, 450, 250)
-	arrow := h.Selection()[0]
-	h.StartEditing(arrow)
-	h.EditText = "arrow label"
-	h.EditChanged()
-	h.StopEditing()
-	mid := h.Arrow(h.shape(arrow)).Mid
-	sc := h.ToScreen(h.PageMat(arrow).Apply(mid))
-	h.drag(sc.X, sc.Y, sc.X, sc.Y+30)
-	h.Next.Kind = "elbow"
-	h.SetTool(ToolArrow)
-	h.drag(700, 200, 900, 300)
-	h.Next = DefaultStyle()
-	h.SetTool(ToolDraw)
-	h.drag(0, 400, 200, 450)
-	h.SetTool(ToolHighlight)
-	h.drag(0, 500, 200, 550)
-	h.SetTool(ToolLine)
-	h.drag(300, 400, 500, 500)
-	h.SetTool(ToolText)
-	h.click(600, 400)
-	h.EditText = "text"
-	h.EditChanged()
-	h.StopEditing()
-	h.SetTool(ToolNote)
-	h.click(800, 500)
-	h.EditText = "note"
-	h.EditChanged()
-	h.StopEditing()
-	h.SetTool(ToolFrame)
-	h.drag(1000, 400, 1300, 600)
-	frame := h.Selection()[0]
-	h.update(frame, func(s *doc.Shape) { s.Name = "My frame" })
-	h.commit()
-	c := h.rect(1050, 450, 50, 50)
-	h.Select(a.ID, b.ID)
-	h.Group()
-	png1 := []byte{0x89, 'P', 'N', 'G'}
-	h.InsertImage("a.png", "image/png", png1, 64, 64, nil)
-	h.NewPage()
-	h.rect(0, 0, 100, 100)
-	_ = c
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := doc.Write(f, h.Doc); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestShapeDrawnInAFrameStaysUnderThePointer(t *testing.T) {
 	h := newHarness(t)
 	h.SetTool(ToolFrame)
@@ -1202,8 +1123,8 @@ func TestShadowFadesOut(t *testing.T) {
 	e := New(doc.New(), fakeMeasureForShadow)
 	s := doc.NewShape("shape:a", doc.TypeGeo)
 	s.Geo, s.W, s.H, s.Fill = "ellipse", 100, 100, "fill"
-	s.SetMeta(doc.MetaShadow, doc.Shadow{Blur: 40, Color: "#ff0000", Opacity: 0.8})
-	prims := e.shadowPrims(s, s.Shadow(), Light)
+	s.Shadow = &doc.Shadow{Blur: 40, Color: "#ff0000", Opacity: 0.8}
+	prims := e.shadowPrims(s, s.Shadow, Light)
 	if prims[0].Color.A > 0.02 {
 		t.Errorf("the outer edge has alpha %v", prims[0].Color.A)
 	}

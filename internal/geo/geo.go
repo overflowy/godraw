@@ -3,12 +3,26 @@
 package geo
 
 import (
+	"encoding/json"
 	"math"
 	"slices"
 )
 
 // Vec is a point or a direction.
 type Vec struct{ X, Y float64 }
+
+// MarshalJSON writes the vector as [x,y].
+func (a Vec) MarshalJSON() ([]byte, error) { return json.Marshal([2]float64{a.X, a.Y}) }
+
+// UnmarshalJSON reads a vector from [x,y].
+func (a *Vec) UnmarshalJSON(b []byte) error {
+	var p [2]float64
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	a.X, a.Y = p[0], p[1]
+	return nil
+}
 
 // V returns the vector (x, y).
 func V(x, y float64) Vec { return Vec{x, y} }

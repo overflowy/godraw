@@ -1,17 +1,15 @@
 # godraw
 
-A local, native whiteboard in the manner of [tldraw](https://github.com/tldraw/tldraw),
-written in Go and drawn with [MyGo](https://github.com/egoist/mygo)'s native UI: no web
-view, no JavaScript. It reads and writes tldraw's `.tldr` files.
-
-godraw is an independent reimplementation. It contains no tldraw code and isn't
-affiliated with tldraw, Inc.
+A local, native whiteboard written in Go and drawn with
+[MyGo](https://github.com/egoist/mygo)'s native UI: no web view, no JavaScript. Drawings are
+`.godraw` files: plain JSON, with a line for each page, shape, binding and image, so they
+diff well.
 
 ## Run
 
 ```sh
 go run .                    # a new drawing
-go run . drawing.tldr       # open a file
+go run . drawing.godraw      # open a file
 go tool mygo build          # package build/<platform>/godraw.app and a .dmg
 go test ./...
 task check                  # show every format, vet and lint issue, changing nothing
@@ -21,7 +19,7 @@ task fix                    # apply what the formatters and linters can fix them
 ## Try the showcase
 
 ```sh
-go run . examples/showcase.tldr
+go run . examples/showcase.godraw
 ```
 
 Three pages: a poster with a live diagram (drag a box and its arrows follow), a generative
@@ -32,7 +30,7 @@ regenerates it.
 
 ```sh
 go run ./examples/perf -n 500            # a page of 500 shapes, fitted to the window
-go run ./examples/perf -file my.tldr     # or a drawing of your own
+go run ./examples/perf -file my.godraw   # or a drawing of your own
 ```
 
 This opens a window that stays on top without taking the focus, moves the camera and drags shapes on a script, and prints how long the frames of each part took on the GPU. `go test ./internal/app -bench BenchmarkCanvas -run '^$'` measures the same interactions without a window, which is what to profile.
@@ -63,33 +61,11 @@ crash recovery, Open Recent, and pick-up of changes made to the file by other ap
 
 **View.** Pan, zoom and pinch, zoom to fit, minimap, dark mode, focus mode.
 
-## Compatibility with tldraw
+## Known limits
 
-Files are written at the versions of `@tldraw/tlschema` 5.6.0, and tldraw migrates them as
-it opens them. Against that package's validators, the app's output passes for every record
-type it writes, and the test fixture `internal/doc/testdata/tldraw.tldr` was made with
-tldraw's own encoder.
-
-What the app doesn't model is kept and written back: shapes of unknown types (embeds,
-bookmarks and video show as labeled boxes), record `meta`, and rich text you haven't edited.
-
-Known differences:
-
-- Rich text shows as plain text. Bold, lists and so on survive until you edit that text,
-  which then saves as plain paragraphs.
-- Clipboard data is godraw's own, so shapes don't paste across to tldraw. Use `.tldr` files
-  to move drawings between the two.
-- Hand-drawn strokes and arrow routing are drawn by this app's own algorithms, so they are
-  similar to tldraw's, not identical. The colors, sizes and fonts are tldraw's.
 - SVG export names its fonts instead of embedding them, so a viewer without Shantell Sans and
   IBM Plex falls back to others.
-- Elbow waypoints, a frame's heading size and font, labels above an arrow, hex colors,
-  gradients, shapes without an outline and label padding are this app's own. tldraw keeps
-  them in the file but doesn't show them: it shows the nearest palette color, the shape's
-  fill and a solid outline. It doesn't update waypoints
-  when shapes move. An elbow arrow from a shape back to itself runs through the shape in
-  tldraw, and a long label above an arrow wraps there as tldraw's labels do.
-- Not implemented: cropping images, note "clone" handles, video playback, multiplayer.
+- Not implemented: cropping images, video playback, multiplayer.
 
 ## Drawing from an agent
 
@@ -130,7 +106,7 @@ valid values. `d` takes an SVG path, so an agent can draw any outline with few t
 
 Agents work on the frontmost drawing unless they pass `doc`, and they wait while you drag
 or type. Their shapes are ordinary shapes: you can select, edit and undo them, and they save
-to `.tldr` like the rest. Agents can't save or name a drawing. That stays with you, in the
+to `.godraw` like the rest. Agents can't save or name a drawing. That stays with you, in the
 File menu.
 
 `apply` warns when text grows a box past the height asked for, when boxes overlap or a shape
@@ -138,7 +114,7 @@ covers text, naming what caused it, when a text shape sticks out of the box unde
 crosses a frame's name or the text of what it ends in, has a route that crosses itself or a `via` that only adds turns or goes far out of its way, when two arrows share a line, and when a frame clips something or its name runs into a shape. It only warns about what that call touched, and other warnings come before arrows that fan out from one anchor, which count as one trunk. `read` with `check` lists the warnings of the whole page.
 
 A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
-a rectangle and two text shapes, so it needs nothing special to open elsewhere.
+a rectangle and two text shapes.
 
 `dup` takes an `id` and `with`, what each copy changes, so that six cards of one form are one
 card and a list of what differs. Named styles (`{"style":{...},"name":"body"}`, then
@@ -146,8 +122,7 @@ card and a list of what differs. Named styles (`{"style":{...},"name":"body"}`, 
 outline's color, a rectangle or card takes a `radius`, and most shapes take a `shadow`, which
 with no offset and a bright color is a glow. `text`, `title` and `body` can be a list of runs,
 to mix fonts, colors and sizes or set a superscript. A `draw` can take `fn`, a formula, in
-place of a path. tldraw keeps all of these in `meta` and shows the plain text, a tint of the
-color and square corners.
+place of a path.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
 elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the
@@ -155,9 +130,7 @@ way. Those points move with the arrow when both its ends move alike, by an agent
 When only one end moves they stay, unless there's a clear way with fewer turns, keeping out
 of the shapes nearby: then the route takes it, and undo brings the points back. An elbow arrow
 with no points that's moved into a shape goes around it, adding points only for as long as it
-needs them. Arrows whose ends didn't move stay as they are. A frame's `size` and `font` set its name to match the cards it sits among. All of these
-and `label:"above"` are kept in the shape's `meta`, so tldraw opens the file and shows the
-arrow with its saved anchors and its own routing, and the frame with its usual heading.
+needs them. Arrows whose ends didn't move stay as they are. A frame's `size` and `font` set its name to match the cards it sits among.
 
 The server listens on this machine only and refuses requests from web pages, but it has no
 login, so other programs on the machine can use it. `src` on an image reads PNG, JPEG and
@@ -170,7 +143,7 @@ GIF files by path.
 | `main.go` | Documents, menus and the window |
 | `agent.go` | Starts the MCP server and gives it the open windows |
 | `internal/geo` | Vectors, matrices, paths, hit tests; no dependencies |
-| `internal/doc` | Records, fractional indices, and the `.tldr` format |
+| `internal/doc` | Records, fractional indices, and the `.godraw` format |
 | `internal/editor` | Camera, selection, tools and gestures, undo, and what each shape draws; no UI dependency, so it is tested without a window |
 | `internal/app` | The native UI: canvas painter, panels, keyboard, export |
 | `internal/agent` | The MCP server and what its tools do |

@@ -1,4 +1,4 @@
-// Showcase writes examples/showcase.tldr, a drawing that shows what godraw
+// Showcase writes examples/showcase.godraw, a drawing that shows what godraw
 // does. Everything in it is ordinary shapes: select, drag and edit any of it.
 //
 //	go run ./examples/showcase
@@ -119,7 +119,7 @@ func (b *builder) stroke(name string, pts []geo.Vec, p pen, parent doc.ID) *doc.
 		points = append(points, points[0])
 	}
 	s.Segments = []doc.Segment{{Type: "free", Points: points, Dim: 2}}
-	s.IsComplete, s.IsClosed = true, p.closed
+	s.IsClosed = p.closed
 	s.Color, s.Size = p.color, or(p.size, "m")
 	s.Fill, s.Dash = or(p.fill, "none"), or(p.dash, "draw")
 	if p.opacity > 0 {
@@ -225,8 +225,8 @@ func (b *builder) arrow(l link, parent doc.ID) *doc.Shape {
 		}
 		id := doc.ID(fmt.Sprintf("binding:%s-%s", s.ID[len("shape:"):], term))
 		b.d.Bindings[id] = &doc.Binding{
-			ID: id, Type: "arrow", From: s.ID, To: t.ID, Terminal: term,
-			Anchor: geo.V(0.5, 0.5), Snap: "none",
+			ID: id, From: s.ID, To: t.ID, Terminal: term,
+			Anchor: geo.V(0.5, 0.5),
 		}
 	}
 	tie("start", l.from)
@@ -319,10 +319,10 @@ func (b *builder) poster() {
 
 	// What it is.
 	mark := doc.NewShape(b.id("marker"), doc.TypeHighlight)
-	mark.X, mark.Y, mark.Color, mark.Size, mark.IsComplete = 216, 318, "yellow", "l", true
+	mark.X, mark.Y, mark.Color, mark.Size = 216, 318, "yellow", "l"
 	mark.Segments = []doc.Segment{{Type: "free", Dim: 2, Points: []doc.PointZ{{Z: .5}, {X: 80, Y: -2, Z: .5}, {X: 170, Y: 1, Z: .5}, {X: 248, Y: -1, Z: .5}}}}
 	b.add(mark, "")
-	b.text(words{x: 46, y: 228, text: "tldraw, rebuilt in Go.", size: "l", scale: 1.25}, "")
+	b.text(words{x: 46, y: 228, text: "A whiteboard, built in Go.", size: "l", scale: 1.25}, "")
 	b.text(words{x: 46, y: 284, text: "Native. No browser.", size: "l", scale: 1.25}, "")
 
 	// A bloom of ellipses in every color, drawn by hand.
@@ -357,7 +357,7 @@ func (b *builder) poster() {
 	list := node(540, 110, 190, "Display list", "green", "solid", "rectangle")
 	gpu := node(820, 110, 170, "Metal", "red", "solid", "hexagon")
 	docBox := node(280, 330, 170, "Document", "orange", "solid", "rectangle")
-	file := node(610, 330, 150, ".tldr file", "grey", "semi", "rectangle")
+	file := node(640, 330, 150, ".godraw file", "grey", "semi", "rectangle")
 	undo := node(40, 330, 150, "Undo", "light-blue", "pattern", "cloud")
 	b.arrow(link{from: pen0, to: ed}, f)
 	b.arrow(link{from: ed, to: list}, f)
@@ -373,7 +373,7 @@ func (b *builder) poster() {
 	// Facts, on paper.
 	b.note(1130, 470, -0.045, "yellow", "11.8 MB app.\nNo Electron.")
 	b.note(1362, 486, 0.03, "light-blue", "Drag all 1,700 strokes at 30 ms a frame")
-	b.note(1138, 700, 0.025, "light-green", "Opens your .tldr files")
+	b.note(1138, 700, 0.025, "light-green", "Saves to plain JSON")
 	b.note(1370, 716, -0.03, "violet", "Zero lines of JavaScript")
 	b.text(words{x: 1134, y: 925, text: "gopher after Renée French, CC BY", size: "s", color: "grey", font: "sans", scale: 0.72}, "")
 }
@@ -525,7 +525,7 @@ func (b *builder) styleSheet() {
 	// A real image, turned.
 	data := fractal(560, 400)
 	asset := &doc.Asset{
-		ID: "asset:fractal", Type: "image", W: 560, H: 400, Name: "fractal.png", Mime: "image/png",
+		ID: "asset:fractal", W: 560, H: 400, Name: "fractal.png", Mime: "image/png",
 		Src: "data:image/png;base64," + base64.StdEncoding.EncodeToString(data),
 	}
 	b.d.Assets[asset.ID] = asset
@@ -536,7 +536,7 @@ func (b *builder) styleSheet() {
 
 	// Highlighter over words.
 	mark := doc.NewShape(b.id("mark"), doc.TypeHighlight)
-	mark.X, mark.Y, mark.Color, mark.Size, mark.IsComplete = 1128, 868, "light-green", "m", true
+	mark.X, mark.Y, mark.Color, mark.Size = 1128, 868, "light-green", "m"
 	pts := []doc.PointZ{{}, {X: 60, Y: -2, Z: .5}, {X: 130, Y: 1, Z: .5}, {X: 212, Y: -1, Z: .5}}
 	mark.Segments = []doc.Segment{{Type: "free", Points: pts, Dim: 2}}
 	b.add(mark, "")
@@ -562,7 +562,7 @@ func main() {
 	b.flowField()
 	b.styleSheet()
 
-	out := "examples/showcase.tldr"
+	out := "examples/showcase.godraw"
 	if len(os.Args) > 1 {
 		out = os.Args[1]
 	}

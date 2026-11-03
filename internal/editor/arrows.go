@@ -3,6 +3,7 @@ package editor
 import (
 	"math"
 	"slices"
+	"strings"
 
 	"godraw/internal/doc"
 	"godraw/internal/geo"
@@ -368,20 +369,24 @@ func (e *Editor) arrowLabelBlock(s *doc.Shape) TextBlock {
 	size := arrowLabelSizeOf(s.Size) * s.Scale
 	b := e.TextBlockOf(s, text, size, 0)
 	if w := labelWidth(b.W, size, s.Scale, geo.BoxOf(e.Arrow(s).Line), labelAbove(s)); w < b.W {
-		b = e.TextBlockOf(s, text, size, w)
+		// Short of the room for a word, it takes the room: no word breaks in two.
+		for word := range strings.FieldsSeq(text) {
+			w = max(w, e.TextBlockOf(s, word, size, 0).W)
+		}
+		if w < b.W {
+			b = e.TextBlockOf(s, text, size, w)
+		}
 	}
 	return b
 }
 
 func labelAbove(s *doc.Shape) bool {
-	var side string
-	return s.MetaValue(doc.MetaLabel, &side) && side == "above"
+	return s.LabelSide == "above"
 }
 
-// labelWidth returns how wide an arrow's label may be. On the line, it's what
-// tldraw allows, so that it wraps the same there: a label on an arrow wider than
-// tall leaves some of the arrow showing, by wrapping if it has to. Above the line
-// it's in nothing's way, which tldraw has no way of saying.
+// labelWidth returns how wide an arrow's label may be. On the line, a label on an
+// arrow wider than tall leaves some of the arrow showing, by wrapping if it has to.
+// Above the line it's in nothing's way.
 func labelWidth(w, size, scale float64, body geo.Box, above bool) float64 {
 	const margin = 64.0
 	switch {

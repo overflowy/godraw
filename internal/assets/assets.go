@@ -3,8 +3,7 @@ package assets
 
 import "embed"
 
-// The fonts of the font styles are tldraw's own, so that text takes the same
-// room there as here.
+// The fonts of the font styles.
 var (
 	// DrawFont is Shantell Sans Informal (SIL OFL, see fonts/OFL-ShantellSans.txt).
 	//
@@ -13,7 +12,7 @@ var (
 
 	// SansFont, SerifFont and MonoFont are IBM Plex, as IBM released it (SIL OFL,
 	// see fonts/OFL-IBMPlex.txt). Plex is a reserved name, so these files stay
-	// unchanged, in their format too. tldraw's regular weight is Medium.
+	// unchanged, in their format too. Medium is the regular weight here.
 	//
 	//go:embed fonts/IBMPlexSans-Medium.ttf
 	SansFont []byte

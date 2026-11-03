@@ -549,7 +549,6 @@ func TestDensePageLosesNothing(t *testing.T) {
 			pts[k] = doc.PointZ{X: float64(k) * 6, Y: float64(k) * 5, Z: .5}
 		}
 		s.Segments = []doc.Segment{{Type: "free", Points: pts, Dim: 2}}
-		s.IsComplete = true
 		add(s)
 	}
 	// The last thing the canvas paints: a solid red box, in a corner of the view.

@@ -66,21 +66,6 @@ func Contrast(a, b Color) float64 {
 	return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 }
 
-// NearestColor returns the palette's color closest to a hex one, which is what
-// tldraw shows in its place.
-func NearestColor(hex string) string {
-	c := Hex(hex)
-	best, bestD := Colors[0], math.Inf(1)
-	for _, name := range Colors {
-		s := Light.Swatches[name].Solid
-		dr, dg, db := float64(c.R)-float64(s.R), float64(c.G)-float64(s.G), float64(c.B)-float64(s.B)
-		if d := dr*dr + dg*dg + db*db; d < bestD {
-			best, bestD = name, d
-		}
-	}
-	return best
-}
-
 // CSS returns the color as SVG takes it.
 func (c Color) CSS() string {
 	return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
@@ -91,8 +76,7 @@ type Swatch struct {
 	Solid, Semi, Pattern, Fill, Lined, NoteFill, NoteText, FrameStroke, FrameFill, FrameText, Highlight Color
 }
 
-// Palette is the colors of a theme: tldraw's, so that files look as they do
-// there.
+// Palette is the colors of a theme.
 type Palette struct {
 	Dark       bool
 	Text       Color
@@ -186,10 +170,14 @@ var Dark = &Palette{
 	},
 }
 
-// Swatch returns a color of the palette by name, black for names it has not.
+// Swatch returns a color of the palette by name, or of a shape's own by its hex,
+// and black for names it has not.
 func (p *Palette) Swatch(name string) Swatch {
 	if s, ok := p.Swatches[name]; ok {
 		return s
+	}
+	if IsHex(name) {
+		return p.custom(Hex(name))
 	}
 	return p.Swatches["black"]
 }
@@ -210,18 +198,13 @@ func (p *Palette) custom(c Color) Swatch {
 
 // SwatchOf returns what a shape's color paints with.
 func (p *Palette) SwatchOf(s *doc.Shape) Swatch {
-	var hex string
-	if s.MetaValue(doc.MetaColor, &hex) && IsHex(hex) {
-		return p.custom(Hex(hex))
-	}
 	return p.Swatch(s.Color)
 }
 
 // fillHexOf returns the color a shape fills with of its own, apart from its color.
 func fillHexOf(s *doc.Shape) (Color, bool) {
-	var hex string
-	if s.MetaValue(doc.MetaFill, &hex) && IsHex(hex) {
-		return Hex(hex), true
+	if IsHex(s.Fill) {
+		return Hex(s.Fill), true
 	}
 	return Color{}, false
 }
@@ -239,17 +222,13 @@ func (p *Palette) InkOf(s *doc.Shape) Color {
 	if s.Type == doc.TypeText {
 		return p.SwatchOf(s).Solid
 	}
-	var hex string
-	if s.MetaValue(doc.MetaLabelColor, &hex) && IsHex(hex) {
-		return Hex(hex)
-	}
 	if s.Type == doc.TypeNote && s.LabelColor == "black" {
 		return p.SwatchOf(s).NoteText
 	}
 	return p.Swatch(s.LabelColor).Solid
 }
 
-// Sizes of the size style, as tldraw has them.
+// Sizes of the size style.
 func strokeOf(size string) float64 {
 	switch size {
 	case "s":

@@ -121,7 +121,7 @@ func TestElbowMeetsTheNearEdge(t *testing.T) {
 	}
 }
 
-// A hexagon and an octagon have a point at the top, as tldraw draws them.
+// A hexagon and an octagon have a point at the top.
 func TestPolygonsHaveAPointOnTop(t *testing.T) {
 	for _, kind := range []string{"pentagon", "hexagon", "octagon"} {
 		pts := geoOutline(kind, 100, 100, "")

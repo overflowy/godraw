@@ -1292,47 +1292,30 @@ func assign(s *doc.Shape, f *fields) {
 			*dst = *v
 		}
 	}
-	color := func(dst *string, v *string, key string) {
-		if v == nil {
-			return
+	color := func(dst *string, v *string) {
+		if v != nil {
+			*dst = colorValue(*v)
 		}
-		if editor.IsHex(*v) {
-			*dst = editor.NearestColor(*v)
-			s.SetMeta(key, strings.ToLower(*v))
-			return
-		}
-		*dst = *v
-		s.SetMeta(key, nil)
 	}
-	color(&s.Color, f.Color, doc.MetaColor)
-	color(&s.LabelColor, f.LabelColor, doc.MetaLabelColor)
+	color(&s.Color, f.Color)
+	color(&s.LabelColor, f.LabelColor)
 	assignFill(s, f)
 	if f.Dash != nil && (*f.Dash != "none" || outlineOptional(s.Type)) {
-		// tldraw has no dash for this, so the file says one it has, and crisp.
-		if *f.Dash == "none" {
-			s.Dash = "solid"
-			s.SetMeta(doc.MetaNoOutline, true)
-		} else {
-			s.Dash = *f.Dash
-			s.SetMeta(doc.MetaNoOutline, nil)
-		}
+		s.Dash = *f.Dash
 	}
 	if f.Padding != nil {
-		s.SetMeta(doc.MetaPadding, *f.Padding)
+		padding := *f.Padding
+		s.Padding = &padding
 	}
 	if f.Radius != nil {
-		if *f.Radius == 0 {
-			s.SetMeta(doc.MetaRadius, nil)
-		} else {
-			s.SetMeta(doc.MetaRadius, *f.Radius)
-		}
+		s.Radius = *f.Radius
 	}
 	if f.Shadow != nil {
+		s.Shadow = nil
 		// What casts nothing is no shadow.
-		if f.Shadow.Blur == 0 && f.Shadow.X == 0 && f.Shadow.Y == 0 {
-			s.SetMeta(doc.MetaShadow, nil)
-		} else {
-			s.SetMeta(doc.MetaShadow, f.Shadow)
+		if f.Shadow.Blur != 0 || f.Shadow.X != 0 || f.Shadow.Y != 0 {
+			shadow := *f.Shadow
+			s.Shadow = &shadow
 		}
 	}
 	str(&s.Size, f.Size)
@@ -1367,54 +1350,41 @@ func assign(s *doc.Shape, f *fields) {
 	if f.Bend != nil {
 		s.Bend = *f.Bend
 	}
-	// tldraw's frames have no size or font of their own.
 	if s.Type == doc.TypeFrame {
-		if f.Size != nil {
-			s.SetMeta(doc.MetaFrameSize, *f.Size)
-		}
-		if f.Font != nil {
-			s.SetMeta(doc.MetaFrameFont, *f.Font)
-		}
+		str(&s.FrameSize, f.Size)
+		str(&s.FrameFont, f.Font)
 	}
 	if s.Type == doc.TypeText && f.W != nil {
 		s.AutoSize = false
 		s.W = *f.W / s.Scale
 	}
 	if f.Label != nil {
-		if *f.Label == "center" {
-			s.SetMeta(doc.MetaLabel, nil)
-		} else {
-			s.SetMeta(doc.MetaLabel, *f.Label)
+		s.LabelSide = ""
+		if *f.Label != "center" {
+			s.LabelSide = *f.Label
 		}
 	}
 	// Anchors asked for take over from straight.
 	if (f.Straight != nil && *f.Straight == "off") || f.FromAt != nil || f.ToAt != nil {
-		s.SetMeta(doc.MetaStraight, nil)
-		s.SetMeta(doc.MetaStraightAt, nil)
+		s.Straight, s.StraightAt = "", nil
 	} else if f.Straight != nil {
-		s.SetMeta(doc.MetaStraight, *f.Straight)
+		s.Straight = *f.Straight
 	}
 	if f.At != nil {
-		s.SetMeta(doc.MetaStraightAt, *f.At)
+		at := *f.At
+		s.StraightAt = &at
 	}
 }
 
 // assignFill writes what a shape fills with. A fill said alone takes over from a
-// gradient, and a gradient needs a fill for tldraw to show, and to be pressed on.
+// gradient, and a gradient needs a fill to be pressed on.
 func assignFill(s *doc.Shape, f *fields) {
 	if f.Fill != nil {
-		// tldraw has only tints of the shape's one color to show in its place.
-		if editor.IsHex(*f.Fill) {
-			s.Fill = "solid"
-			s.SetMeta(doc.MetaFill, strings.ToLower(*f.Fill))
-		} else {
-			s.Fill = *f.Fill
-			s.SetMeta(doc.MetaFill, nil)
-		}
-		s.SetMeta(doc.MetaGradient, nil)
+		s.Fill = colorValue(*f.Fill)
+		s.Gradient = nil
 	}
 	angle := 180.0
-	if g := s.Gradient(); g != nil {
+	if g := s.Gradient; g != nil {
 		angle = g.Angle
 	}
 	if f.GradientAngle != nil {
@@ -1424,19 +1394,26 @@ func assignFill(s *doc.Shape, f *fields) {
 	switch {
 	case f.Gradient != nil:
 		colors = *f.Gradient
-	case f.GradientAngle != nil && s.Gradient() != nil:
-		colors = s.Gradient().Colors
+	case f.GradientAngle != nil && s.Gradient != nil:
+		colors = s.Gradient.Colors
 	}
 	switch {
 	case len(colors) > 0:
-		s.SetMeta(doc.MetaGradient, doc.Gradient{Colors: colors, Angle: angle})
-		s.SetMeta(doc.MetaFill, nil)
-		if s.Fill == "none" {
+		s.Gradient = &doc.Gradient{Colors: colors, Angle: angle}
+		if s.Fill == "none" || editor.IsHex(s.Fill) {
 			s.Fill = "fill"
 		}
 	case f.Gradient != nil:
-		s.SetMeta(doc.MetaGradient, nil)
+		s.Gradient = nil
 	}
+}
+
+// colorValue returns a color or fill as a shape holds it: a hex in lower case.
+func colorValue(v string) string {
+	if editor.IsHex(v) {
+		return strings.ToLower(v)
+	}
+	return v
 }
 
 // sizeGeo gives a geo shape the size asked for. What isn't asked for fits its
@@ -1455,8 +1432,7 @@ func (r *run) sizeGeo(s *doc.Shape, f *fields) {
 		s.W = math.Min(b.W*k+pad+size/2, maxAuto)
 		s.H = size*editor.LineHeight*k + pad
 		// Padding said is a size asked for: no more than it takes.
-		var said float64
-		if !s.MetaValue(doc.MetaPadding, &said) {
+		if s.Padding == nil {
 			s.W, s.H = math.Max(s.W, 120), math.Max(s.H, 72)
 		}
 	}
@@ -1471,7 +1447,7 @@ func (r *run) sizeGeo(s *doc.Shape, f *fields) {
 func (r *run) addPicture(s *doc.Shape, o *op) {
 	p := o.picture
 	asset := &doc.Asset{
-		ID: doc.NewID("asset"), Type: "image", W: p.w, H: p.h, Name: p.name, Mime: p.mime,
+		ID: doc.NewID("asset"), W: p.w, H: p.h, Name: p.name, Mime: p.mime,
 		Src: "data:" + p.mime + ";base64," + base64.StdEncoding.EncodeToString(p.data),
 	}
 	r.e.PutAsset(asset)
@@ -1720,7 +1696,7 @@ func setStroke(s *doc.Shape, pts []geo.Vec, closed bool) {
 		points[i] = doc.PointZ{X: p.X - o.X, Y: p.Y - o.Y, Z: 0.5}
 	}
 	s.Segments = []doc.Segment{{Type: "free", Points: points, Dim: 2}}
-	s.IsComplete, s.IsClosed = true, closed
+	s.IsClosed = closed
 	s.ScaleX, s.ScaleY = 1, 1
 }
 
@@ -1832,10 +1808,10 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 	if elbow && f.Bend != nil && *f.Bend != 0 {
 		return errors.New("an elbow arrow can't bend; fromAt, toAt and via route it")
 	}
-	via := s.Via()
+	via := s.Via
 	if f.Via != nil {
 		m := r.e.PageMat(id).Invert()
-		via = via[:0]
+		via = nil
 		for _, p := range *f.Via {
 			via = append(via, m.Apply(geo.V(p[0], p[1])))
 		}
@@ -1846,11 +1822,10 @@ func (r *run) setRoute(id doc.ID, f *fields) error {
 		}
 		via = nil
 	}
-	var axis string
-	if len(via) > 0 && s.MetaValue(doc.MetaStraight, &axis) {
+	if len(via) > 0 && s.Straight != "" {
 		return errors.New(`a straight arrow runs level, so it can't take via; straight:"off" first`)
 	}
-	if len(via) != len(s.Via()) || f.Via != nil {
+	if len(via) != len(s.Via) || f.Via != nil {
 		c := s.Clone()
 		c.SetVia(via)
 		r.e.Put(c)
@@ -2093,7 +2068,7 @@ func (r *run) setOne(id doc.ID, o *op) error {
 		return errors.New("x1 and x2 are where a draw's fn runs, and this says none")
 	}
 	if f.GradientAngle != nil && f.Gradient == nil && !slices.ContainsFunc(r.leaves(id), func(l *doc.Shape) bool {
-		return l.Gradient() != nil
+		return l.Gradient != nil
 	}) {
 		return errors.New("gradientAngle goes with a gradient, and it has none")
 	}
@@ -2136,8 +2111,7 @@ func (r *run) setOne(id doc.ID, o *op) error {
 		if err := r.setRoute(id, f); err != nil {
 			return err
 		}
-		var axis string
-		straight := r.e.Doc.Shapes[id].MetaValue(doc.MetaStraight, &axis)
+		straight := r.e.Doc.Shapes[id].Straight != ""
 		if f.At != nil && !straight {
 			return errors.New(`at goes with straight:"h" or "v"`)
 		}

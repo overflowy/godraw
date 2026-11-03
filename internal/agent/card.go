@@ -39,11 +39,7 @@ func cardOf(e *editor.Editor, id doc.ID) *card {
 	c := &card{group: s}
 	for _, k := range e.Children(id) {
 		part := e.Doc.Shapes[k]
-		var role string
-		if !part.MetaValue(doc.MetaCard, &role) {
-			continue
-		}
-		switch role {
+		switch part.Card {
 		case "box":
 			c.box = part
 		case "head":
@@ -64,8 +60,7 @@ func (r *run) cardOf(id doc.ID) *card { return cardOf(r.e, id) }
 // chose, or else the shape itself.
 func ownerOf(e *editor.Editor, id doc.ID) doc.ID {
 	s := e.Doc.Shapes[id]
-	var role string
-	if s != nil && s.MetaValue(doc.MetaCard, &role) {
+	if s != nil && s.Card != "" {
 		if p := e.Doc.Shapes[s.Parent]; p != nil && p.Type == doc.TypeGroup {
 			return p.ID
 		}
@@ -118,7 +113,7 @@ func (r *run) newCardText(id, parent doc.ID, role string, text *textValue, f *fi
 	}
 	stylePart(s, role, f)
 	text.setOn(s)
-	s.SetMeta(doc.MetaCard, role)
+	s.Card = role
 	r.e.Put(s)
 	return s
 }
@@ -159,9 +154,9 @@ func (r *run) addCard(o *op) error {
 	box.Geo, box.Size = "rectangle", "s"
 	box.Parent, box.Index = parent, r.e.TopIndex(parent)
 	stylePart(box, "box", &f)
-	box.SetMeta(doc.MetaCard, "box")
+	box.Card = "box"
 	if o.H != nil {
-		box.SetMeta(doc.MetaCardH, *o.H)
+		box.CardH = *o.H
 		r.asked[boxID] = *o.H
 	}
 	r.e.Put(box)
@@ -255,10 +250,7 @@ func (r *run) fitCard(c *card, w float64) {
 		y += r.e.Geometry(k).Bounds.H + cardGap
 	}
 	h := y - cardGap + cardPad - box.Y
-	var asked float64
-	if box.MetaValue(doc.MetaCardH, &asked) {
-		h = math.Max(h, asked)
-	}
+	h = math.Max(h, box.CardH)
 	box.W, box.H, box.GrowY = w, h, 0
 	r.e.Put(box)
 	c.box = box
@@ -313,7 +305,7 @@ func (r *run) setCard(c *card, f *fields) (*fields, error) {
 	}
 	if f.H != nil {
 		k := c.box.Clone()
-		k.SetMeta(doc.MetaCardH, *f.H)
+		k.CardH = *f.H
 		r.e.Put(k)
 		c.box = k
 		r.asked[k.ID] = *f.H

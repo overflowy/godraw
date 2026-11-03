@@ -18,7 +18,6 @@ Each apply is one undo step, and an error in it changes nothing. It answers with
 An apply with several errors lists them all. Arguments of apply, beside ops: "dry":true gives the same answer, changes nothing, and ends with a token. "commit":TOKEN, in place of ops, then applies those ops, from the same page. "quiet":true lists only ids, not boxes.
 With several drawings open, read lists them; pass doc to pick one, or get the frontmost.
 read says if the window is light or dark; view can show either.
-tldraw opens these files, but routes arrows its own way and ignores via and label:"above". If a drawing is for tldraw, check it there.
 Only the person at the app can save or name a drawing, from the File menu, so tell them when you finish; export writes a picture of it to a PNG or SVG file you name. Quitting keeps unsaved drawings for the next launch.
 Read only the topics you need: shapes (kinds and their fields), styles (colors, fills, fonts), looks (corners, shadows, glows, mixed text), reuse (copies with changes, named styles), place (positions), layout (text sizes, warnings, cards, containers), arrows (ends, elbows, routes), paths (curves, formulas, free forms), edit (changing what exists).`,
 
@@ -35,18 +34,18 @@ line: d w h color dash size spline shadow. Draggable vertices; spline:"cubic" cu
 arrow: from to, or x1 y1 x2 y2, and more: see arrows.
 Example: [{"add":"rectangle","id":"a","text":"API","color":"blue","fill":"solid"},{"add":"ellipse","id":"b","text":"DB","right":"a"},{"add":"arrow","from":"a","to":"b","text":"reads"}]`,
 
-	"styles": `color: ` + strings.Join(styleEnums["color"], " ") + ` (a palette that adapts to dark mode), or "#rrggbb", the same in both themes and in tldraw the nearest of the palette. labelColor is the same, for labels.
-fill: ` + strings.Join(styleEnums["fill"], " ") + `, or "#rrggbb". semi is plain paper (near black in the dark theme), solid a tint of the color, pattern and lined-fill hatch it, fill the color itself. A hex fills with that color whatever the outline's: {"color":"#7aa2ff","fill":"#10163a"}; tldraw shows a tint of color instead.
-gradient:["blue","#ffffff"] fills with 2 to ` + strconv.Itoa(maxGradient) + ` colors, evenly spaced; [] clears it, as does a fill. gradientAngle is in degrees, as in CSS: 180, the default, runs top to bottom, 90 left to right. tldraw shows color and fill instead.
-dash: ` + strings.Join(styleEnums["dash"], " ") + `. draw is hand-drawn; solid is crisp; none has no outline, for shapes that fill (tldraw shows solid).
+	"styles": `color: ` + strings.Join(styleEnums["color"], " ") + ` (a palette that adapts to dark mode), or "#rrggbb", the same in both themes. labelColor is the same, for labels.
+fill: ` + strings.Join(styleEnums["fill"], " ") + `, or "#rrggbb". semi is plain paper (near black in the dark theme), solid a tint of the color, pattern and lined-fill hatch it, fill the color itself. A hex fills with that color whatever the outline's: {"color":"#7aa2ff","fill":"#10163a"}.
+gradient:["blue","#ffffff"] fills with 2 to ` + strconv.Itoa(maxGradient) + ` colors, evenly spaced; [] clears it, as does a fill. gradientAngle is in degrees, as in CSS: 180, the default, runs top to bottom, 90 left to right.
+dash: ` + strings.Join(styleEnums["dash"], " ") + `. draw is hand-drawn; solid is crisp; none has no outline, for shapes that fill.
 size: ` + strings.Join(styleEnums["size"], " ") + ` (stroke and text). font: ` + strings.Join(styleEnums["font"], " ") + `. scale multiplies text and notes.
 align, valign: start middle end. opacity: 0 to 1. spline: line cubic.
 arrow kind: arc elbow. head, tail: ` + strings.Join(styleEnums["head"], " ") + `.
 {"style":{...}} sets defaults for the rest of the ops in that apply: [{"style":{"color":"blue","dash":"solid"}},{"add":"star","w":80,"h":80}]. To keep them for later applies, name them: see reuse.`,
 
 	"looks": `radius rounds a rectangle's or card's corners, in px: {"add":"rectangle","radius":12,"w":120,"h":60}. 0 squares them.
-shadow:{"x":0,"y":4,"blur":12,"color":"#000000","opacity":0.35}, each optional, on geo, card, note, draw, line and image. No offset and a bright color is a glow: {"blur":24,"color":"#7aa2ff","opacity":0.7}. It stays under the shape if that fills; one that doesn't, or a line, glows along its line. A shadow with no blur or offset clears it. tldraw shows neither radius nor shadow.
-text, title and body take a string, or a list of strings and runs, to mix styles: ["E = mc",{"text":"2","sup":true}]. A run takes text font color scale sup sub; what it leaves out is the shape's. scale, ` + ratio(minRunScale) + ` to ` + ratio(maxRunScale) + `, multiplies its size. Lines break at spaces, not inside a word that spans runs. tldraw shows the plain text.
+shadow:{"x":0,"y":4,"blur":12,"color":"#000000","opacity":0.35}, each optional, on geo, card, note, draw, line and image. No offset and a bright color is a glow: {"blur":24,"color":"#7aa2ff","opacity":0.7}. It stays under the shape if that fills; one that doesn't, or a line, glows along its line. A shadow with no blur or offset clears it.
+text, title and body take a string, or a list of strings and runs, to mix styles: ["E = mc",{"text":"2","sup":true}]. A run takes text font color scale sup sub; what it leaves out is the shape's. scale, ` + ratio(minRunScale) + ` to ` + ratio(maxRunScale) + `, multiplies its size. Lines break at spaces, not inside a word that spans runs.
 Example: [{"add":"card","title":"Energy","body":["E = mc",{"text":"2","sup":true,"color":"violet"}],"radius":10,"fill":"#10163a","color":"#7aa2ff","labelColor":"#ffffff","shadow":{"blur":24,"color":"#7aa2ff"},"x":0,"y":0}]`,
 
 	"reuse": `dup copies with changes, for many things of one form: with is a list of what each copy changes, one copy per item, each dx further on. It takes what set takes, and an id. A single object changes every copy (n says how many). Without with, id names a single copy.
