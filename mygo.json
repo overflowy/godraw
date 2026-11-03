@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "out": "build",
   "macos": { "icon": "icon/AppIcon.icon" },
+  "linux": { "webview": false, "comment": "A local whiteboard", "categories": ["Graphics"] },
+  "updates": {
+    "publicKey": "fHQhcLBZI03cemFWM/3gA0yLOk8ll8dtH8IxmB9eir0=",
+    "github": "overflowy/godraw"
+  },
   "fileAssociations": [
     { "ext": ["godraw"], "name": "GoDraw Drawing", "mimeType": "application/vnd.godraw+json" }
   ]

@@ -6,6 +6,25 @@ UI, so there's no web view and no JavaScript.
 Drawings are `.godraw` files. They're plain JSON with one line for each page, shape, binding and
 image, so they diff well.
 
+## Install
+
+On macOS and Linux:
+
+```sh
+curl -fsSL https://github.com/overflowy/godraw/releases/latest/download/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://github.com/overflowy/godraw/releases/latest/download/install.ps1 | iex
+```
+
+The scripts check each download before installing it. Disk images and Windows installers are on
+the [releases page](https://github.com/overflowy/godraw/releases), but the apps aren't signed by a
+registered developer: macOS blocks an app from a downloaded disk image, and Windows shows a
+SmartScreen warning.
+
 ## Run
 
 ```sh
@@ -39,6 +58,20 @@ shapes on a script, then prints how long the frames of each part took on the GPU
 
 `go test ./internal/app -bench BenchmarkCanvas -run '^$'` measures the same interactions without
 a window. Profile that one.
+
+## Release
+
+Set `version` in `mygo.json`, commit, then push a tag with that version:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The Release workflow runs the tests, then builds macOS, Windows and Linux for arm64 and amd64 and
+uploads them to a draft release. Look it over and publish it. The install scripts use the latest
+published release. The workflow signs the downloads with the `MYGO_UPDATER_PRIVATE_KEY` repository
+secret, from `go tool mygo keygen`.
 
 ## What it does
 
