@@ -366,9 +366,9 @@ func (e *Editor) arrowLabelBlock(s *doc.Shape) TextBlock {
 		text = " "
 	}
 	size := arrowLabelSizeOf(s.Size) * s.Scale
-	b := e.Measure(text, s.Font, size, 0)
+	b := e.TextBlockOf(s, text, size, 0)
 	if w := labelWidth(b.W, size, s.Scale, geo.BoxOf(e.Arrow(s).Line), labelAbove(s)); w < b.W {
-		b = e.Measure(text, s.Font, size, w)
+		b = e.TextBlockOf(s, text, size, w)
 	}
 	return b
 }

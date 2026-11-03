@@ -1174,3 +1174,56 @@ func TestArrowMemoFollowsPlacement(t *testing.T) {
 		t.Errorf("the end of an arrow stayed at %v", got.End)
 	}
 }
+
+// A shadow's layers grow outward, whichever way round the outline runs, and a path
+// that ends where it began gets no stray point.
+func TestOffsetPolyGoesOut(t *testing.T) {
+	square := []geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(0, 100)}
+	back := []geo.Vec{square[3], square[2], square[1], square[0]}
+	closed := append(slices.Clone(square), square[0])
+	for name, pts := range map[string][]geo.Vec{"forward": square, "back": back, "closed": closed} {
+		out := geo.BoxOf(offsetPoly(pts, 10))
+		if math.Abs(out.X+10) > 1e-6 || math.Abs(out.Y+10) > 1e-6 || math.Abs(out.W-120) > 1e-6 || math.Abs(out.H-120) > 1e-6 {
+			t.Errorf("%s: %+v", name, out)
+		}
+	}
+	// A round shape grows evenly, with no point left behind or thrown out.
+	ring, _ := geo.EllipsePath(geo.Box{W: 100, H: 100}).Points(10)
+	for _, p := range offsetPoly(ring, 20) {
+		if d := p.Dist(geo.V(50, 50)); math.Abs(d-70) > 2 {
+			t.Errorf("%v is %v from the center", p, d)
+		}
+	}
+}
+
+// A glow fades out at its edge, so that the edge doesn't show, and comes to what was
+// asked for at the shape.
+func TestShadowFadesOut(t *testing.T) {
+	e := New(doc.New(), fakeMeasureForShadow)
+	s := doc.NewShape("shape:a", doc.TypeGeo)
+	s.Geo, s.W, s.H, s.Fill = "ellipse", 100, 100, "fill"
+	s.SetMeta(doc.MetaShadow, doc.Shadow{Blur: 40, Color: "#ff0000", Opacity: 0.8})
+	prims := e.shadowPrims(s, s.Shadow(), Light)
+	if prims[0].Color.A > 0.02 {
+		t.Errorf("the outer edge has alpha %v", prims[0].Color.A)
+	}
+	left := 1.0
+	for i, p := range prims {
+		left *= 1 - p.Color.A
+		if i > 0 && geo.BoxOf(pathPoints(p.Path)).W >= geo.BoxOf(pathPoints(prims[i-1].Path)).W {
+			t.Errorf("layer %d isn't inside the last", i)
+		}
+	}
+	if math.Abs(1-left-0.8) > 1e-6 {
+		t.Errorf("layers come to %v", 1-left)
+	}
+}
+
+func pathPoints(p *geo.Path) []geo.Vec {
+	pts, _ := p.Points(4)
+	return pts
+}
+
+func fakeMeasureForShadow(text, font string, size, width float64) TextBlock {
+	return TextBlock{Lines: []TextLine{{Text: text}}, Line: size, H: size}
+}

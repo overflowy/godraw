@@ -136,6 +136,9 @@ func (e *Editor) FillAt(s *doc.Shape, pal *Palette, q geo.Vec) (c Color, known b
 	if f := gradientOf(s, g.Outline, pal); f != nil {
 		return f.At(f.Along(q)), true
 	}
+	if c, ok := fillHexOf(s); ok {
+		return c, true
+	}
 	switch s.Fill {
 	case "semi":
 		return pal.Solid, true
@@ -182,27 +185,33 @@ func (e *Editor) Display(s *doc.Shape, pal *Palette) []Prim {
 }
 
 func (e *Editor) prims(s *doc.Shape, pal *Palette) []Prim {
+	var out []Prim
 	switch s.Type {
 	case doc.TypeGeo:
-		return e.geoPrims(s, pal)
+		out = e.geoPrims(s, pal)
 	case doc.TypeDraw:
-		return e.drawPrims(s, pal)
+		out = e.drawPrims(s, pal)
 	case doc.TypeHighlight:
-		return e.highlightPrims(s, pal)
+		out = e.highlightPrims(s, pal)
 	case doc.TypeLine:
-		return e.linePrims(s, pal)
+		out = e.linePrims(s, pal)
 	case doc.TypeText:
-		return e.textPrims(s, pal)
+		out = e.textPrims(s, pal)
 	case doc.TypeNote:
-		return e.notePrims(s, pal)
+		out = e.notePrims(s, pal)
 	case doc.TypeFrame:
-		return e.framePrims(s, pal)
+		out = e.framePrims(s, pal)
 	case doc.TypeImage:
-		return e.imagePrims(s, pal)
+		out = e.imagePrims(s, pal)
 	case doc.TypeGroup:
 		return nil
+	default:
+		out = e.unknownPrims(s, pal)
 	}
-	return e.unknownPrims(s, pal)
+	if sh := s.Shadow(); sh != nil {
+		out = append(e.shadowPrims(s, sh, pal), out...)
+	}
+	return out
 }
 
 func strokeWith(path *geo.Path, width float64, c Color) Prim {
@@ -424,6 +433,9 @@ func fillPrims(s *doc.Shape, base *geo.Path, poly []geo.Vec, sw Swatch, pal *Pal
 	if g := gradientOf(s, poly, pal); g != nil {
 		return []Prim{{Kind: PrimFill, Path: base, Color: g.Colors[0], Gradient: g}}
 	}
+	if c, ok := fillHexOf(s); ok {
+		return []Prim{fillWith(base, c)}
+	}
 	switch s.Fill {
 	case "semi":
 		return []Prim{fillWith(base, pal.Solid)}
@@ -455,10 +467,23 @@ func geoBasePath(s *doc.Shape, w, h float64, poly []geo.Vec) *geo.Path {
 	case "cloud":
 		return cloudPath(w, h, string(s.ID))
 	}
+	if r := radiusOf(s, w, h); r > 0 {
+		c := geo.Box{W: w, H: h}.Corners()
+		return geo.RoundedPoly(c[:], r)
+	}
 	if s.Dash == "draw" {
 		return geo.RoundedPoly(poly, math.Min(strokeOf(s.Size)*s.Scale*2, 10))
 	}
 	return (&geo.Path{}).Poly(poly, true)
+}
+
+// radiusOf returns how round a shape's corners were asked to be, as far as its
+// size allows.
+func radiusOf(s *doc.Shape, w, h float64) float64 {
+	if s.Geo != "rectangle" {
+		return 0
+	}
+	return math.Min(s.Radius(), math.Min(w, h)/2)
 }
 
 // geoBox returns the box that a geo shape's path is, if it is one.
@@ -466,6 +491,11 @@ func geoBox(s *doc.Shape, w, h float64) *RoundedBox {
 	switch s.Geo {
 	case "rectangle", "x-box", "check-box":
 	default:
+		return nil
+	}
+	// The GPU's corners on a Mac aren't quite round, which a stroke along a path that
+	// is would show at any size worth asking for.
+	if radiusOf(s, w, h) > 0 {
 		return nil
 	}
 	box := &RoundedBox{W: w, H: h}
@@ -504,14 +534,14 @@ func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 		out = append(out, strokeWith(inner, stroke, sw.Solid))
 	}
 	if s.Text != "" {
-		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s)))
+		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s), pal))
 	}
 	return out
 }
 
 // labelPrim draws a shape's label in its box.
-func (e *Editor) labelPrim(s *doc.Shape, box *geo.Box, size float64, c Color) Prim {
-	b := e.Measure(s.Text, s.Font, size, box.W)
+func (e *Editor) labelPrim(s *doc.Shape, box *geo.Box, size float64, c Color, pal *Palette) Prim {
+	b := inked(e.TextBlockOf(s, s.Text, size, box.W), pal)
 	b = alignBlock(b, box.W, s.Align)
 	return Prim{Kind: PrimText, Block: &b, X: box.X, Y: box.Y, Size: size, Font: s.Font, Color: c, Label: true}
 }
@@ -671,11 +701,11 @@ func (e *Editor) textPrims(s *doc.Shape, pal *Palette) []Prim {
 	g := e.Geometry(s)
 	var b TextBlock
 	if s.AutoSize {
-		b = e.Measure(s.Text, s.Font, size, 0)
+		b = e.TextBlockOf(s, s.Text, size, 0)
 	} else {
-		b = e.Measure(s.Text, s.Font, size, g.Bounds.W)
+		b = e.TextBlockOf(s, s.Text, size, g.Bounds.W)
 	}
-	b = alignBlock(b, g.Bounds.W, s.TextAlign)
+	b = alignBlock(inked(b, pal), g.Bounds.W, s.TextAlign)
 	return []Prim{{Kind: PrimText, Block: &b, Size: size, Font: s.Font, Color: pal.InkOf(s), Label: true}}
 }
 
@@ -700,7 +730,7 @@ func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 	body.Rounded = &RoundedBox{box, 6 * s.Scale}
 	out = append(out, body)
 	if s.Text != "" {
-		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s)))
+		out = append(out, e.labelPrim(s, g.Label, labelSizeOf(s.Size)*s.Scale, pal.InkOf(s), pal))
 	}
 	return out
 }
@@ -803,7 +833,7 @@ func (e *Editor) arrowPrims(s *doc.Shape, pal *Palette) []Prim {
 	if lb != nil {
 		size := arrowLabelSizeOf(s.Size) * s.Scale
 		pad := 4.25 * s.Scale
-		b := alignBlock(e.arrowLabelBlock(s), lb.W-2*pad, "middle")
+		b := alignBlock(inked(e.arrowLabelBlock(s), pal), lb.W-2*pad, "middle")
 		out = append(out, Prim{
 			Kind: PrimText, Block: &b, X: lb.X + pad, Y: lb.Y + pad, Size: size, Font: s.Font,
 			Color: pal.InkOf(s), Label: true,

@@ -93,7 +93,7 @@ func styleBody(body *doc.Shape, title string) {
 func stylePart(part *doc.Shape, role string, f *fields) {
 	switch role {
 	case "box":
-		assign(part, &fields{Color: f.Color, Fill: f.Fill, Gradient: f.Gradient, GradientAngle: f.GradientAngle, Dash: f.Dash, Opacity: f.Opacity})
+		assign(part, &fields{Color: f.Color, Fill: f.Fill, Gradient: f.Gradient, GradientAngle: f.GradientAngle, Dash: f.Dash, Opacity: f.Opacity, Radius: f.Radius, Shadow: f.Shadow})
 	case "head":
 		assign(part, &fields{Color: f.Color, Font: f.Font, Size: f.Size, Align: f.Align, Opacity: f.Opacity})
 	case "body":
@@ -109,7 +109,7 @@ func stylePart(part *doc.Shape, role string, f *fields) {
 }
 
 // newCardText adds a title or body to a card's parent.
-func (r *run) newCardText(id, parent doc.ID, role, text string, f *fields) *doc.Shape {
+func (r *run) newCardText(id, parent doc.ID, role string, text *textValue, f *fields) *doc.Shape {
 	s := doc.NewShape(id, doc.TypeText)
 	s.Parent, s.Index = parent, r.e.TopIndex(parent)
 	s.AutoSize = false
@@ -117,7 +117,7 @@ func (r *run) newCardText(id, parent doc.ID, role, text string, f *fields) *doc.
 		styleBody(s, s.Size)
 	}
 	stylePart(s, role, f)
-	s.SetText(text)
+	text.setOn(s)
 	s.SetMeta(doc.MetaCard, role)
 	r.e.Put(s)
 	return s
@@ -126,7 +126,7 @@ func (r *run) newCardText(id, parent doc.ID, role, text string, f *fields) *doc.
 func (r *run) addCard(o *op) error {
 	f := r.style
 	merge(&f, &o.fields)
-	if (f.Title == nil || *f.Title == "") && (f.Body == nil || *f.Body == "") {
+	if f.Title.isEmpty() && f.Body.isEmpty() {
 		return errors.New("a card needs a title or body")
 	}
 	id, err := r.freshID(o.ID)
@@ -168,20 +168,20 @@ func (r *run) addCard(o *op) error {
 
 	ids := []doc.ID{boxID}
 	c := &card{box: box}
-	if f.Title != nil && *f.Title != "" {
+	if !f.Title.isEmpty() {
 		pid, err := part("head")
 		if err != nil {
 			return err
 		}
-		c.head = r.newCardText(pid, parent, "head", *f.Title, &f)
+		c.head = r.newCardText(pid, parent, "head", f.Title, &f)
 		ids = append(ids, pid)
 	}
-	if f.Body != nil && *f.Body != "" {
+	if !f.Body.isEmpty() {
 		pid, err := part("body")
 		if err != nil {
 			return err
 		}
-		c.body = r.newCardText(pid, parent, "body", *f.Body, &f)
+		c.body = r.newCardText(pid, parent, "body", f.Body, &f)
 		ids = append(ids, pid)
 	}
 	w := r.naturalCardW(c)
@@ -232,7 +232,7 @@ func (r *run) naturalCardW(c *card) float64 {
 	w := 0.0
 	for _, t := range []*doc.Shape{c.head, c.body} {
 		if t != nil {
-			w = math.Max(w, r.e.Measure(t.Text, t.Font, editor.TextSize(t.Size)*t.Scale, 0).W)
+			w = math.Max(w, r.e.TextBlockOf(t, t.Text, editor.TextSize(t.Size)*t.Scale, 0).W)
 		}
 	}
 	return math.Max(cardMinW, math.Min(w+2*cardPad+1, cardMaxW))
@@ -274,16 +274,16 @@ func (r *run) setCard(c *card, f *fields) (*fields, error) {
 	rest := *f
 	rest.Title, rest.Body, rest.W, rest.H = nil, nil, nil, nil
 	rest.Color, rest.LabelColor, rest.Fill, rest.Dash, rest.Size, rest.Font, rest.BodyFont, rest.Align = nil, nil, nil, nil, nil, nil, nil, nil
-	rest.Gradient, rest.GradientAngle = nil, nil
+	rest.Gradient, rest.GradientAngle, rest.Radius, rest.Shadow = nil, nil, nil, nil
 
 	parts := []struct {
 		role string
 		part **doc.Shape
-		text *string
+		text *textValue
 	}{{"box", &c.box, nil}, {"head", &c.head, f.Title}, {"body", &c.body, f.Body}}
 	for _, p := range parts {
 		switch {
-		case p.text != nil && *p.text == "" && *p.part != nil:
+		case p.text != nil && p.text.isEmpty() && *p.part != nil:
 			other := c.head
 			if p.role == "head" {
 				other = c.body
@@ -294,17 +294,17 @@ func (r *run) setCard(c *card, f *fields) (*fields, error) {
 			r.e.Select((*p.part).ID)
 			r.e.Delete()
 			*p.part = nil
-		case p.text != nil && *p.text == "":
+		case p.text != nil && p.text.isEmpty():
 		case *p.part != nil:
 			k := (*p.part).Clone()
 			stylePart(k, p.role, f)
 			if p.text != nil {
-				k.SetText(*p.text)
+				p.text.setOn(k)
 			}
 			r.e.Put(k)
 			*p.part = k
 		case p.text != nil:
-			*p.part = r.newCardText(r.autoID(), c.group.ID, p.role, *p.text, f)
+			*p.part = r.newCardText(r.autoID(), c.group.ID, p.role, p.text, f)
 		}
 	}
 	w := c.box.W

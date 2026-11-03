@@ -477,7 +477,7 @@ func (s *scene) layer(ids []doc.ID, highlights bool) {
 
 func (s *scene) culled(sh *doc.Shape) bool {
 	b := s.e.PageBounds(sh.ID)
-	pad := 40.0 / s.cam.Z
+	pad := 40.0/s.cam.Z + editor.ShadowReach(sh)
 	if sh.Type == doc.TypeHighlight || sh.Type == doc.TypeDraw {
 		pad += 60
 	}
@@ -694,7 +694,9 @@ func (s *scene) text(pr editor.Prim, m geo.Mat, o float64) {
 	}
 	if math.Abs(rot) < 1e-4 {
 		for _, l := range pr.Block.Lines {
-			if l.Text != "" {
+			if len(l.Pieces) > 0 {
+				s.pieces(l, func(x, y float64) geo.Vec { return m.Apply(geo.V(pr.X+l.X+x, pr.Y+l.Y+y)) }, z, o, pr.Color)
+			} else if l.Text != "" {
 				draw(m.Apply(geo.V(pr.X+l.X, pr.Y+l.Y)), l.Text)
 			}
 		}
@@ -706,12 +708,32 @@ func (s *scene) text(pr editor.Prim, m geo.Mat, o float64) {
 	deg := float32(rot * 180 / math.Pi)
 	s.p.Transform(ui.Rotation(deg), float32(origin.X), float32(origin.Y), func() {
 		for _, l := range pr.Block.Lines {
+			if len(l.Pieces) > 0 {
+				s.pieces(l, func(x, y float64) geo.Vec { return origin.Add(geo.V((l.X+x)*z, (l.Y+y)*z)) }, z, o, pr.Color)
+				continue
+			}
 			if l.Text == "" {
 				continue
 			}
 			draw(origin.Add(geo.V(l.X*z, l.Y*z)), l.Text)
 		}
 	})
+}
+
+// pieces draws a line of parts in styles of their own, on one baseline, each
+// painted apart: a RichText's line would make room for a part that stands off it. at
+// takes a place in the line to the screen.
+func (s *scene) pieces(l editor.TextLine, at func(x, y float64) geo.Vec, z, o float64, ink editor.Color) {
+	base := (l.Tall-float64(naturalHeight(l.BigFont))*l.BigSize)/2 + float64(ascentOf(l.BigFont))*l.BigSize
+	for _, pc := range l.Pieces {
+		c := ink
+		if pc.Ink.A > 0 {
+			c = pc.Ink.Alpha(ink.A)
+		}
+		q := at(pc.X, base-pc.Rise-float64(ascentOf(pc.Font))*pc.Size)
+		s.span[0] = ui.Span{Text: pc.Text, Font: family(pc.Font), Size: float32(pc.Size * z), Color: toUI(c.Alpha(o))}
+		s.p.RichText(float32(q.X), float32(q.Y), 0, s.span[:]...)
+	}
 }
 
 func (s *scene) image(pr editor.Prim, m geo.Mat, o float64) {

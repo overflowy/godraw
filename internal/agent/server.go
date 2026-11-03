@@ -16,8 +16,11 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -68,16 +71,18 @@ const (
 
 // The tools, as agents see them on every turn: kept to what it takes to start.
 const (
-	guideDesc = "How to use apply. No topic: overview and topics."
-	readDesc  = "What is on the canvas, as compact text. ids: full detail of those shapes. find: search by text or kind."
-	applyDesc = `Change the canvas: ops run in order as one undo step, and an error changes nothing. E.g. {"add":"rectangle","id":"a","x":0,"y":0,"text":"Hi","color":"blue"} {"add":"arrow","from":"a","to":"b"} {"add":"draw","d":"M0 0C50 80 100 -80 150 0"} {"set":"a","fill":"solid"} {"del":"a"}. Every shape, style and verb: guide.`
-	viewDesc  = "See the page, some shapes or a box as a PNG, to check your work. Answers with the page box it shows."
+	guideDesc  = "How to use apply. No topic: overview and topics."
+	readDesc   = "What is on the canvas, as compact text. ids: full detail of those shapes. find: search by text or kind."
+	applyDesc  = `Change the canvas: ops run in order as one undo step, and an error changes nothing. E.g. {"add":"rectangle","id":"a","x":0,"y":0,"text":"Hi","color":"blue"} {"add":"arrow","from":"a","to":"b"} {"add":"draw","d":"M0 0C50 80 100 -80 150 0"} {"set":"a","fill":"solid"} {"del":"a"}. Every shape, style and verb: guide.`
+	viewDesc   = "See the page, some shapes or a box as a PNG, to check your work. Answers with the page box it shows."
+	exportDesc = "Write the page, some shapes or a box to a .png or .svg file."
 
-	docProp    = `"doc":{"type":"string"}`
-	guideInput = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","place","layout","arrows","paths","edit"]}}}`
-	readInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"check":{"type":"boolean","description":"Warnings of the whole page."}}}`
-	applyInput = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
-	viewInput  = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
+	docProp     = `"doc":{"type":"string"}`
+	guideInput  = `{"type":"object","properties":{"topic":{"type":"string","enum":["shapes","styles","looks","reuse","place","layout","arrows","paths","edit"]}}}`
+	readInput   = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"find":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"check":{"type":"boolean","description":"Warnings of the whole page."}}}`
+	applyInput  = `{"type":"object","properties":{` + docProp + `,"ops":{"type":"array","items":{"type":"object"}},"dry":{"type":"boolean","description":"Answer without changing anything, and with a commit token."},"commit":{"type":"string","description":"Apply a dry run's ops, instead of sending ops."},"quiet":{"type":"boolean","description":"Leave out each shape's box."}}}`
+	viewInput   = `{"type":"object","properties":{` + docProp + `,"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"description":"[x,y,w,h]"},"px":{"type":"integer","description":"Longest side. Default 768."},"theme":{"type":"string","enum":["light","dark"],"description":"Default: the window's."}}}`
+	exportInput = `{"type":"object","required":["path"],"properties":{` + docProp + `,"path":{"type":"string","description":"Absolute."},"overwrite":{"type":"boolean"},"page":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"box":{"type":"array","items":{"type":"number"}},"scale":{"type":"number"},"theme":{"type":"string","enum":["light","dark"]}}}`
 )
 
 // Handler returns the MCP server over HTTP.
@@ -100,6 +105,7 @@ func Handler(h Host, version string) http.Handler {
 	tool("read", readDesc, readInput, readOnly, s.read)
 	tool("apply", applyDesc, applyInput, nil, s.apply)
 	tool("view", viewDesc, viewInput, readOnly, s.view)
+	tool("export", exportDesc, exportInput, nil, s.export)
 
 	mux := http.NewServeMux()
 	// Web pages may not reach it, directly or by rebinding a name to this machine;
@@ -208,6 +214,24 @@ type server struct {
 	mu    sync.Mutex
 	dries []*dryRun // the latest, the oldest first
 	nDry  int
+	// styles is the named styles of each canvas, for as long as the app runs.
+	styles map[string]map[string]*fields
+}
+
+// stylesOf returns the named styles of a canvas, which apply doesn't change.
+func (s *server) stylesOf(canvas string) map[string]*fields {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.styles[canvas]
+}
+
+func (s *server) keepStyles(canvas string, styles map[string]*fields) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.styles == nil {
+		s.styles = map[string]map[string]*fields{}
+	}
+	s.styles[canvas] = styles
 }
 
 // dryRun is what a dry run was asked, kept for an agent to apply it without
@@ -360,6 +384,11 @@ func (s *server) read(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 	if err != nil {
 		return nil, err
 	}
+	if len(a.IDs) == 0 && !a.Check {
+		if names := slices.Sorted(maps.Keys(s.stylesOf(c.ID()))); len(names) > 0 && a.Find == "" {
+			out += "\nstyles: " + strings.Join(names, " ")
+		}
+	}
 	return text(out), nil
 }
 
@@ -376,6 +405,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 	}
 	var ops []*op
 	var committing *dryRun
+	var invalid *batchError
 	var err error
 	switch {
 	case a.Commit != "":
@@ -391,17 +421,25 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 		return nil, errors.New(`apply needs ops, or {"commit":TOKEN} from a dry run in place of them`)
 	default:
 		// Paths and images are done with before the window is held up.
-		if ops, err = decodeOps(a.Ops); err != nil {
+		if ops, err = decodeOps(a.Ops); err != nil && !errors.As(err, &invalid) {
 			return nil, err
 		}
 	}
 	var c Canvas
 	if a.Doc == "" && !a.Dry && len(s.host.Canvases()) == 0 {
+		// There's nothing to look at the rest against, and no call for a new window.
+		if invalid != nil {
+			return nil, invalid
+		}
 		if c, err = s.host.New(); err != nil {
 			return nil, err
 		}
 	} else if c, err = s.canvas(a.Doc); err != nil {
 		return nil, err
+	}
+	mode := applyMode{dry: a.Dry, quiet: a.Quiet, invalid: invalid, styles: s.stylesOf(c.ID())}
+	if !a.Dry {
+		mode.keep = func(styles map[string]*fields) { s.keepStyles(c.ID(), styles) }
 	}
 	var out string
 	var began doc.ID
@@ -416,7 +454,7 @@ func (s *server) apply(ctx context.Context, raw json.RawMessage) ([]mcp.Content,
 			}
 			began = e.Page
 			var err error
-			out, err = apply(e, ops, applyMode{dry: a.Dry, quiet: a.Quiet})
+			out, err = apply(e, ops, mode)
 			return err
 		})
 		if !errors.Is(err, editor.ErrBusy) {
@@ -497,4 +535,152 @@ func (s *server) view(ctx context.Context, raw json.RawMessage) ([]mcp.Content, 
 		&mcp.ImageContent{MIMEType: "image/png", Data: buf.Bytes()},
 		&mcp.TextContent{Text: caption},
 	}, nil
+}
+
+// exportArgs is what export asks for.
+type exportArgs struct {
+	Doc       string    `json:"doc"`
+	Path      string    `json:"path"`
+	Overwrite bool      `json:"overwrite"`
+	Page      string    `json:"page"`
+	IDs       names     `json:"ids"`
+	Box       []float64 `json:"box"`
+	Scale     float64   `json:"scale"`
+	Theme     string    `json:"theme"`
+}
+
+// defaultExportScale is as sharp as the File menu's PNG.
+const defaultExportScale = 2.0
+
+// export writes a picture to a file. It's a tool of its own, as view says that it
+// changes nothing, which clients take at its word.
+func (s *server) export(ctx context.Context, raw json.RawMessage) ([]mcp.Content, error) {
+	var a exportArgs
+	if err := strict(raw, &a); err != nil {
+		return nil, err
+	}
+	path, err := exportPath(a.Path)
+	if err != nil {
+		return nil, err
+	}
+	svg := strings.EqualFold(filepath.Ext(path), ".svg")
+	if a.Theme != "" && a.Theme != "light" && a.Theme != "dark" {
+		return nil, fmt.Errorf("theme %q: use light, dark", a.Theme)
+	}
+	if a.Scale < 0 || a.Scale > maxExportScale {
+		return nil, fmt.Errorf("scale must be from 0 to %s", num(maxExportScale))
+	}
+	if a.Scale == 0 {
+		a.Scale = defaultExportScale
+	}
+	c, err := s.canvas(a.Doc)
+	if err != nil {
+		return nil, err
+	}
+	var img *image.RGBA
+	var data []byte
+	var box geo.Box
+	err = onMain(ctx, c, func() error {
+		e := c.Editor()
+		was := e.DarkMode
+		defer func() { e.DarkMode = was }()
+		if a.Theme != "" {
+			e.DarkMode = a.Theme == "dark"
+		}
+		_, err := onPage(e, a.Page, func() (string, error) {
+			b, ids, _, err := viewPlan(e, viewArgs{IDs: a.IDs, Box: a.Box})
+			if err != nil {
+				return "", err
+			}
+			box = b
+			if svg {
+				data = e.SVGOf(b, ids, e.DarkMode)
+			} else {
+				img = c.Render(b, ids, a.Scale)
+			}
+			return "", nil
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	size := "vector, its text in IBM Plex or Shantell Sans where those are installed, else the nearest font"
+	if !svg {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			return nil, err
+		}
+		data = buf.Bytes()
+		size = fmt.Sprintf("%dx%d px", img.Bounds().Dx(), img.Bounds().Dy())
+	}
+	if err := writeExport(path, data, a.Overwrite); err != nil {
+		return nil, err
+	}
+	return text(fmt.Sprintf("wrote %s: %d bytes, %s, page box %s", path, len(data), size, boxText(box))), nil
+}
+
+// maxExportScale is sharper than a picture needs: a large page is limited anyway.
+const maxExportScale = 8.0
+
+// exportPath checks where a picture is to go, and says it in full.
+func exportPath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("export needs path, absolute and ending .png or .svg")
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, rest)
+	}
+	// Relative to what? The app's folder is nothing an agent knows of.
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path %q must be absolute", path)
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".svg":
+	default:
+		return "", fmt.Errorf("path %q must end .png or .svg", path)
+	}
+	return filepath.Clean(path), nil
+}
+
+// writeExport writes a picture. It only replaces a file when asked to, and then
+// whole: a failure leaves what was there.
+func writeExport(path string, data []byte, overwrite bool) error {
+	if !overwrite {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s exists; overwrite:true replaces it", path)
+		}
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(data)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(path) // what's half written is no use, and an error says why
+		}
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".godraw-export-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }() // gone already if the rename worked
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), 0o644)
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }

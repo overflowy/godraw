@@ -200,6 +200,7 @@ func setStyleOf(s *doc.Shape, p StyleProp, v string) {
 	case StyleFill:
 		s.Fill = v
 		s.SetMeta(doc.MetaGradient, nil)
+		s.SetMeta(doc.MetaFill, nil)
 	case StyleDash:
 		s.Dash = v
 		s.SetMeta(doc.MetaNoOutline, nil)
@@ -481,15 +482,15 @@ func (e *Editor) cleanGroups(ids map[doc.ID]bool) {
 
 // cloneShapes copies shapes with what they hold and the bindings among them,
 // above the originals, offset by d, and returns the new top shapes.
-func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec, fresh func() doc.ID) []doc.ID {
+func (e *Editor) cloneShapes(ids []doc.ID, d geo.Vec, fresh func(from doc.ID) doc.ID) []doc.ID {
 	tops := map[doc.ID]string{} // the next index in each parent
 	idmap := map[doc.ID]doc.ID{}
 	var all []doc.ID
 	for _, id := range ids {
-		idmap[id] = fresh()
+		idmap[id] = fresh(id)
 		all = append(all, id)
 		for _, k := range e.Descendants(id) {
-			idmap[k] = fresh()
+			idmap[k] = fresh(k)
 			all = append(all, k)
 		}
 	}
@@ -548,7 +549,7 @@ func (e *Editor) Duplicate() {
 	}
 	e.transact(func() {
 		d := 16 / e.Cam().Z
-		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d), newShapeID)...)
+		e.Select(e.cloneShapes(e.sorted(e.topSelected()), geo.V(d, d), func(doc.ID) doc.ID { return newShapeID() })...)
 	})
 }
 
@@ -1286,7 +1287,7 @@ func (e *Editor) visualBounds(id doc.ID) geo.Box {
 	if s.Type == doc.TypeFrame {
 		b = b.Union(e.FrameHeadingBox(s, 1))
 	}
-	return b.Expand(pad)
+	return b.Expand(pad + ShadowReach(s))
 }
 
 // WalkPaint calls fn for what ids paint, in order, with their transforms: as on
@@ -1332,7 +1333,11 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 		return nil, false
 	}
 	const pad = 32
-	box = box.Expand(pad)
+	return e.SVGOf(box.Expand(pad), ids, dark), true
+}
+
+// SVGOf returns shapes as an SVG document of a box of the page.
+func (e *Editor) SVGOf(box geo.Box, ids []doc.ID, dark bool) []byte {
 	pal := Light
 	if dark {
 		pal = Dark
@@ -1375,7 +1380,7 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 		b.WriteString(`</g>`)
 	})
 	b.WriteString(`</svg>`)
-	return b.Bytes(), true
+	return b.Bytes()
 }
 
 func xmlEscape(s string) string {
@@ -1442,6 +1447,24 @@ func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {
 		}
 		deg := m.Rotation() * 180 / math.Pi
 		for _, l := range p.Block.Lines {
+			if len(l.Pieces) > 0 {
+				// One text of spans, which flow on from each other: the fonts aren't in the
+				// file, and text placed for these would leave gaps in any other.
+				o := m.Apply(geo.V(p.X+l.X, p.Y+l.Y+l.BigSize*1.05))
+				fmt.Fprintf(b, `<text x="%.2f" y="%.2f" transform="rotate(%.2f %.2f %.2f)" xml:space="preserve">`, o.X, o.Y, deg, o.X, o.Y)
+				rise := 0.0
+				for _, pc := range l.Pieces {
+					c := p.Color
+					if pc.Ink.A > 0 {
+						c = pc.Ink.Alpha(p.Color.A)
+					}
+					fmt.Fprintf(b, `<tspan font-family="%s" font-size="%.2f" fill="%s" dy="%.2f">%s</tspan>`,
+						svgFontFamily(pc.Font), pc.Size, c.CSS(), rise-pc.Rise, xmlEscape(pc.Text))
+					rise = pc.Rise
+				}
+				b.WriteString(`</text>`)
+				continue
+			}
 			o := m.Apply(geo.V(p.X+l.X, p.Y+l.Y+p.Size*1.05))
 			fmt.Fprintf(b, `<text x="%.2f" y="%.2f" font-family="%s" font-size="%.2f" fill="%s" transform="rotate(%.2f %.2f %.2f)" xml:space="preserve">%s</text>`,
 				o.X, o.Y, svgFontFamily(p.Font), p.Size, p.Color.CSS(), deg, o.X, o.Y, xmlEscape(l.Text))

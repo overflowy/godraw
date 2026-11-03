@@ -72,7 +72,62 @@ func (r *run) allWarnings() []string {
 }
 
 // name is what warnings call a shape: the id an agent chose, not a card's part.
-func (r *run) name(id doc.ID) string { return shortID(ownerOf(r.e, id)) }
+func (r *run) name(id doc.ID) string { return r.called(ownerOf(r.e, id)) }
+
+// snippetLen is how much of a shape's text a warning shows, to say which it means.
+const snippetLen = 18
+
+// called is a shape's id as a warning says it. An id the agent chose says which shape
+// it is; one the server gave it doesn't, so a little of its text goes with it.
+func (r *run) called(id doc.ID) string {
+	name := shortID(id)
+	if !givenID(name) {
+		return name
+	}
+	if text := r.textOf(id); text != "" {
+		return fmt.Sprintf("%s %q", name, snippet(text))
+	}
+	return name
+}
+
+// givenID says whether an id looks like one the server gives, as s12 or s12-box.
+func givenID(name string) bool {
+	rest, ok := strings.CutPrefix(name, "s")
+	if !ok {
+		return false
+	}
+	digits := strings.IndexFunc(rest, func(c rune) bool { return c < '0' || c > '9' })
+	return digits != 0 && rest != "" && (digits < 0 || rest[digits] == '-')
+}
+
+// textOf returns what a shape says: its text or name, or a card's title or body.
+func (r *run) textOf(id doc.ID) string {
+	s := r.e.Doc.Shapes[id]
+	if s == nil {
+		return ""
+	}
+	if c := cardOf(r.e, id); c != nil {
+		if c.head != nil {
+			return c.head.Text
+		}
+		if c.body != nil {
+			return c.body.Text
+		}
+	}
+	if s.Text != "" {
+		return s.Text
+	}
+	return s.Name
+}
+
+// snippet returns the start of a text, on one line.
+func snippet(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if c := []rune(text); len(c) > snippetLen {
+		return string(c[:snippetLen]) + "…"
+	}
+	return text
+}
 
 // warned says that a check has found all it looks for, of every rank.
 func (r *run) warned() bool {
@@ -295,7 +350,7 @@ func (r *run) reportGrowth() {
 	var lines []string
 	for id, g := range r.grown {
 		if g.asked && !g.told {
-			lines = append(lines, shortID(id)+" "+g.String()+" to hold its text"+r.paddingHint(id, g))
+			lines = append(lines, r.called(id)+" "+g.String()+" to hold its text"+r.paddingHint(id, g))
 		}
 	}
 	slices.Sort(lines)
@@ -312,7 +367,7 @@ func (r *run) paddingHint(id doc.ID, g *growth) string {
 		return ""
 	}
 	w := r.e.Geometry(s).Bounds.W
-	if r.e.Measure(s.Text, s.Font, editor.LabelSize(s.Size)*s.Scale, w).H > g.from {
+	if r.e.TextBlockOf(s, s.Text, editor.LabelSize(s.Size)*s.Scale, w).H > g.from {
 		return ""
 	}
 	return "; padding:0 keeps it " + num(g.from) + " high"
@@ -349,7 +404,7 @@ func (r *run) textBox(s *doc.Shape) *geo.Box {
 	b := *g.Label
 	if s.Type == doc.TypeGeo || s.Type == doc.TypeNote {
 		w := 0.0
-		for _, l := range r.e.Measure(s.Text, s.Font, editor.LabelSize(s.Size)*s.Scale, math.Max(b.W, 8)).Lines {
+		for _, l := range r.e.TextBlockOf(s, s.Text, editor.LabelSize(s.Size)*s.Scale, math.Max(b.W, 8)).Lines {
 			w = math.Max(w, l.W)
 		}
 		switch s.Align {
@@ -448,9 +503,9 @@ func (r *run) tellClash(c *clash) {
 	same := c.up.owner == c.low.owner
 	name := func(it *item) string {
 		if same {
-			return shortID(it.s.ID)
+			return r.called(it.s.ID)
 		}
-		return shortID(it.owner)
+		return r.called(it.owner)
 	}
 	if c.kind == clashSticksOut {
 		r.warnAt(rankText, "%s's text sticks out of %s by %s", name(c.up), name(c.low), num(past(c.up.box, c.low.box)))
@@ -569,7 +624,7 @@ func (r *run) checkArrow(s *doc.Shape, bs, be *doc.Binding, items []*item) {
 					continue
 				}
 				if w, h := depth(page, *it.text); w > 1 && h > 1 {
-					r.warnAt(rankText, "%s's label covers %s's text", name, shortID(it.owner))
+					r.warnAt(rankText, "%s's label covers %s's text", name, r.called(it.owner))
 				}
 			}
 		}
@@ -670,11 +725,11 @@ func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.
 		inside := within(rawStart) || within(rawEnd)
 		if it.content && it.s.Type != doc.TypeFrame && !joins(it, bs) && !joins(it, be) {
 			if !inside && through() {
-				r.warn("%s runs through %s%s", name, shortID(it.owner), hint)
+				r.warn("%s runs through %s%s", name, r.called(it.owner), hint)
 				continue
 			}
 			if inside && it.text != nil && crosses(*it.text) {
-				r.warnAt(rankText, "%s runs over %s's text%s", name, shortID(it.owner), hint)
+				r.warnAt(rankText, "%s runs over %s's text%s", name, r.called(it.owner), hint)
 				continue
 			}
 		}
@@ -684,7 +739,7 @@ func (r *run) checkCrossings(s *doc.Shape, name string, m geo.Mat, info *editor.
 			continue
 		}
 		if edge, run := runAlong(pts, it.box); run >= minAlong {
-			r.warnAt(rankLayout, "%s runs along %s's %s edge for %s%s", name, shortID(it.owner), edge, num(run), hint)
+			r.warnAt(rankLayout, "%s runs along %s's %s edge for %s%s", name, r.called(it.owner), edge, num(run), hint)
 		}
 	}
 }
@@ -1012,7 +1067,7 @@ func (r *run) inkBox(s *doc.Shape) geo.Box {
 		size, align = editor.TextSize(s.Size)*s.Scale, s.TextAlign
 	}
 	w := 0.0
-	for _, l := range r.e.Measure(s.Text, s.Font, size, math.Max(b.W, 8)).Lines {
+	for _, l := range r.e.TextBlockOf(s, s.Text, size, math.Max(b.W, 8)).Lines {
 		w = math.Max(w, l.W)
 	}
 	w = math.Min(w, b.W)
@@ -1225,7 +1280,7 @@ func (r *run) checkHeadings(ids []doc.ID, items []*item, touched map[doc.ID]bool
 				continue
 			}
 			if w, h := depth(box, it.box); w > 1 && h > 1 {
-				r.warnAt(rankLayout, "frame %s's name runs into %s", shortID(id), shortID(it.owner))
+				r.warnAt(rankLayout, "frame %s's name runs into %s", shortID(id), r.called(it.owner))
 			}
 		}
 	}

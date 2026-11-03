@@ -47,6 +47,13 @@ const (
 type TextLine struct {
 	Text    string
 	X, Y, W float64
+	// A line of parts in styles of their own has them, and how tall the largest makes
+	// it. Other lines are Text in the style of their block.
+	Pieces []TextPiece
+	Tall   float64
+	// The largest part's size and font, which set where the line's baseline goes.
+	BigSize float64
+	BigFont string
 }
 
 // TextBlock is laid out text: its lines start at X 0 before alignment.

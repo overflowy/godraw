@@ -805,7 +805,7 @@ func (g *translateGesture) setCloned(e *Editor, on bool) {
 		for _, id := range g.ids {
 			e.put(g.initial[id].Moved())
 		}
-		clones := e.cloneShapes(g.ids, geo.Vec{}, newShapeID)
+		clones := e.cloneShapes(g.ids, geo.Vec{}, func(doc.ID) doc.ID { return newShapeID() })
 		g.cloned = clones
 		e.Select(clones...)
 		return
@@ -1537,12 +1537,12 @@ func (e *Editor) fitLabel(s *doc.Shape) {
 			s.GrowY = 0
 			return
 		}
-		b := e.Measure(text, s.Font, size, math.Max(s.W-2*pad, 8))
+		b := e.TextBlockOf(s, text, size, math.Max(s.W-2*pad, 8))
 		s.GrowY = math.Max(0, b.H+2*pad-s.H)
 	case doc.TypeNote:
 		size := labelSizeOf(s.Size) * s.Scale
 		pad := LabelPad(s)
-		b := e.Measure(s.Text+" ", s.Font, size, noteSize*s.Scale-2*pad)
+		b := e.TextBlockOf(s, s.Text+" ", size, noteSize*s.Scale-2*pad)
 		s.GrowY = math.Max(0, (b.H+2*pad-noteSize*s.Scale)/s.Scale)
 	}
 }

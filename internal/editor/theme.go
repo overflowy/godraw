@@ -217,6 +217,23 @@ func (p *Palette) SwatchOf(s *doc.Shape) Swatch {
 	return p.Swatch(s.Color)
 }
 
+// fillHexOf returns the color a shape fills with of its own, apart from its color.
+func fillHexOf(s *doc.Shape) (Color, bool) {
+	var hex string
+	if s.MetaValue(doc.MetaFill, &hex) && IsHex(hex) {
+		return Hex(hex), true
+	}
+	return Color{}, false
+}
+
+// colorOf returns what a color an op or run can name paints with.
+func (p *Palette) colorOf(name string) Color {
+	if IsHex(name) {
+		return Hex(name)
+	}
+	return p.Swatch(name).Solid
+}
+
 // InkOf returns the color of a shape's text.
 func (p *Palette) InkOf(s *doc.Shape) Color {
 	if s.Type == doc.TypeText {

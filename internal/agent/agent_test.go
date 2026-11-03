@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -1309,13 +1310,13 @@ func TestToolsStayCheap(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"guide", "read", "apply", "view"} {
+	for _, want := range []string{"guide", "read", "apply", "view", "export"} {
 		if !names[want] {
 			t.Errorf("no tool %s", want)
 		}
 	}
 	// What the handlers take, a client must be told: a strict one refuses the rest.
-	declared := map[string][]string{"apply": {"ops", "dry", "commit", "quiet"}, "read": {"check"}, "view": {"theme"}}
+	declared := map[string][]string{"apply": {"ops", "dry", "commit", "quiet"}, "read": {"check"}, "view": {"theme"}, "export": {"path", "overwrite", "scale", "theme", "ids", "box", "page"}}
 	for _, tool := range res.Tools {
 		schema, _ := json.Marshal(tool.InputSchema)
 		for _, want := range declared[tool.Name] {
@@ -1333,11 +1334,12 @@ func TestToolsStayCheap(t *testing.T) {
 	}
 	data, _ := json.Marshal(res.Tools)
 	visible := len(data)
-	// The app-side ones don't exist: there are exactly the four.
-	if len(res.Tools) != 4 {
+	// The app-side ones don't exist: there are exactly the five.
+	if len(res.Tools) != 5 {
 		t.Errorf("%d tools", len(res.Tools))
 	}
-	const budget = 2200
+	// Export writes files, so it can't be part of view, which says it changes nothing.
+	const budget = 2650
 	if visible > budget {
 		t.Errorf("tool definitions take %d bytes, over %d", visible, budget)
 	}
@@ -2125,7 +2127,7 @@ func TestWrongTypesTeach(t *testing.T) {
 		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"kind":"elbow","via":"bad"}]`:     "via is a list of [x,y] points",
 		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"fromAt":["a","b"]}]`:             "fromAt and toAt are [x,y]",
 		`[{"add":"rectangle","x":"5"}]`:                                                "x must be a number",
-		`[{"add":"rectangle","text":5}]`:                                               "text must be a string",
+		`[{"add":"rectangle","text":5}]`:                                               "a text is a string",
 		`[{"add":"rectangle","locked":"yes"}]`:                                         "locked must be true or false",
 		`[{"add":5}]`:                                                                  "add must be a string",
 		`[{"dup":"a","n":"two"}]`:                                                      "n must be a whole number",
@@ -3046,5 +3048,662 @@ func TestCardBodyFont(t *testing.T) {
 	ops(t, e, `[{"set":"k","font":"serif"}]`)
 	if h, b := e.Doc.Shapes["shape:k-head"].Font, e.Doc.Shapes["shape:k-body"].Font; h != "serif" || b != "serif" {
 		t.Errorf("font alone sets both: title %s, body %s", h, b)
+	}
+}
+
+// The feedback that named the mismatch: the guide said a fill could be a hex.
+func TestFillTakesAHexApartFromTheOutline(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":60,"color":"#7aa2ff","fill":"#10163A"},
+		{"add":"card","id":"c","title":"T","x":200,"y":0,"color":"#7aa2ff","fill":"#10163a"},
+		{"add":"draw","id":"d","d":"M0 200L100 200L50 300Z","fill":"#102030"}]`)
+	s := e.Doc.Shapes[shapeID("a")]
+	if got, ok := e.FillAt(s, editor.Light, geo.V(50, 30)); !ok || got.CSS() != "#10163a" {
+		t.Errorf("fill paints %s", got.CSS())
+	}
+	if got := editor.Light.SwatchOf(s).Solid.CSS(); got != "#7aa2ff" {
+		t.Errorf("outline paints %s", got)
+	}
+	// It's the same in either theme, and what tldraw reads stays one of its own.
+	if got, _ := e.FillAt(s, editor.Dark, geo.V(50, 30)); got.CSS() != "#10163a" {
+		t.Errorf("dark fill paints %s", got.CSS())
+	}
+	if s.Fill != "solid" {
+		t.Errorf("file says fill %q", s.Fill)
+	}
+	box := e.Doc.Shapes[shapeID("c-box")]
+	if got, _ := e.FillAt(box, editor.Light, geo.V(10, 10)); got.CSS() != "#10163a" {
+		t.Errorf("card fill paints %s", got.CSS())
+	}
+	if got, _ := read(e, readArgs{IDs: names{"a"}}, "", ""); !strings.Contains(got, "fill #10163a") {
+		t.Errorf("read: %s", got)
+	}
+	// Another fill takes over, and so does a gradient.
+	ops(t, e, `[{"set":"a","fill":"solid"}]`)
+	if got, _ := e.FillAt(e.Doc.Shapes[shapeID("a")], editor.Light, geo.V(50, 30)); got.CSS() == "#10163a" {
+		t.Error("a palette fill left the hex behind")
+	}
+	ops(t, e, `[{"set":"a","fill":"#112233"},{"set":"a","gradient":["#000000","#ffffff"]}]`)
+	if s := e.Doc.Shapes[shapeID("a")]; s.Gradient() == nil || s.MetaValue(doc.MetaFill, new(string)) {
+		t.Error("a gradient didn't take over from the hex")
+	}
+	if _, err := tryOps(e, `[{"add":"star","fill":"#12"}]`); err == nil || !strings.Contains(err.Error(), "#rrggbb") {
+		t.Errorf("a bad hex: %v", err)
+	}
+	// The style panel's fill takes over too.
+	ops(t, e, `[{"set":"a","fill":"#112233"}]`)
+	e.Select(shapeID("a"))
+	e.SetStyle(editor.StyleFill, "fill")
+	if s := e.Doc.Shapes[shapeID("a")]; s.MetaValue(doc.MetaFill, new(string)) {
+		t.Error("the panel's fill left the hex behind")
+	}
+}
+
+func TestDupWithChanges(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"card","id":"c1","title":"One","body":"First","x":0,"y":0,"w":200,"color":"blue"},
+		{"dup":"c1","dx":300,"with":[{"id":"c2","title":"Two"},{"id":"c3","title":"Three","color":"red","dy":10}]}]`)
+	wantBox(t, e, "c2", 300, 0, 200, boxOf(e, shapeID("c1")).H)
+	if b := boxOf(e, shapeID("c3")); !near(b.X, 600) || !near(b.Y, 10) {
+		t.Errorf("c3 at %s", boxText(b))
+	}
+	if got := cardOf(e, shapeID("c2")); got == nil || got.head.Text != "Two" || got.body.Text != "First" {
+		t.Errorf("c2: %+v", got)
+	}
+	if got := cardOf(e, shapeID("c3")); got == nil || colorName(got.head) != "red" {
+		t.Errorf("c3: %+v", got)
+	}
+	if got := e.Doc.Shapes[shapeID("c1-head")]; got.Text != "One" {
+		t.Errorf("the original changed: %s", got.Text)
+	}
+	// A card's parts have names that can be worked out.
+	for _, name := range []string{"c2-box", "c2-head", "c2-body", "c3-head"} {
+		if e.Doc.Shapes[shapeID(name)] == nil {
+			t.Errorf("no %s", name)
+		}
+	}
+	ops(t, e, `[{"set":"c2-body","text":"Second"}]`)
+
+	// A hand-made group the same way, and one change for every copy.
+	ops(t, e, `[{"add":"rectangle","id":"t-bg","x":0,"y":400,"w":100,"h":100},{"add":"text","id":"t-n","text":"01","x":10,"y":410},
+		{"group":["t-bg","t-n"],"id":"t"},{"dup":"t","id":"u","dx":200},{"set":"u-n","text":"02"},
+		{"dup":"t-bg","dx":10,"dy":500,"n":2,"with":{"color":"green"}}]`)
+	if got := e.Doc.Shapes[shapeID("u-n")]; got == nil || got.Text != "02" {
+		t.Errorf("u-n: %+v", got)
+	}
+	if got := e.Doc.Shapes[shapeID("t-n")]; got.Text != "01" {
+		t.Errorf("t-n: %s", got.Text)
+	}
+	for _, tc := range []struct{ ops, want string }{
+		{`[{"dup":"c1","id":"x","n":2}]`, "names one copy"},
+		{`[{"dup":["c1","c2"],"id":"x"}]`, "copies several"},
+		{`[{"dup":"c1","n":3,"with":[{"title":"a"},{"title":"b"}]}]`, "leave n out"},
+		{`[{"dup":"c1","id":"c2"}]`, "taken"},
+		{`[{"dup":"c1","with":{"nope":1}}]`, "nope"},
+		{`[{"dup":"c1","with":{"color":"nope"}}]`, "color"},
+		{`[{"dup":"c1","with":{"text":"no"}}]`, "takes title body"},
+		{`[{"set":"c1","with":{"title":"a"}}]`, "with goes with dup"},
+		{`[{"dup":"c1","with":[]}]`, "what a copy changes"},
+	} {
+		if _, err := tryOps(e, tc.ops); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.ops, err, tc.want)
+		}
+	}
+}
+
+func TestNamedStylesLast(t *testing.T) {
+	e := newEditor()
+	styles := map[string]*fields{}
+	mode := applyMode{keep: func(m map[string]*fields) { styles = m }}
+	run := func(list string) string {
+		t.Helper()
+		parsed, err := decodeOps(json.RawMessage(list))
+		if err != nil {
+			t.Fatalf("%s: %v", list, err)
+		}
+		mode.styles = styles
+		out, err := apply(e, parsed, mode)
+		if err != nil {
+			t.Fatalf("%s: %v", list, err)
+		}
+		return out
+	}
+	run(`[{"style":{"font":"serif","size":"s","scale":0.85,"color":"#112233","radius":8},"name":"body"}]`)
+	// In a later apply, under what the op says, without what its kind doesn't take.
+	run(`[{"add":"text","id":"a","text":"A","use":"body","color":"red","x":0,"y":0},
+		{"add":"rectangle","id":"r","w":100,"h":50,"use":"body","x":0,"y":100},
+		{"add":"star","id":"s","w":50,"h":50,"x":200,"y":0},{"set":"s","use":"body"}]`)
+	a := e.Doc.Shapes[shapeID("a")]
+	if a.Font != "serif" || a.Size != "s" || a.Scale != 0.85 || colorName(a) != "red" {
+		t.Errorf("a: %s %s %v %s", a.Font, a.Size, a.Scale, colorName(a))
+	}
+	if r := e.Doc.Shapes[shapeID("r")]; r.Radius() != 8 || r.Scale != 1 {
+		t.Errorf("r: radius %v scale %v", r.Radius(), r.Scale)
+	}
+	if s := e.Doc.Shapes[shapeID("s")]; s.Font != "serif" {
+		t.Errorf("set didn't use it: %s", s.Font)
+	}
+	// One can build on another, and be the batch's defaults.
+	run(`[{"style":{"use":"body","size":"l"},"name":"title"},{"style":{"use":"title"}},{"add":"text","id":"b","text":"B","x":0,"y":300}]`)
+	if b := e.Doc.Shapes[shapeID("b")]; b.Size != "l" || b.Font != "serif" {
+		t.Errorf("b: %s %s", b.Size, b.Font)
+	}
+	// A dry run or a failed batch defines nothing.
+	dry := mode
+	dry.dry, dry.styles, dry.keep = true, styles, nil
+	list, _ := decodeOps(json.RawMessage(`[{"style":{"size":"xl"},"name":"ghost"}]`))
+	if _, err := apply(e, list, dry); err != nil {
+		t.Fatal(err)
+	}
+	if styles["ghost"] != nil {
+		t.Error("a dry run kept a style")
+	}
+	list, _ = decodeOps(json.RawMessage(`[{"style":{"size":"xl"},"name":"ghost"},{"del":"nope"}]`))
+	mode.styles = styles
+	if _, err := apply(e, list, mode); err == nil || styles["ghost"] != nil {
+		t.Errorf("a failed batch kept a style: %v", err)
+	}
+	if _, err := tryOps(e, `[{"add":"star","use":"nope"}]`); err == nil || !strings.Contains(err.Error(), `no style "nope"`) {
+		t.Errorf("unknown style: %v", err)
+	}
+	if _, err := tryOps(e, `[{"style":{"x":1},"name":"p"}]`); err == nil || !strings.Contains(err.Error(), `can't set "x"`) {
+		t.Errorf("style with a place: %v", err)
+	}
+}
+
+// Over the server, what a style names lasts from one call to the next, and read
+// says which there are.
+func TestNamedStylesOverTheServer(t *testing.T) {
+	h := &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: newEditor()}}}
+	s := connect(t, h)
+	call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"style": map[string]any{"color": "red"}, "name": "alert"}}})
+	if got := textOf(call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"add": "star", "id": "a", "use": "alert"}}})); !strings.HasPrefix(got, "ok") {
+		t.Fatal(got)
+	}
+	if got := textOf(call(t, s, "read", map[string]any{})); !strings.Contains(got, "styles: alert") {
+		t.Errorf("read: %s", got)
+	}
+}
+
+func TestAllErrorsAtOnce(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"star","id":"real","x":0,"y":0}]`)
+	_, err := tryOps(e, `[{"add":"star","fill":"nope"},{"add":"rectangle","id":"ok","x":0,"y":0},{"add":"blob"},{"set":"ok","nope":1}]`)
+	if err == nil {
+		t.Fatal("no error")
+	}
+	for _, want := range []string{"3 ops failed", "ops[0]: fill", "ops[2]: can't add", "ops[3]:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q lacks %q", err, want)
+		}
+	}
+	if e.Doc.Shapes[shapeID("ok")] != nil {
+		t.Error("something was changed")
+	}
+
+	// Together: what can't be read, and what fails as it runs.
+	list, err := decodeOps(json.RawMessage(`[{"add":"star","fill":"nope"},{"add":"star","id":"x","right":"ghost"},{"set":"ghost2","color":"red"},{"del":"ghost3"}]`))
+	if err == nil {
+		t.Fatal("no decode error")
+	}
+	var invalid *batchError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("%T", err)
+	}
+	_, err = apply(e, list, applyMode{invalid: invalid})
+	for _, want := range []string{"4 ops failed", "ops[0]: fill", "ops[1]:", `ops[2]: no shape "ghost2"`, `ops[3]: no shape "ghost3"`} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v lacks %q", err, want)
+		}
+	}
+
+	// What only uses what failed isn't blamed as well.
+	_, err = tryOps(e, `[{"add":"blob","id":"a"},{"add":"star","id":"b","right":"a"},{"set":"a","color":"red"},{"add":"arrow","from":"b","to":"real"},{"set":"a-box","color":"red"}]`)
+	if err == nil || strings.Contains(err.Error(), "ops[1]") || strings.Contains(err.Error(), "ops[2]") || strings.Contains(err.Error(), "ops[3]") {
+		t.Errorf("blamed what follows: %v", err)
+	}
+	// Run, not read: the same goes for what fails as it runs.
+	_, err = tryOps(e, `[{"add":"star","id":"c","right":"ghost"},{"set":"c","color":"red"},{"del":"ghost4"}]`)
+	if err == nil || strings.Contains(err.Error(), "ops[1]") || !strings.Contains(err.Error(), "ops[0]") || !strings.Contains(err.Error(), "ops[2]") {
+		t.Errorf("runtime cascade: %v", err)
+	}
+	// One error reads as it always has.
+	if _, err = tryOps(e, `[{"del":"ghost"}]`); err == nil || !strings.HasPrefix(err.Error(), `ops[0]: no shape "ghost"`) || !strings.HasSuffix(err.Error(), "nothing was changed") {
+		t.Errorf("one error: %v", err)
+	}
+	// A page that isn't there would make the rest look wrong: it stops there.
+	_, err = tryOps(e, `[{"delPage":"nope"},{"set":"real2","color":"red"}]`)
+	if err == nil || strings.Contains(err.Error(), "ops[1]") {
+		t.Errorf("past a page: %v", err)
+	}
+	// Many are cut short, and say so.
+	var many []string
+	for range 30 {
+		many = append(many, `{"del":"ghost"}`)
+	}
+	_, err = tryOps(e, "["+strings.Join(many, ",")+"]")
+	if err == nil || !strings.Contains(err.Error(), "30 ops failed") || !strings.Contains(err.Error(), "and 10 more") {
+		t.Errorf("many: %v", err)
+	}
+	// No new window for a batch that can't work.
+	h := &fakeHost{}
+	s := connect(t, h)
+	res := call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"add": "blob"}}})
+	if !res.IsError || len(h.Canvases()) != 0 {
+		t.Errorf("opened a window for %s", textOf(res))
+	}
+}
+
+// Warnings say which shape they mean, when its id can't.
+func TestWarningsQuoteWhatTheyMean(t *testing.T) {
+	e := newEditor()
+	out := ops(t, e, `[{"add":"rectangle","x":0,"y":0,"w":200,"h":60,"text":"Wave-particle duality of light","fill":"solid"},
+		{"add":"rectangle","x":0,"y":0,"w":200,"h":60,"text":"02","fill":"solid"}]`)
+	if !strings.Contains(out, `s2 "02"`) || !strings.Contains(out, `s1 "Wave-particle dual…"`) {
+		t.Errorf("no snippets:\n%s", out)
+	}
+	// An id the agent chose already says which it means.
+	e = newEditor()
+	out = ops(t, e, `[{"add":"rectangle","id":"under","x":0,"y":0,"w":200,"h":60,"text":"One","fill":"solid"},
+		{"add":"rectangle","id":"over","x":0,"y":0,"w":200,"h":60,"text":"Two","fill":"solid"}]`)
+	if strings.Contains(out, `"One"`) || strings.Contains(out, `"Two"`) {
+		t.Errorf("snippets on chosen ids:\n%s", out)
+	}
+	for name, want := range map[string]bool{"s1": true, "s12": true, "s12-box": true, "s": false, "s1x": false, "sa": false, "a1": false, "-s1": false} {
+		if givenID(name) != want {
+			t.Errorf("givenID(%q) = %v", name, !want)
+		}
+	}
+}
+
+func TestQuietStillListsIDs(t *testing.T) {
+	e := newEditor()
+	list, _ := decodeOps(json.RawMessage(`[{"add":"star","x":0,"y":0},{"add":"star","x":100,"y":0},{"add":"star","x":200,"y":0},{"add":"star","id":"mine","x":300,"y":0},{"add":"star","x":400,"y":0}]`))
+	out, err := apply(e, list, applyMode{quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "added 5: s1-s3 mine s4") {
+		t.Errorf("quiet:\n%s", out)
+	}
+	if strings.Contains(out, "0,0") && strings.Contains(out, "s1 0,0") {
+		t.Errorf("quiet has boxes:\n%s", out)
+	}
+	for _, tc := range []struct {
+		ids  []doc.ID
+		want string
+	}{
+		{[]doc.ID{"shape:s1", "shape:s2"}, "s1 s2"},
+		{[]doc.ID{"shape:s9", "shape:s10", "shape:s11", "shape:s13"}, "s9-s11 s13"},
+		{[]doc.ID{"shape:a", "shape:s1", "shape:s01", "shape:s2", "shape:s3"}, "a s1 s01 s2 s3"},
+	} {
+		if got := idRanges(tc.ids); got != tc.want {
+			t.Errorf("idRanges(%v) = %s", tc.ids, got)
+		}
+	}
+}
+
+// Numbers that are multiples show what they are: a scale of 0.85 isn't one of 0.9.
+func TestRatiosKeepTheirPrecision(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"text","id":"a","text":"A","scale":0.85,"opacity":0.35}]`)
+	got, _ := read(e, readArgs{IDs: names{"a"}}, "", "")
+	if !strings.Contains(got, "scale 0.85") || !strings.Contains(got, "opacity 0.35") {
+		t.Errorf("read: %s", got)
+	}
+	if !strings.Contains(guideTopics["layout"], "A line is 1.35 times") {
+		t.Errorf("the guide says otherwise: %s", guideTopics["layout"])
+	}
+}
+
+func TestPlotFormulas(t *testing.T) {
+	at := func(src string, x float64) float64 {
+		t.Helper()
+		f, err := parseFn(src)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		return f(x)
+	}
+	for _, tc := range []struct {
+		src  string
+		x    float64
+		want float64
+	}{
+		{"1+2*3", 0, 7},
+		{"(1+2)*3", 0, 9},
+		{"-x^2", 3, -9},
+		{"2^3^2", 0, 512},
+		{"2^-1", 0, 0.5},
+		{"10%3", 0, 1},
+		{"x/2", 8, 4},
+		{"sin(pi/2)", 0, 1},
+		{"max(x,2)", 1, 2},
+		{"min(x,2)", 1, 1},
+		{"gauss(x,5,2)", 5, 1},
+		{"1.5e2", 0, 150},
+		{"1e-1", 0, 0.1},
+		{"tau", 0, 2 * math.Pi},
+		{"sign(-3)", 0, -1},
+		{" 1 + x ", 1, 2},
+		{"atan2(0,1)", 0, 0},
+	} {
+		if got := at(tc.src, tc.x); math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("%s at %v = %v, want %v", tc.src, tc.x, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"", "1+", "(1", "x y", "2x", "nope", "nope(1)", "sin(1,2)", "min(1)", "gauss(1)", "1..2", "@", strings.Repeat("(", 100) + "1" + strings.Repeat(")", 100), strings.Repeat("-", 100) + "1", strings.Repeat("1", maxFnLen+1)} {
+		if _, err := parseFn(bad); err == nil {
+			t.Errorf("%q parsed", clip(bad))
+		}
+	}
+	e := newEditor()
+	ops(t, e, `[{"add":"draw","id":"w","fn":"300+40*sin(tau*x/100)","x1":100,"x2":500,"dash":"solid"}]`)
+	b := boxOf(e, shapeID("w"))
+	if math.Abs(b.X-100) > 1 || math.Abs(b.W-400) > 1 || math.Abs(b.Y-260) > 1 || math.Abs(b.H-80) > 1 {
+		t.Errorf("wave at %s", boxText(b))
+	}
+	// As any path: x, y and w move and scale it.
+	ops(t, e, `[{"add":"draw","id":"m","fn":"x^2","x1":0,"x2":10,"x":50,"y":60,"w":200,"h":100}]`)
+	if b := boxOf(e, shapeID("m")); math.Abs(b.X-50) > 1 || math.Abs(b.Y-60) > 1 || math.Abs(b.W-200) > 1 || math.Abs(b.H-100) > 1 {
+		t.Errorf("placed at %s", boxText(b))
+	}
+	// Where it has no value, it's in pieces, which come back as a group.
+	ops(t, e, `[{"add":"draw","id":"h","fn":"100/(x-50)","x1":0,"x2":100}]`)
+	if s := e.Doc.Shapes[shapeID("h")]; s.Type != doc.TypeDraw && s.Type != doc.TypeGroup {
+		t.Errorf("h is %s", s.Type)
+	}
+	// And set takes a new one.
+	ops(t, e, `[{"set":"w","fn":"100","x1":0,"x2":50}]`)
+	if b := boxOf(e, shapeID("w")); math.Abs(b.W-50) > 1 || b.H > 1 {
+		t.Errorf("set: %s", boxText(b))
+	}
+	for _, tc := range []struct{ ops, want string }{
+		{`[{"add":"draw","fn":"x"}]`, "needs x1 and x2"},
+		{`[{"add":"draw","fn":"x","x1":0,"x2":0}]`, "apart"},
+		{`[{"add":"draw","fn":"nope","x1":0,"x2":10}]`, `"nope" isn't known`},
+		{`[{"add":"draw","fn":"sqrt(-1)","x1":0,"x2":10}]`, "no values"},
+		{`[{"add":"draw","fn":"x","d":"M0 0L1 1","x1":0,"x2":1}]`, "one of d, fn"},
+		{`[{"add":"draw","d":"M0 0L1 1","x1":0}]`, "fn"},
+		{`[{"add":"star","fn":"x","x1":0,"x2":1}]`, `no "fn"`},
+	} {
+		if _, err := tryOps(newEditor(), tc.ops); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.ops, err, tc.want)
+		}
+	}
+}
+
+func TestRadiusAndShadow(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":200,"h":100,"radius":20,"dash":"solid","fill":"fill"},
+		{"add":"rectangle","id":"sq","x":0,"y":200,"w":200,"h":100,"dash":"solid"},
+		{"add":"card","id":"c","title":"T","x":300,"y":0,"radius":12,"shadow":{"blur":20,"color":"#7aa2ff"}},
+		{"add":"ellipse","id":"e","x":0,"y":400,"w":100,"h":100,"fill":"fill","shadow":{"blur":30,"opacity":0.5}}]`)
+	r := e.Doc.Shapes[shapeID("r")]
+	// Its outline rounds the corners that arrows and presses go by.
+	box := e.Geometry(r).Bounds
+	if geo.PointInPolygon(geo.V(box.X+1, box.Y+1), e.Geometry(r).Outline) {
+		t.Error("the corner is still inside")
+	}
+	if !geo.PointInPolygon(geo.V(100, 50), e.Geometry(r).Outline) {
+		t.Error("the middle is outside")
+	}
+	if len(e.Geometry(e.Doc.Shapes[shapeID("sq")]).Outline) != 4 {
+		t.Error("a square one changed")
+	}
+	if e.Doc.Shapes[shapeID("c-box")].Radius() != 12 {
+		t.Error("the card didn't pass on its radius")
+	}
+	// What a shadow reaches counts in what a picture shows.
+	if b, v := e.PageBounds(shapeID("e")), e.VisualBounds(shapeID("e")); v.X > b.X-30 {
+		t.Errorf("visual bounds %s of %s", boxText(v), boxText(b))
+	}
+	// It's under the shape: its prims come first.
+	el := e.Doc.Shapes[shapeID("e")]
+	prims := e.Display(el, editor.Light)
+	if len(prims) < 5 || prims[0].Color.A >= 0.5 || prims[len(prims)-1].Color.A != 1 {
+		t.Errorf("%d prims, first alpha %v", len(prims), prims[0].Color.A)
+	}
+	// All its layers build up to the opacity asked for.
+	left := 1.0
+	n := 0
+	for _, p := range prims {
+		if p.Color.A < 1 {
+			left *= 1 - p.Color.A
+			n++
+		}
+	}
+	if math.Abs(1-left-0.5) > 0.01 || n < 4 {
+		t.Errorf("%d layers come to %v", n, 1-left)
+	}
+	// In the file it's meta alone.
+	if got, _ := read(e, readArgs{IDs: names{"e"}}, "", ""); !strings.Contains(got, "shadow blur 30 opacity 0.5") {
+		t.Errorf("read: %s", got)
+	}
+	// It clears, and a radius does.
+	ops(t, e, `[{"set":"e","shadow":{}},{"set":"r","radius":0}]`)
+	if e.Doc.Shapes[shapeID("e")].Shadow() != nil {
+		t.Error("the shadow stayed")
+	}
+	if len(e.Geometry(e.Doc.Shapes[shapeID("r")]).Outline) != 4 {
+		t.Error("the radius stayed")
+	}
+	// A group reaches what it holds, and a style can say them.
+	ops(t, e, `[{"style":{"radius":5,"shadow":{"blur":4}}},{"add":"rectangle","id":"st","x":0,"y":700,"w":40,"h":40}]`)
+	if s := e.Doc.Shapes[shapeID("st")]; s.Radius() != 5 || s.Shadow() == nil {
+		t.Error("style didn't say them")
+	}
+	for _, tc := range []struct{ ops, want string }{
+		{`[{"add":"rectangle","radius":-1}]`, "radius"},
+		{`[{"add":"rectangle","shadow":{"blur":-1}}]`, "blur"},
+		{`[{"add":"rectangle","shadow":{"opacity":2}}]`, "opacity"},
+		{`[{"add":"rectangle","shadow":{"color":"nope"}}]`, "shadow color"},
+		{`[{"add":"rectangle","shadow":{"nope":1}}]`, "nope"},
+		{`[{"add":"rectangle","shadow":3}]`, "shadow is"},
+		{`[{"add":"text","text":"a","shadow":{"blur":3}}]`, `no "shadow"`},
+		{`[{"add":"star","shadow":{"blur":99999}}]`, "goes up to"},
+	} {
+		if _, err := tryOps(newEditor(), tc.ops); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.ops, err, tc.want)
+		}
+	}
+}
+
+func TestRunsMixStyles(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"text","id":"a","x":0,"y":0,"text":["h = 6.6e",{"text":"-34","sup":true,"color":"#ff0000"}," J"]},
+		{"add":"text","id":"plain","x":0,"y":100,"text":"h = 6.6e-34 J"}]`)
+	a := e.Doc.Shapes[shapeID("a")]
+	if a.Text != "h = 6.6e-34 J" {
+		t.Errorf("text: %q", a.Text)
+	}
+	// Smaller than the same text plain, as a superscript is.
+	if wa, wp := e.Geometry(a).Bounds.W, e.Geometry(e.Doc.Shapes[shapeID("plain")]).Bounds.W; wa >= wp {
+		t.Errorf("%v wide, plain %v", wa, wp)
+	}
+	var block *editor.TextBlock
+	for _, p := range e.Display(a, editor.Light) {
+		if p.Kind == editor.PrimText {
+			block = p.Block
+		}
+	}
+	if block == nil || len(block.Lines) != 1 {
+		t.Fatalf("block: %+v", block)
+	}
+	pieces := block.Lines[0].Pieces
+	if len(pieces) != 3 || pieces[1].Text != "-34" || pieces[1].Rise <= 0 || pieces[1].Size >= pieces[0].Size || pieces[1].Ink.CSS() != "#ff0000" {
+		t.Fatalf("pieces: %+v", pieces)
+	}
+	if pieces[1].X <= pieces[0].X || pieces[2].X <= pieces[1].X {
+		t.Errorf("out of order: %+v", pieces)
+	}
+	// Words wrap, but not inside one that spans runs.
+	ops(t, e, `[{"add":"text","id":"w","x":0,"y":200,"w":90,"text":["aaaa bbbb cc",{"text":"dd","sup":true}," ee"]}]`)
+	w := e.Doc.Shapes[shapeID("w")]
+	var lines []string
+	for _, p := range e.Display(w, editor.Light) {
+		if p.Kind == editor.PrimText {
+			for _, l := range p.Block.Lines {
+				lines = append(lines, l.Text)
+			}
+		}
+	}
+	if !slices.Contains(lines, "ccdd ee") && !slices.Contains(lines, "ccdd") {
+		t.Errorf("broke inside a word: %q", lines)
+	}
+	if e.Geometry(w).Bounds.H <= editor.TextSize("m")*editor.LineHeight {
+		t.Errorf("didn't wrap: %q", lines)
+	}
+	// A newline breaks a line, and a larger run makes its line taller.
+	ops(t, e, `[{"add":"text","id":"n","x":0,"y":400,"text":["a\nb",{"text":"c","scale":2}]}]`)
+	tall := editor.TextSize("m") * editor.LineHeight
+	if got := e.Geometry(e.Doc.Shapes[shapeID("n")]).Bounds.H; !near(got, 3*tall) {
+		t.Errorf("%v tall, want %v", got, 3*tall)
+	}
+	// Labels and cards take them too, and fit.
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":600,"text":["a",{"text":"2","sub":true}]},
+		{"add":"card","id":"c","x":300,"y":600,"title":["T",{"text":"1","sub":true}],"body":["b",{"text":"2","sup":true}]},
+		{"add":"arrow","id":"ar","from":"r","to":"c","text":["x",{"text":"2","sup":true}]}]`)
+	if got := e.Doc.Shapes[shapeID("c-body")]; got.Text != "b2" || len(got.Runs()) != 2 {
+		t.Errorf("card body: %q %v", got.Text, got.Runs())
+	}
+	// New text has no use for the runs of the old; the same text keeps them.
+	ops(t, e, `[{"set":"a","text":"h = 6.6e-34 J"}]`)
+	if len(e.Doc.Shapes[shapeID("a")].Runs()) != 3 {
+		t.Error("the same text lost its runs")
+	}
+	ops(t, e, `[{"set":"a","text":"plain now"}]`)
+	if s := e.Doc.Shapes[shapeID("a")]; s.Runs() != nil || s.MetaValue(doc.MetaRuns, &[]doc.Run{}) {
+		t.Error("new text kept the runs")
+	}
+	// A file edited elsewhere keeps its meta, and the runs no longer add up.
+	s := e.Doc.Shapes[shapeID("n")].Clone()
+	s.Text = "other"
+	if s.Runs() != nil {
+		t.Error("runs of another text")
+	}
+	// Plain strings alone are plain text.
+	ops(t, e, `[{"add":"text","id":"p","text":["a","b"],"x":0,"y":900}]`)
+	if s := e.Doc.Shapes[shapeID("p")]; s.Text != "ab" || s.Runs() != nil {
+		t.Errorf("p: %q %v", s.Text, s.Runs())
+	}
+	for _, tc := range []struct{ ops, want string }{
+		{`[{"add":"text","text":[]}]`, "a text is a string"},
+		{`[{"add":"text","text":[3]}]`, "a text is a string"},
+		{`[{"add":"text","text":[{"text":""}]}]`, "needs text"},
+		{`[{"add":"text","text":[{"text":"a","font":"x"}]}]`, "run font"},
+		{`[{"add":"text","text":[{"text":"a","color":"x"}]}]`, "run color"},
+		{`[{"add":"text","text":[{"text":"a","scale":9}]}]`, "run scale"},
+		{`[{"add":"text","text":[{"text":"a","sup":true,"sub":true}]}]`, "one of sup, sub"},
+		{`[{"add":"text","text":[{"text":"a","bold":true}]}]`, "bold"},
+	} {
+		if _, err := tryOps(newEditor(), tc.ops); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.ops, err, tc.want)
+		}
+	}
+}
+
+func TestSVGOfRunsAndFill(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"text","id":"a","x":0,"y":0,"text":["x",{"text":"2","sup":true}]},
+		{"add":"rectangle","id":"r","x":0,"y":100,"w":100,"h":50,"fill":"#102030","radius":10,"shadow":{"blur":8,"color":"#ff0000"}}]`)
+	svg, ok := e.SVG(false)
+	if !ok {
+		t.Fatal("no svg")
+	}
+	for _, want := range []string{`>2</tspan>`, `>x</tspan>`, `fill="#102030"`, `fill="#ff0000" fill-opacity`} {
+		if !strings.Contains(string(svg), want) {
+			t.Errorf("svg lacks %s", want)
+		}
+	}
+}
+
+func TestExport(t *testing.T) {
+	h := &fakeHost{list: []Canvas{&fakeCanvas{id: "d1", e: newEditor()}}}
+	s := connect(t, h)
+	if got := textOf(call(t, s, "apply", map[string]any{"ops": []any{map[string]any{"add": "star", "id": "a", "x": 0, "y": 0, "w": 100, "h": 100}}})); !strings.HasPrefix(got, "ok") {
+		t.Fatal(got)
+	}
+	dir := t.TempDir()
+	png1 := filepath.Join(dir, "a.png")
+	res := call(t, s, "export", map[string]any{"path": png1, "ids": []string{"a"}})
+	if res.IsError || !strings.Contains(textOf(res), "wrote "+png1) {
+		t.Fatal(textOf(res))
+	}
+	data, err := os.ReadFile(png1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Errorf("not a PNG: %v", err)
+	}
+	// It doesn't replace what's there unless told to, and leaves it whole.
+	res = call(t, s, "export", map[string]any{"path": png1})
+	if !res.IsError || !strings.Contains(textOf(res), "overwrite") {
+		t.Errorf("overwrote: %s", textOf(res))
+	}
+	if again, _ := os.ReadFile(png1); !bytes.Equal(again, data) {
+		t.Error("the file changed")
+	}
+	if res = call(t, s, "export", map[string]any{"path": png1, "overwrite": true}); res.IsError {
+		t.Error(textOf(res))
+	}
+	left, _ := os.ReadDir(dir)
+	if len(left) != 1 {
+		t.Errorf("left behind: %v", left)
+	}
+	svg := filepath.Join(dir, "a.svg")
+	if res = call(t, s, "export", map[string]any{"path": svg, "theme": "dark"}); res.IsError {
+		t.Fatal(textOf(res))
+	}
+	if data, _ := os.ReadFile(svg); !strings.HasPrefix(string(data), "<svg") {
+		t.Errorf("not an SVG: %.40s", data)
+	}
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{}, "needs path"},
+		{map[string]any{"path": "rel.png"}, "absolute"},
+		{map[string]any{"path": filepath.Join(dir, "a.txt")}, ".png or .svg"},
+		{map[string]any{"path": filepath.Join(dir, "no", "such", "x.png")}, "no such"},
+		{map[string]any{"path": filepath.Join(dir, "t.png"), "theme": "x"}, "theme"},
+		{map[string]any{"path": filepath.Join(dir, "t.png"), "scale": -1}, "scale"},
+		{map[string]any{"path": filepath.Join(dir, "t.png"), "ids": []string{"ghost"}}, "ghost"},
+	} {
+		res := call(t, s, "export", tc.args)
+		if !res.IsError || !strings.Contains(textOf(res), tc.want) {
+			t.Errorf("%v: %s, want %q", tc.args, textOf(res), tc.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "t.png")); err == nil {
+		t.Error("a failed export left a file")
+	}
+}
+
+// All of it stays through a file, and what tldraw would read is its own.
+func TestLooksSurviveAFile(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":50,"fill":"#102030","radius":10,"shadow":{"blur":8,"y":2,"color":"#ff0000"}},
+		{"add":"text","id":"t","x":0,"y":100,"text":["x",{"text":"2","sup":true,"color":"#00ff00"}]}]`)
+	var file bytes.Buffer
+	if err := doc.Write(&file, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	d, err := doc.Read(&file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := d.Shapes[shapeID("r")]
+	if r.Fill != "solid" || r.Radius() != 10 || r.Shadow() == nil || r.Shadow().Y != 2 || r.Shadow().Color != "#ff0000" {
+		t.Errorf("r came back as fill %s radius %v shadow %+v", r.Fill, r.Radius(), r.Shadow())
+	}
+	var hex string
+	if !r.MetaValue(doc.MetaFill, &hex) || hex != "#102030" {
+		t.Errorf("fill came back as %q", hex)
+	}
+	tt := d.Shapes[shapeID("t")]
+	if runs := tt.Runs(); len(runs) != 2 || !runs[1].Sup || runs[1].Color != "#00ff00" || tt.Text != "x2" {
+		t.Errorf("t came back as %q %+v", tt.Text, runs)
 	}
 }

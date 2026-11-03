@@ -111,9 +111,10 @@ to use another port.
 
 | Tool | What it does |
 | --- | --- |
-| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies, and `quiet` leaves out the boxes |
+| `apply` | Runs a list of ops: add, set, del, dup, group, arrange, pages, camera. A call is one undo step, and an error in it changes nothing, and lists every op that's wrong. It answers with each shape's box and warnings about the layout. `dry` gives the same answer without changing anything, with a token that `commit` applies, and `quiet` lists only the ids |
 | `read` | The canvas as compact text, one line per shape, paged and searchable. `check` lists the warnings of the whole page instead |
 | `view` | The page, some shapes or a box as a PNG, 768 px on its longest side by default, in the window's theme or the one asked for |
+| `export` | Writes the page, some shapes or a box to a PNG or SVG file. It takes an absolute path, and only replaces a file with `overwrite` |
 | `guide` | The reference for `apply`, a topic at a time |
 
 ```json
@@ -123,7 +124,7 @@ to use another port.
  {"add":"draw","d":"M0 200 C80 120 160 280 240 200","dash":"solid"}]
 ```
 
-The four tool definitions come to about 500 tokens, and a test holds them to a budget. The
+The five tool definitions come to about 650 tokens, and a test holds them to a budget. The
 rest is on demand: `guide` by topic, `read` by page of results, and errors that list the
 valid values. `d` takes an SVG path, so an agent can draw any outline with few tokens.
 
@@ -138,6 +139,15 @@ crosses a frame's name or the text of what it ends in, has a route that crosses 
 
 A `card` is a box with a title and wrapped body text, sized to fit. It's an ordinary group of
 a rectangle and two text shapes, so it needs nothing special to open elsewhere.
+
+`dup` takes an `id` and `with`, what each copy changes, so that six cards of one form are one
+card and a list of what differs. Named styles (`{"style":{...},"name":"body"}`, then
+`"use":"body"`) last across calls while the app runs. A `fill` can be a hex apart from the
+outline's color, a rectangle or card takes a `radius`, and most shapes take a `shadow`, which
+with no offset and a bright color is a glow. `text`, `title` and `body` can be a list of runs,
+to mix fonts, colors and sizes or set a superscript. A `draw` can take `fn`, a formula, in
+place of a path. tldraw keeps all of these in `meta` and shows the plain text, a tint of the
+color and square corners.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
 elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the

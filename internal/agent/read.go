@@ -227,6 +227,10 @@ func fillName(s *doc.Shape) string {
 	if g := s.Gradient(); g != nil {
 		return "gradient " + strings.Join(g.Colors, ",") + " angle " + num(g.Angle)
 	}
+	var hex string
+	if s.MetaValue(doc.MetaFill, &hex) {
+		return "fill " + hex
+	}
 	return s.Fill
 }
 
@@ -318,7 +322,7 @@ func details(e *editor.Editor, list names) (string, error) {
 				kv("straight", axis)
 				var at float64
 				if s.MetaValue(doc.MetaStraightAt, &at) {
-					kv("at", num(at))
+					kv("at", ratio(at))
 				}
 			}
 		case doc.TypeFrame:
@@ -349,10 +353,19 @@ func details(e *editor.Editor, list names) (string, error) {
 		}
 		kv("url", s.URL)
 		if s.Scale != 1 {
-			kv("scale", num(s.Scale))
+			kv("scale", ratio(s.Scale))
 		}
 		if s.Opacity != 1 {
-			kv("opacity", num(s.Opacity))
+			kv("opacity", ratio(s.Opacity))
+		}
+		if v := s.Radius(); v > 0 {
+			kv("radius", num(v))
+		}
+		if sh := s.Shadow(); sh != nil {
+			kv("shadow", shadowText(sh))
+		}
+		if n := len(s.Runs()); n > 0 {
+			kv("runs", strconv.Itoa(n))
 		}
 		if kids := e.Children(id); len(kids) > 0 {
 			b.WriteString("  holds:\n")
@@ -386,6 +399,27 @@ func boxText(b geo.Box) string {
 // num is a number at a precision worth its tokens.
 func num(v float64) string {
 	return strconv.FormatFloat(math.Round(v*10)/10+0, 'f', -1, 64)
+}
+
+// ratio is a number that's a multiple or a share of something, where a tenth is far
+// from enough: a scale of 0.85 isn't one of 0.9.
+func ratio(v float64) string {
+	return strconv.FormatFloat(math.Round(v*1000)/1000+0, 'f', -1, 64)
+}
+
+// shadowText is a shadow as an op says it.
+func shadowText(sh *doc.Shadow) string {
+	out := "blur " + num(sh.Blur)
+	if sh.X != 0 || sh.Y != 0 {
+		out += " x " + num(sh.X) + " y " + num(sh.Y)
+	}
+	if sh.Color != "" {
+		out += " " + sh.Color
+	}
+	if sh.Opacity != 0 {
+		out += " opacity " + ratio(sh.Opacity)
+	}
+	return out
 }
 
 // themeName says how the canvas looks now.

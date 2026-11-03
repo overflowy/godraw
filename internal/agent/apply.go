@@ -82,31 +82,35 @@ type fields struct {
 	Behind *string `json:"behind"`
 	Over   *string `json:"over"`
 
-	Text  *string `json:"text"`
-	Title *string `json:"title"`
-	Body  *string `json:"body"`
-	Name  *string `json:"name"`
-	URL   *string `json:"url"`
-	Alt   *string `json:"alt"`
-	Src   *string `json:"src"`
-	D     *string `json:"d"`
+	Text  *textValue `json:"text"`
+	Title *textValue `json:"title"`
+	Body  *textValue `json:"body"`
+	Name  *string    `json:"name"`
+	URL   *string    `json:"url"`
+	Alt   *string    `json:"alt"`
+	Src   *string    `json:"src"`
+	D     *string    `json:"d"`
+	Fn    *string    `json:"fn"`
 
-	Color         *string   `json:"color"`
-	LabelColor    *string   `json:"labelColor"`
-	Fill          *string   `json:"fill"`
-	Gradient      *[]string `json:"gradient"`
-	GradientAngle *float64  `json:"gradientAngle"`
-	Dash          *string   `json:"dash"`
-	Size          *string   `json:"size"`
-	Font          *string   `json:"font"`
-	BodyFont      *string   `json:"bodyFont"`
-	Align         *string   `json:"align"`
-	VAlign        *string   `json:"valign"`
-	Padding       *float64  `json:"padding"`
-	Spline        *string   `json:"spline"`
-	Opacity       *float64  `json:"opacity"`
-	Scale         *float64  `json:"scale"`
-	Locked        *bool     `json:"locked"`
+	Color         *string     `json:"color"`
+	LabelColor    *string     `json:"labelColor"`
+	Fill          *string     `json:"fill"`
+	Gradient      *[]string   `json:"gradient"`
+	GradientAngle *float64    `json:"gradientAngle"`
+	Dash          *string     `json:"dash"`
+	Size          *string     `json:"size"`
+	Font          *string     `json:"font"`
+	BodyFont      *string     `json:"bodyFont"`
+	Align         *string     `json:"align"`
+	VAlign        *string     `json:"valign"`
+	Padding       *float64    `json:"padding"`
+	Radius        *float64    `json:"radius"`
+	Shadow        *doc.Shadow `json:"shadow"`
+	Use           *string     `json:"use"`
+	Spline        *string     `json:"spline"`
+	Opacity       *float64    `json:"opacity"`
+	Scale         *float64    `json:"scale"`
+	Locked        *bool       `json:"locked"`
 
 	From   *string      `json:"from"`
 	To     *string      `json:"to"`
@@ -145,6 +149,7 @@ type op struct {
 	Page    *string `json:"page"`
 	DelPage *string `json:"delPage"`
 	Style   *fields `json:"style"`
+	With    with    `json:"with"`
 	fields
 
 	verb    string
@@ -162,22 +167,22 @@ type picture struct {
 var (
 	// What each kind of shape takes, besides where it goes (placeFields).
 	addFields = map[string]string{
-		doc.TypeGeo:       "w h text color labelColor fill gradient gradientAngle dash size font align valign padding url",
+		doc.TypeGeo:       "w h text color labelColor fill gradient gradientAngle dash size font align valign padding radius shadow url",
 		doc.TypeText:      "w text color size font align scale",
-		doc.TypeNote:      "text color labelColor size font align valign padding scale url",
+		doc.TypeNote:      "text color labelColor size font align valign padding scale shadow url",
 		doc.TypeFrame:     "w h name color size font",
-		doc.TypeImage:     "src w h alt url",
-		doc.TypeDraw:      "d w h color fill gradient gradientAngle dash size",
+		doc.TypeImage:     "src w h alt shadow url",
+		doc.TypeDraw:      "d fn x1 x2 w h color fill gradient gradientAngle dash size shadow",
 		doc.TypeHighlight: "d w h color size",
-		doc.TypeLine:      "d w h color dash size spline",
-		cardKind:          "title body w h color labelColor fill gradient gradientAngle dash size font bodyFont align",
+		doc.TypeLine:      "d w h color dash size spline shadow",
+		cardKind:          "title body w h color labelColor fill gradient gradientAngle dash size font bodyFont align radius shadow",
 		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend via head tail straight at label",
 	}
-	placeFields = "id in x y rot opacity locked right left above below gap behind over"
+	placeFields = "id in x y rot opacity locked right left above below gap behind over use"
 	verbFields  = map[string]string{
 		"del": "", "ungroup": "", "camera": "", "delPage": "",
 		"group": "id", "arrange": "how", "order": "how behind over", "flip": "how",
-		"dup": "dx dy n", "page": "name",
+		"dup": "dx dy n id", "page": "name",
 	}
 
 	styleEnums = map[string][]string{
@@ -219,7 +224,9 @@ func said(f *fields) []string {
 func allows(list, name string) bool { return slices.Contains(strings.Fields(list), name) }
 
 // decodeOps reads ops strictly, and does what can be done off the main thread:
-// checking them against one another, parsing paths and reading images.
+// checking them against one another, parsing paths and reading images. It tells of
+// all that's wrong at once, in a *batchError, and leaves nil in place of those ops:
+// what's left can still run, to find what's wrong with the rest.
 func decodeOps(raw json.RawMessage) ([]*op, error) {
 	var list []json.RawMessage
 	if err := json.Unmarshal(raw, &list); err != nil {
@@ -232,14 +239,95 @@ func decodeOps(raw json.RawMessage) ([]*op, error) {
 		return nil, fmt.Errorf("%d ops is too many at once; the limit is %d", len(list), maxOps)
 	}
 	ops := make([]*op, len(list))
+	var bad batchError
 	for i, item := range list {
 		o, err := decodeOp(item)
 		if err != nil {
-			return nil, fmt.Errorf("ops[%d]: %w", i, err)
+			bad.add(i, err)
+			bad.names = append(bad.names, namesIn(item)...)
+			bad.styles = append(bad.styles, styleNameIn(item)...)
+			continue
 		}
 		ops[i] = o
 	}
+	if len(bad.list) > 0 {
+		return ops, &bad
+	}
 	return ops, nil
+}
+
+// maxErrors is how many errors an answer lists, of a batch with many.
+const maxErrors = 20
+
+// batchError is all that's wrong with a batch: nothing of it is applied.
+type batchError struct {
+	list []opFailure
+	// What failed ops would have made, for what uses those not to be blamed as well.
+	names, styles []string
+}
+
+type opFailure struct {
+	at  int
+	err error
+}
+
+func (b *batchError) add(at int, err error) { b.list = append(b.list, opFailure{at, err}) }
+
+func (b *batchError) Error() string {
+	slices.SortStableFunc(b.list, func(x, y opFailure) int { return x.at - y.at })
+	if len(b.list) == 1 {
+		return fmt.Sprintf("ops[%d]: %v; nothing was changed", b.list[0].at, b.list[0].err)
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "%d ops failed; nothing was changed:", len(b.list))
+	for i, f := range b.list {
+		if i == maxErrors {
+			fmt.Fprintf(&out, "\nand %d more", len(b.list)-maxErrors)
+			break
+		}
+		fmt.Fprintf(&out, "\nops[%d]: %v", f.at, f.err)
+	}
+	return out.String()
+}
+
+// namesIn returns the ids an op that can't be read meant to make.
+func namesIn(raw json.RawMessage) []string {
+	var o struct {
+		ID   json.RawMessage `json:"id"`
+		With json.RawMessage `json:"with"`
+	}
+	if json.Unmarshal(raw, &o) != nil {
+		return nil
+	}
+	var out []string
+	one := func(b json.RawMessage) {
+		var id string
+		if json.Unmarshal(b, &id) == nil && id != "" {
+			out = append(out, id)
+		}
+	}
+	one(o.ID)
+	var items []struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(o.With, &items) == nil {
+		for _, item := range items {
+			one(item.ID)
+		}
+	}
+	return out
+}
+
+// styleNameIn returns the style an op that can't be read meant to name.
+func styleNameIn(raw json.RawMessage) []string {
+	var o struct {
+		Style json.RawMessage `json:"style"`
+		Name  string          `json:"name"`
+	}
+	if json.Unmarshal(raw, &o) != nil || o.Style == nil || o.Name == "" {
+		return nil
+	}
+	return []string{o.Name}
 }
 
 func decodeOp(raw json.RawMessage) (*op, error) {
@@ -277,16 +365,24 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 		return nil, fmt.Errorf("needs exactly one verb (add set del dup group ungroup arrange order flip camera page delPage style), got [%s]", strings.Join(verbs, " "))
 	}
 	o.verb = verbs[0]
+	if o.With != nil && o.verb != "dup" {
+		return nil, errors.New(`with goes with dup`)
+	}
 	if o.Style != nil {
 		if err := checkValues(o.Style); err != nil {
 			return nil, err
 		}
-		if beside := said(&o.fields); len(beside) > 0 {
-			return nil, fmt.Errorf("style takes its fields inside it, not %q beside it", beside[0])
+		for _, name := range said(&o.fields) {
+			if name != "name" {
+				return nil, fmt.Errorf("style takes its fields inside it, not %q beside it", name)
+			}
+		}
+		if o.Name != nil && (*o.Name == "" || strings.ContainsAny(*o.Name, " \t\n")) {
+			return nil, fmt.Errorf("bad style name %q", *o.Name)
 		}
 		for _, name := range said(o.Style) {
 			if !isStyleField(name) {
-				return nil, fmt.Errorf("style can't set %q; it takes color labelColor fill gradient gradientAngle dash size font bodyFont align valign padding spline opacity", name)
+				return nil, fmt.Errorf("style can't set %q; it takes color labelColor fill gradient gradientAngle dash size font bodyFont align valign padding radius shadow scale spline opacity use", name)
 			}
 		}
 		return o, nil
@@ -320,6 +416,9 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 			if o.At != nil && (o.Straight == nil || *o.Straight == "off") {
 				return nil, errors.New(`at goes with straight:"h" or "v"`)
 			}
+		}
+		if kind == doc.TypeDraw && (o.X1 != nil || o.X2 != nil) && o.Fn == nil {
+			return nil, errors.New("x1 and x2 are where a draw's fn runs, and it has none")
 		}
 		if kind == doc.TypeImage {
 			if o.Src == nil {
@@ -357,27 +456,51 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 			}
 		}
 	}
-	if o.D != nil {
-		p, err := geo.ParseSVGPath(*o.D)
-		if err != nil {
-			return nil, err
-		}
-		for _, seg := range p.Segs {
-			for _, v := range seg.P {
-				if !inReach(v.X) || !inReach(v.Y) {
-					return nil, fmt.Errorf("d must be numbers from %s to %s", num(-maxNumber), num(maxNumber))
-				}
-			}
-		}
-		o.path = p
+	if err := o.readPath(); err != nil {
+		return nil, err
 	}
 	return o, nil
+}
+
+// readPath works out the path an op's d or fn says.
+func (o *op) readPath() error {
+	f := &o.fields
+	if f.D != nil && f.Fn != nil {
+		return errors.New("use one of d, fn")
+	}
+	if f.Fn != nil {
+		if f.X1 == nil || f.X2 == nil {
+			return errors.New(`fn needs x1 and x2, where it runs, as {"fn":"300+40*sin(x/9)","x1":0,"x2":400}`)
+		}
+		p, err := plot(*f.Fn, *f.X1, *f.X2)
+		if err != nil {
+			return err
+		}
+		o.path = p
+		return nil
+	}
+	if f.D == nil {
+		return nil
+	}
+	p, err := geo.ParseSVGPath(*f.D)
+	if err != nil {
+		return err
+	}
+	for _, seg := range p.Segs {
+		for _, v := range seg.P {
+			if !inReach(v.X) || !inReach(v.Y) {
+				return fmt.Errorf("d must be numbers from %s to %s", num(-maxNumber), num(maxNumber))
+			}
+		}
+	}
+	o.path = p
+	return nil
 }
 
 func isStyleField(name string) bool {
 	_, enum := styleEnums[name]
 	return (enum && !slices.Contains([]string{"head", "tail", "kind", "straight", "label"}, name)) ||
-		slices.Contains([]string{"opacity", "padding", "gradient", "gradientAngle"}, name)
+		slices.Contains([]string{"opacity", "padding", "gradient", "gradientAngle", "radius", "shadow", "scale", "use"}, name)
 }
 
 // outlineOptional says whether a kind of shape shows without its line.
@@ -405,6 +528,10 @@ func checkValues(f *fields) error {
 				if !isColor(*s) {
 					return fmt.Errorf("%s %q: use %s, or #rrggbb", name, *s, strings.Join(enum, ", "))
 				}
+			} else if name == "fill" {
+				if !slices.Contains(enum, *s) && !editor.IsHex(*s) {
+					return fmt.Errorf("fill %q: use %s, or #rrggbb", *s, strings.Join(enum, ", "))
+				}
 			} else if enum != nil && !slices.Contains(enum, *s) {
 				return fmt.Errorf("%s %q: use %s", name, *s, strings.Join(enum, ", "))
 			}
@@ -415,6 +542,12 @@ func checkValues(f *fields) error {
 	}
 	if f.Padding != nil && *f.Padding < 0 {
 		return errors.New("padding can't be below 0")
+	}
+	if f.Radius != nil && *f.Radius < 0 {
+		return errors.New("radius can't be below 0")
+	}
+	if err := checkShadow(f.Shadow); err != nil {
+		return err
 	}
 	if f.Gradient != nil {
 		g := *f.Gradient
@@ -479,6 +612,32 @@ func checkValues(f *fields) error {
 	return nil
 }
 
+// checkShadow checks what a shadow says.
+func checkShadow(sh *doc.Shadow) error {
+	if sh == nil {
+		return nil
+	}
+	if sh.Color != "" && !isColor(sh.Color) {
+		return fmt.Errorf("shadow color %q: use %s, or #rrggbb", sh.Color, strings.Join(editor.Colors, ", "))
+	}
+	if sh.Opacity < 0 || sh.Opacity > 1 {
+		return errors.New("shadow opacity must be between 0 and 1")
+	}
+	if sh.Blur < 0 {
+		return errors.New("shadow blur can't be below 0")
+	}
+	if sh.Blur > maxBlur {
+		return fmt.Errorf("shadow blur goes up to %d", maxBlur)
+	}
+	if !inReach(sh.X) || !inReach(sh.Y) {
+		return fmt.Errorf("shadow x and y must be numbers from %s to %s", num(-maxNumber), num(maxNumber))
+	}
+	return nil
+}
+
+// maxBlur is more than a shadow should need, and keeps its layers on a page's scale.
+const maxBlur = 400
+
 // inReach says whether a number is one to take: finite, and within maxNumber.
 func inReach(n float64) bool { return math.Abs(n) <= maxNumber }
 
@@ -491,6 +650,7 @@ const maxGradient = 8
 
 const (
 	gradientHelp = "gradient is a list of colors"
+	shadowHelp   = `shadow is {"x":0,"y":4,"blur":12,"color":"#000000","opacity":0.35}, each optional`
 	viaHelp      = "via is a list of [x,y] points in the page"
 	anchorHelp   = "fromAt and toAt are [x,y], each 0 to 1 across the shape"
 )
@@ -508,6 +668,8 @@ func wrongType(e *json.UnmarshalTypeError) error {
 		return errors.New(viaHelp)
 	case "gradient":
 		return errors.New(gradientHelp)
+	case "shadow":
+		return errors.New(shadowHelp)
 	case "fromAt", "toAt":
 		return errors.New(anchorHelp)
 	}
@@ -610,6 +772,11 @@ type run struct {
 	capped   bool
 	// What is told after other warnings, for it not to crowd them out.
 	shared, trunks []string
+	// styles is the named ones, as they'll stand if the batch succeeds.
+	styles map[string]*fields
+	// failed is the ids and style names of ops that failed, for what uses them not
+	// to be blamed too.
+	failed, failedStyles map[string]bool
 }
 
 // errDry ends a dry run, whose batch rolls back like one that failed.
@@ -619,18 +786,51 @@ var errDry = errors.New("dry run")
 type applyMode struct {
 	dry   bool // says what would come of it, and leaves everything as it was
 	quiet bool // leaves out each shape's box
+	// invalid is what decodeOps found wrong, with nil in ops in their place.
+	invalid *batchError
+	// styles is the named ones so far, which this doesn't change, and keep is told
+	// what they come to when a batch that isn't dry succeeds.
+	styles map[string]*fields
+	keep   func(map[string]*fields)
 }
 
 // apply runs ops as one step of undo, and says what came of them.
 func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 	dry := mode.dry
 	r := &run{e: e, changed: map[doc.ID]bool{}, asked: map[doc.ID]float64{}, before: map[doc.ID]float64{}, grown: map[doc.ID]*growth{}, dry: dry, quiet: mode.quiet}
+	r.styles = maps.Clone(mode.styles)
+	bad := mode.invalid
+	if bad == nil {
+		bad = &batchError{}
+	}
+	r.failed, r.failedStyles = map[string]bool{}, map[string]bool{}
+	for _, name := range bad.names {
+		r.failed[name] = true
+	}
+	for _, name := range bad.styles {
+		r.failedStyles[name] = true
+	}
 	var report string
 	err := e.Batch(func() error {
 		for i, o := range ops {
-			if err := r.do(o); err != nil {
-				return fmt.Errorf("ops[%d]: %w; nothing was changed", i, err)
+			if o == nil {
+				continue
 			}
+			err := r.do(o)
+			if err == nil {
+				continue
+			}
+			r.markFailed(o)
+			if !errors.Is(err, errFollows) {
+				bad.add(i, err)
+			}
+			// What comes after a page that isn't there would be on the wrong one.
+			if o.verb == "page" || o.verb == "delPage" {
+				break
+			}
+		}
+		if len(bad.list) > 0 {
+			return bad
 		}
 		r.followRoutes()
 		r.settleArrows()
@@ -648,10 +848,49 @@ func apply(e *editor.Editor, ops []*op, mode applyMode) (string, error) {
 		return report, nil
 	}
 	if err != nil {
+		// A panic on the way shouldn't hide what was found before it.
+		if len(bad.list) > 0 {
+			return "", bad
+		}
 		return "", err
+	}
+	if mode.keep != nil {
+		mode.keep(r.styles)
 	}
 	r.reveal()
 	return report, nil
+}
+
+// errFollows says that an op failed only for using what another one failed to make.
+var errFollows = errors.New("follows from an earlier error")
+
+// markFailed remembers what a failed op would have made.
+func (r *run) markFailed(o *op) {
+	if o.ID != nil {
+		r.failed[*o.ID] = true
+	}
+	for _, item := range o.With {
+		if item.ID != nil {
+			r.failed[*item.ID] = true
+		}
+	}
+	if o.verb == "style" && o.Name != nil {
+		r.failedStyles[*o.Name] = true
+	}
+}
+
+// isFailed says whether a name is that of what a failed op would have made, or of a
+// part of it, as a card's are.
+func (r *run) isFailed(name string) bool {
+	if r.failed[name] {
+		return true
+	}
+	for failed := range r.failed {
+		if strings.HasPrefix(name, failed+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkReach refuses a batch that worked out a place no file can hold, as many
@@ -736,9 +975,77 @@ func (r *run) do(o *op) error {
 		}
 		r.e.DeletePage(p.ID)
 	case "style":
-		merge(&r.style, o.Style)
+		return r.setStyle(o)
 	}
 	return nil
+}
+
+// setStyle takes what a style op says: defaults for the rest of the batch, or with a
+// name, a style that stays for later batches to use.
+func (r *run) setStyle(o *op) error {
+	f := fields{}
+	if o.Style.Use != nil {
+		named, err := r.namedStyle(*o.Style.Use)
+		if err != nil {
+			return err
+		}
+		merge(&f, named)
+	}
+	merge(&f, o.Style)
+	f.Use = nil
+	if o.Name == nil {
+		merge(&r.style, &f)
+		return nil
+	}
+	if r.styles == nil {
+		r.styles = map[string]*fields{}
+	}
+	r.styles[*o.Name] = &f
+	return nil
+}
+
+// namedStyle returns a style by its name, or says which there are.
+func (r *run) namedStyle(name string) (*fields, error) {
+	if f := r.styles[name]; f != nil {
+		return f, nil
+	}
+	if r.failedStyles[name] {
+		return nil, errFollows
+	}
+	known := "none yet"
+	if len(r.styles) > 0 {
+		known = strings.Join(slices.Sorted(maps.Keys(r.styles)), ", ")
+	}
+	return nil, fmt.Errorf(`no style %q (there are: %s); define it with {"style":{...},"name":%q}`, name, known, name)
+}
+
+// withUse returns what fields come to with the named style they use under them,
+// of what list takes.
+func (r *run) withUse(f *fields, list string) (*fields, error) {
+	if f.Use == nil {
+		return f, nil
+	}
+	named, err := r.namedStyle(*f.Use)
+	if err != nil {
+		return nil, err
+	}
+	out := keepAllowed(named, list)
+	merge(&out, f)
+	out.Use = nil
+	return &out, nil
+}
+
+// keepAllowed returns fields without what list doesn't take.
+func keepAllowed(f *fields, list string) fields {
+	out := *f
+	v := reflect.ValueOf(&out).Elem()
+	for i := range v.NumField() {
+		name := v.Type().Field(i).Tag.Get("json")
+		if !allows(list, name) && !allows(placeFields, name) {
+			v.Field(i).Set(reflect.Zero(v.Field(i).Type()))
+		}
+	}
+	return out
 }
 
 // orderBeside moves shapes to just behind or over the shape fields name. Paint
@@ -817,6 +1124,9 @@ func shortID(id doc.ID) string { return strings.TrimPrefix(string(id), "shape:")
 
 // lookup returns a shape on any page, or says what is wrong.
 func (r *run) lookup(name string) (*doc.Shape, error) {
+	if len(r.failed) > 0 && r.isFailed(strings.TrimPrefix(name, "shape:")) {
+		return nil, errFollows
+	}
 	if s := r.e.Doc.Shapes[shapeID(name)]; s != nil {
 		return s, nil
 	}
@@ -905,6 +1215,15 @@ func (r *run) add(o *op) error {
 	if err != nil {
 		return err
 	}
+	if o.Use != nil {
+		f, err := r.withUse(&o.fields, addFields[kind])
+		if err != nil {
+			return err
+		}
+		c := *o
+		c.fields = *f
+		o = &c
+	}
 	if o.GradientAngle != nil && o.Gradient == nil && r.style.Gradient == nil {
 		return errors.New("gradientAngle goes with a gradient")
 	}
@@ -961,15 +1280,7 @@ func (r *run) add(o *op) error {
 // styled applies the batch's style then the op's own fields to a new shape,
 // leaving out of the style what this kind of shape doesn't take.
 func (r *run) styled(s *doc.Shape, f *fields) {
-	list := addFields[s.Type]
-	style := r.style
-	v := reflect.ValueOf(&style).Elem()
-	for i := range v.NumField() {
-		name := v.Type().Field(i).Tag.Get("json")
-		if !allows(list, name) && !allows(placeFields, name) {
-			v.Field(i).Set(reflect.Zero(v.Field(i).Type()))
-		}
-	}
+	style := keepAllowed(&r.style, addFields[s.Type])
 	assign(s, &style)
 	assign(s, f)
 }
@@ -1009,6 +1320,21 @@ func assign(s *doc.Shape, f *fields) {
 	if f.Padding != nil {
 		s.SetMeta(doc.MetaPadding, *f.Padding)
 	}
+	if f.Radius != nil {
+		if *f.Radius == 0 {
+			s.SetMeta(doc.MetaRadius, nil)
+		} else {
+			s.SetMeta(doc.MetaRadius, *f.Radius)
+		}
+	}
+	if f.Shadow != nil {
+		// What casts nothing is no shadow.
+		if f.Shadow.Blur == 0 && f.Shadow.X == 0 && f.Shadow.Y == 0 {
+			s.SetMeta(doc.MetaShadow, nil)
+		} else {
+			s.SetMeta(doc.MetaShadow, f.Shadow)
+		}
+	}
 	str(&s.Size, f.Size)
 	str(&s.Font, f.Font)
 	str(&s.VAlign, f.VAlign)
@@ -1027,7 +1353,7 @@ func assign(s *doc.Shape, f *fields) {
 		}
 	}
 	if f.Text != nil {
-		s.SetText(*f.Text)
+		f.Text.setOn(s)
 	}
 	if f.Opacity != nil {
 		s.Opacity = *f.Opacity
@@ -1077,7 +1403,14 @@ func assign(s *doc.Shape, f *fields) {
 // gradient, and a gradient needs a fill for tldraw to show, and to be pressed on.
 func assignFill(s *doc.Shape, f *fields) {
 	if f.Fill != nil {
-		s.Fill = *f.Fill
+		// tldraw has only tints of the shape's one color to show in its place.
+		if editor.IsHex(*f.Fill) {
+			s.Fill = "solid"
+			s.SetMeta(doc.MetaFill, strings.ToLower(*f.Fill))
+		} else {
+			s.Fill = *f.Fill
+			s.SetMeta(doc.MetaFill, nil)
+		}
 		s.SetMeta(doc.MetaGradient, nil)
 	}
 	angle := 180.0
@@ -1097,6 +1430,7 @@ func assignFill(s *doc.Shape, f *fields) {
 	switch {
 	case len(colors) > 0:
 		s.SetMeta(doc.MetaGradient, doc.Gradient{Colors: colors, Angle: angle})
+		s.SetMeta(doc.MetaFill, nil)
 		if s.Fill == "none" {
 			s.Fill = "fill"
 		}
@@ -1117,7 +1451,7 @@ func (r *run) sizeGeo(s *doc.Shape, f *fields) {
 		if s.Geo != "rectangle" && s.Geo != "x-box" && s.Geo != "check-box" {
 			k = 1.4
 		}
-		b := r.e.Measure(s.Text, s.Font, size, 0)
+		b := r.e.TextBlockOf(s, s.Text, size, 0)
 		s.W = math.Min(b.W*k+pad+size/2, maxAuto)
 		s.H = size*editor.LineHeight*k + pad
 		// Padding said is a size asked for: no more than it takes.
@@ -1747,10 +2081,16 @@ func (r *run) set(o *op) error {
 }
 
 func (r *run) setOne(id doc.ID, o *op) error {
-	f := &o.fields
 	s := r.e.Doc.Shapes[id]
+	f, err := r.withUse(&o.fields, r.setList(s))
+	if err != nil {
+		return err
+	}
 	if err := r.checkSet(s, f); err != nil {
 		return err
+	}
+	if s.Type == doc.TypeDraw && (f.X1 != nil || f.X2 != nil) && f.Fn == nil {
+		return errors.New("x1 and x2 are where a draw's fn runs, and this says none")
 	}
 	if f.GradientAngle != nil && f.Gradient == nil && !slices.ContainsFunc(r.leaves(id), func(l *doc.Shape) bool {
 		return l.Gradient() != nil
@@ -1868,17 +2208,8 @@ func (r *run) setOne(id doc.ID, o *op) error {
 
 // checkSet says whether a shape takes what set says.
 func (r *run) checkSet(s *doc.Shape, f *fields) error {
-	const placing = "x y dx dy in right left above below gap behind over locked rot opacity"
-	list, known := addFields[s.Type]
-	switch {
-	case s.Type == doc.TypeGroup:
-		list = "w h color labelColor fill gradient gradientAngle dash size font align valign padding"
-		if r.cardOf(s.ID) != nil {
-			list = addFields[cardKind]
-		}
-	case !known:
-		list = "w h" // a type this app only keeps, as an embed
-	}
+	const placing = "x y dx dy in right left above below gap behind over locked rot opacity use"
+	list := r.setList(s)
 	if f.Dash != nil && *f.Dash == "none" && !outlineOptional(s.Type) {
 		return fmt.Errorf(`a %s is its line, so it can't have dash "none"`, s.Type)
 	}
@@ -1893,6 +2224,21 @@ func (r *run) checkSet(s *doc.Shape, f *fields) error {
 		}
 	}
 	return nil
+}
+
+// setList returns what a shape takes, beside where it goes.
+func (r *run) setList(s *doc.Shape) string {
+	list, known := addFields[s.Type]
+	switch {
+	case s.Type == doc.TypeGroup:
+		list = "w h color labelColor fill gradient gradientAngle dash size font align valign padding radius shadow"
+		if r.cardOf(s.ID) != nil {
+			list = addFields[cardKind]
+		}
+	case !known:
+		list = "w h" // a type this app only keeps, as an embed
+	}
+	return list
 }
 
 // leaves returns the shape, or what a group holds, at any depth.
@@ -2028,12 +2374,18 @@ func (r *run) dup(o *op) error {
 	if err != nil {
 		return err
 	}
-	n := 1
+	n := max(len(o.With), 1)
 	if o.N != nil {
+		if len(o.With) > 1 && *o.N != len(o.With) {
+			return fmt.Errorf("n says %d copies and with lists %d; leave n out", *o.N, len(o.With))
+		}
 		n = *o.N
 	}
 	if n < 1 || n > maxCopies {
 		return fmt.Errorf("n must be from 1 to %d", maxCopies)
+	}
+	if o.ID != nil && n > 1 {
+		return errors.New(`id names one copy; name several with with:[{"id":"a"},{"id":"b"}]`)
 	}
 	var box geo.Box
 	for i, id := range ids {
@@ -2055,12 +2407,65 @@ func (r *run) dup(o *op) error {
 		}
 	}
 	r.warnLostEnds(ids)
-	r.e.Select(ids...)
 	for i := 1; i <= n; i++ {
+		var item *op
+		if len(o.With) > 0 {
+			item = o.With[min(i-1, len(o.With)-1)]
+		}
+		asked := o.ID
+		if item != nil && item.ID != nil {
+			asked = item.ID
+		}
+		if asked != nil {
+			if len(ids) > 1 {
+				return errors.New("an id names one copy of one shape, and this copies several")
+			}
+			if _, err := r.freshID(asked); err != nil {
+				return err
+			}
+		}
 		r.e.Select(ids...)
-		r.added = append(r.added, r.e.DuplicateAs(d.Mul(float64(i)), r.autoID)...)
+		copies := r.e.DuplicateAs(d.Mul(float64(i)), r.copyNames(asked))
+		r.added = append(r.added, copies...)
+		if item == nil {
+			continue
+		}
+		over := *item
+		over.ID = nil
+		if len(said(&over.fields)) == 0 {
+			continue
+		}
+		for _, id := range copies {
+			if err := r.setOne(id, &over); err != nil {
+				return fmt.Errorf("%s: %w", shortID(id), err)
+			}
+		}
 	}
 	return nil
+}
+
+// copyNames returns what names a copy's shapes: the first as asked, and what it holds
+// after it, when its name began with what held it, so that "c1-title" in "c1"
+// becomes "c2-title" in "c2", to be set by a name that can be worked out.
+func (r *run) copyNames(asked *string) func(from doc.ID) doc.ID {
+	made := map[doc.ID]doc.ID{}
+	return func(from doc.ID) doc.ID {
+		var id doc.ID
+		if asked != nil {
+			id, asked = shapeID(*asked), nil
+		} else if s := r.e.Doc.Shapes[from]; s != nil && made[s.Parent] != "" {
+			if rest, ok := strings.CutPrefix(string(from), string(s.Parent)+"-"); ok {
+				if name := made[s.Parent] + doc.ID("-"+rest); r.e.Doc.Shapes[name] == nil {
+					id = name
+				}
+			}
+		}
+		if id == "" {
+			id = r.autoID()
+		}
+		made[from] = id
+		return id
+	}
 }
 
 // warnHeldArrows tells of arrows a flip can't turn, as what holds both their ends
@@ -2240,7 +2645,7 @@ func (r *run) report() string {
 	slices.Sort(changed)
 	if r.quiet {
 		if len(r.added) > 0 {
-			fmt.Fprintf(&b, "added %d\n", len(r.added))
+			fmt.Fprintf(&b, "added %d: %s\n", len(r.added), idRanges(r.added))
 		}
 	} else if list := slices.Concat(r.added, changed); len(list) > 0 {
 		for i, id := range list {
@@ -2283,6 +2688,40 @@ func (r *run) report() string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// idRanges lists ids compactly: a run of ids an agent didn't choose, as s4-s9.
+func idRanges(ids []doc.ID) string {
+	number := func(id doc.ID) (int, bool) {
+		rest, ok := strings.CutPrefix(shortID(id), "s")
+		if !ok {
+			return 0, false
+		}
+		n, err := strconv.Atoi(rest)
+		return n, err == nil && "s"+strconv.Itoa(n) == shortID(id)
+	}
+	var out []string
+	for i := 0; i < len(ids); {
+		end := i
+		if n, ok := number(ids[i]); ok {
+			for end+1 < len(ids) {
+				next, ok := number(ids[end+1])
+				if !ok || next != n+end+1-i {
+					break
+				}
+				end++
+			}
+		}
+		if end-i >= 2 {
+			out = append(out, shortID(ids[i])+"-"+shortID(ids[end]))
+		} else {
+			for k := i; k <= end; k++ {
+				out = append(out, shortID(ids[k]))
+			}
+		}
+		i = end + 1
+	}
+	return strings.Join(out, " ")
 }
 
 // reveal brings what was just added into view, so that it can be watched.

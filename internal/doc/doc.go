@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strings"
 
 	"godraw/internal/geo"
 )
@@ -143,8 +144,11 @@ func (s *Shape) Moved() *Shape {
 }
 
 // SetText sets the text, leaving RichText to be rebuilt from it unless it
-// is the same text.
+// is the same text. Other text has no use for the runs of the last.
 func (s *Shape) SetText(t string) {
+	if t != s.Text {
+		s.SetMeta(MetaRuns, nil)
+	}
 	s.Text = t
 }
 
@@ -168,6 +172,10 @@ const (
 	MetaNoOutline  = "godrawNoOutline"  // that a shape draws no outline
 	MetaGradient   = "godrawGradient"   // what a shape fills with, in place of fill
 	MetaPadding    = "godrawPadding"    // how far a label sits in from its box
+	MetaFill       = "godrawFill"       // #rrggbb, in place of fill
+	MetaRadius     = "godrawRadius"     // how round a rectangle's corners are
+	MetaShadow     = "godrawShadow"     // what a shape casts or glows with
+	MetaRuns       = "godrawRuns"       // the parts of a text with styles of their own
 )
 
 // MetaValue reads a key of the shape's meta into v, and says whether it could.
@@ -228,6 +236,72 @@ func (s *Shape) Gradient() *Gradient {
 func (s *Shape) NoOutline() bool {
 	var none bool
 	return s.MetaValue(MetaNoOutline, &none) && none
+}
+
+// Radius returns how round a rectangle's corners were asked to be, or 0.
+func (s *Shape) Radius() float64 {
+	var r float64
+	s.MetaValue(MetaRadius, &r)
+	return r
+}
+
+// Shadow is what a shape casts, or with no offset and a bright color, glows with.
+type Shadow struct {
+	X       float64 `json:"x,omitempty"`
+	Y       float64 `json:"y,omitempty"`
+	Blur    float64 `json:"blur,omitempty"`
+	Color   string  `json:"color,omitempty"`
+	Opacity float64 `json:"opacity,omitempty"`
+}
+
+// Shadow returns what a shape casts, if anything.
+func (s *Shape) Shadow() *Shadow {
+	var sh Shadow
+	if !s.MetaValue(MetaShadow, &sh) {
+		return nil
+	}
+	return &sh
+}
+
+// Run is a part of a text with a style of its own. What it leaves empty is the
+// shape's. Scale multiplies the shape's font size.
+type Run struct {
+	Text  string  `json:"text"`
+	Font  string  `json:"font,omitempty"`
+	Color string  `json:"color,omitempty"`
+	Scale float64 `json:"scale,omitempty"`
+	Sup   bool    `json:"sup,omitempty"`
+	Sub   bool    `json:"sub,omitempty"`
+}
+
+// Runs returns the parts of a shape's text, if it has any and they still add up
+// to it: tldraw keeps the meta of a text it edits.
+func (s *Shape) Runs() []Run {
+	var runs []Run
+	if !s.MetaValue(MetaRuns, &runs) {
+		return nil
+	}
+	n := 0
+	for _, r := range runs {
+		if !strings.HasPrefix(s.Text[n:], r.Text) {
+			return nil
+		}
+		n += len(r.Text)
+	}
+	if n != len(s.Text) {
+		return nil
+	}
+	return runs
+}
+
+// SetRuns gives a shape a text in parts.
+func (s *Shape) SetRuns(runs []Run) {
+	var b strings.Builder
+	for _, r := range runs {
+		b.WriteString(r.Text)
+	}
+	s.Text = b.String()
+	s.SetMeta(MetaRuns, runs)
 }
 
 // Via returns the points an elbow arrow passes through, in its own space.

@@ -130,8 +130,9 @@ func (e *Editor) ScaleSelection(sx, sy float64) {
 }
 
 // DuplicateAs copies the selection, off it by d, naming each new shape with
-// fresh, and returns the copies of what was selected.
-func (e *Editor) DuplicateAs(d geo.Vec, fresh func() doc.ID) []doc.ID {
+// fresh, told what it's a copy of, what holds it first, and returns the copies of
+// what was selected.
+func (e *Editor) DuplicateAs(d geo.Vec, fresh func(from doc.ID) doc.ID) []doc.ID {
 	var out []doc.ID
 	e.transact(func() {
 		out = e.cloneShapes(e.sorted(e.topSelected()), d, fresh)

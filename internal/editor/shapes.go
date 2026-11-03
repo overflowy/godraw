@@ -75,6 +75,9 @@ func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 	case doc.TypeGeo:
 		w, h := s.W, s.H+s.GrowY
 		pts := geoOutline(s.Geo, w, h, string(s.ID))
+		if r := radiusOf(s, w, h); r > 0 {
+			pts, _ = geo.RoundedPoly(pts, r).Points(8)
+		}
 		g := &Geometry{Bounds: geo.Box{W: w, H: h}, Outline: pts, Closed: true, Filled: s.Fill != "none"}
 		if s.Text != "" {
 			g.Label = e.labelBox(s, w, h, labelSizeOf(s.Size)*s.Scale)
@@ -100,9 +103,9 @@ func (e *Editor) computeGeometry(s *doc.Shape) *Geometry {
 		}
 		var b TextBlock
 		if s.AutoSize {
-			b = e.Measure(text, s.Font, size, 0)
+			b = e.TextBlockOf(s, text, size, 0)
 		} else {
-			b = e.Measure(text, s.Font, size, s.W*s.Scale)
+			b = e.TextBlockOf(s, text, size, s.W*s.Scale)
 			b.W = s.W * s.Scale
 		}
 		box := geo.Box{W: math.Max(b.W, 8), H: b.H}
@@ -144,7 +147,7 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 		text = " "
 	}
 	pad := LabelPad(s)
-	b := e.Measure(text, s.Font, size, math.Max(w-2*pad, 8))
+	b := e.TextBlockOf(s, text, size, math.Max(w-2*pad, 8))
 	box := geo.Box{W: math.Max(w-2*pad, 8), H: b.H}
 	box.X = pad
 	switch s.VAlign {

@@ -117,7 +117,7 @@ func paintTheme(t *ui.Theme) *ui.Theme {
 
 // naturalHeight returns the height a font's line takes, in its size, without
 // a set line height: text draws in it, centered in its line.
-var naturalHeights sync.Map
+var naturalHeights, ascents sync.Map
 
 func naturalHeight(font string) float32 {
 	if v, ok := naturalHeights.Load(font); ok {
@@ -129,5 +129,22 @@ func naturalHeight(font string) float32 {
 	_, h := l.Size()
 	v := h / probe
 	naturalHeights.Store(font, v)
+	return v
+}
+
+// ascentOf returns how far below the top of its natural line a font's baseline
+// lies, in its size: where text of different sizes has to meet.
+func ascentOf(font string) float32 {
+	if v, ok := ascents.Load(font); ok {
+		return v.(float32)
+	}
+	registerFonts()
+	const probe = 100
+	l := ui.ShapeText("Hg", ui.Font{Family: family(font), Size: probe}, 0)
+	var v float32
+	if lines := l.Lines(); len(lines) > 0 {
+		v = lines[0].Baseline / probe
+	}
+	ascents.Store(font, v)
 	return v
 }
