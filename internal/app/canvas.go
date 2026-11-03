@@ -887,6 +887,10 @@ func (s *scene) overlays() {
 	for id := range e.Hint {
 		s.outline(id, 2.5, sel)
 	}
+	if e.Aim != nil {
+		p := e.ToScreen(*e.Aim).Add(s.origin)
+		s.handleDot(p, 5, 1, sel)
+	}
 	if e.DropOn != "" {
 		s.outline(e.DropOn, 2.5, sel)
 	}
@@ -1012,7 +1016,6 @@ func (s *scene) outlineBox(id doc.ID, c ui.Color) {
 }
 
 func (s *scene) linearHandles(c ui.Color) {
-	fill := toUI(s.pal.Background)
 	for _, h := range s.e.Handles() {
 		p := s.e.ToScreen(h.Point).Add(s.origin)
 		r := float32(5)
@@ -1020,9 +1023,13 @@ func (s *scene) linearHandles(c ui.Color) {
 		if h.Virtual || h.Kind == editor.HandleArrowBend {
 			r, alpha = 4, 0.7
 		}
-		s.p.FillPath((&ui.Path{}).Circle(float32(p.X), float32(p.Y), r), fill.Alpha(alpha))
-		s.p.StrokePath((&ui.Path{}).Circle(float32(p.X), float32(p.Y), r), 1.5, c.Alpha(alpha))
+		s.handleDot(p, r, alpha, c)
 	}
+}
+
+func (s *scene) handleDot(p geo.Vec, r, alpha float32, c ui.Color) {
+	s.p.FillPath((&ui.Path{}).Circle(float32(p.X), float32(p.Y), r), toUI(s.pal.Background).Alpha(alpha))
+	s.p.StrokePath((&ui.Path{}).Circle(float32(p.X), float32(p.Y), r), 1.5, c.Alpha(alpha))
 }
 
 func (s *scene) sizeBadge(corners []geo.Vec, c ui.Color) {

@@ -40,7 +40,7 @@ func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, bs, be *doc.Binding
 		expand, least := elbowLegs(s)
 		pts = routeElbowEnds(start, end, mid, expand, least)
 		if pts == nil {
-			pts = e.straightElbow(s, a, b, ts, te, outlineIn)
+			pts = e.straightElbow(s, a, b, bs, be, ts, te, outlineIn)
 		}
 	} else {
 		pts = e.viaElbow(s, a, b, mid, bs, be, ts, te, inv, outlineIn)
@@ -64,10 +64,10 @@ func (e *Editor) viaElbow(s *doc.Shape, a, b geo.Vec, mid float64, bs, be *doc.B
 		avoid = append(avoid, geo.BoxOf(outlineIn(te)))
 	}
 	pts := routeElbow(stops, out, in, mid, avoid)
-	if ts != nil {
+	if ts != nil && !bs.IsExact {
 		pts = backOff(meetOutline(pts, out, outlineIn(ts)), e.elbowHeadRoom(s, s.HeadStart, ts))
 	}
-	if te != nil {
+	if te != nil && !be.IsExact {
 		slices.Reverse(pts)
 		pts = backOff(meetOutline(pts, in, outlineIn(te)), e.elbowHeadRoom(s, s.HeadEnd, te))
 		slices.Reverse(pts)
@@ -85,14 +85,14 @@ func backOff(pts []geo.Vec, by float64) []geo.Vec {
 
 // straightElbow is for two ends with no route between them, as when they're in one
 // place: a line, from outline to outline.
-func (e *Editor) straightElbow(s *doc.Shape, a, b geo.Vec, ts, te *doc.Shape, outlineIn func(*doc.Shape) []geo.Vec) []geo.Vec {
+func (e *Editor) straightElbow(s *doc.Shape, a, b geo.Vec, bs, be *doc.Binding, ts, te *doc.Shape, outlineIn func(*doc.Shape) []geo.Vec) []geo.Vec {
 	from, to := a, b
-	if ts != nil {
+	if ts != nil && !bs.IsExact {
 		if p, ok := lastCross(a, b, outlineIn(ts)); ok {
 			from = p.Add(b.Sub(a).Uni().Mul(e.elbowHeadRoom(s, s.HeadStart, ts)))
 		}
 	}
-	if te != nil {
+	if te != nil && !be.IsExact {
 		if p, ok := lastCross(b, a, outlineIn(te)); ok {
 			to = p.Add(a.Sub(b).Uni().Mul(e.elbowHeadRoom(s, s.HeadEnd, te)))
 		}

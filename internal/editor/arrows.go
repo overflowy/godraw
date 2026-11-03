@@ -141,8 +141,9 @@ func (e *Editor) computeArrow(s *doc.Shape, bs, be *doc.Binding, ts, te *doc.Sha
 	}
 	a, b := info.RawStart, info.RawEnd
 
-	// Each bound end stops at its target's outline, a little off it. The
-	// outline comes into the arrow's space.
+	// Each bound end stops at its target's outline, a little off it, unless it's
+	// exact, when it goes all the way to its anchor. The outline comes into the
+	// arrow's space.
 	outlineIn := func(t *doc.Shape) []geo.Vec {
 		g := e.Geometry(t)
 		m := inv.Mul(e.PageMat(t.ID))
@@ -168,12 +169,12 @@ func (e *Editor) computeArrow(s *doc.Shape, bs, be *doc.Binding, ts, te *doc.Sha
 	if math.Abs(s.Bend) < 1 || dist < 1 {
 		// Straight.
 		info.Start, info.End = a, b
-		if ts != nil {
+		if ts != nil && !bs.IsExact {
 			if p, ok := lastCross(a, b, outlineIn(ts)); ok {
 				info.Start = p.Add(b.Sub(a).Uni().Mul(offsetOf(s.HeadStart)))
 			}
 		}
-		if te != nil {
+		if te != nil && !be.IsExact {
 			if p, ok := lastCross(b, a, outlineIn(te)); ok {
 				info.End = p.Add(a.Sub(b).Uni().Mul(offsetOf(s.HeadEnd)))
 			}
@@ -212,12 +213,12 @@ func (e *Editor) computeArrow(s *doc.Shape, bs, be *doc.Binding, ts, te *doc.Sha
 	startTurn, endTurn := 0.0, sweep
 	// Walk along the arc to where it leaves the start's target, and back
 	// from its end to where it enters the end's target.
-	if ts != nil {
+	if ts != nil && !bs.IsExact {
 		if t, ok := crossAlong(sample(aa, sweep), outlineIn(ts), false); ok {
 			startTurn = sweep*t + signOf(sweep)*offsetOf(s.HeadStart)/radius
 		}
 	}
-	if te != nil {
+	if te != nil && !be.IsExact {
 		if t, ok := crossAlong(sample(aa, sweep), outlineIn(te), true); ok {
 			endTurn = sweep*t - signOf(sweep)*offsetOf(s.HeadEnd)/radius
 		}

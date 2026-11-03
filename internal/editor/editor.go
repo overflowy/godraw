@@ -128,6 +128,7 @@ type Editor struct {
 	Brush   *geo.Box
 	Snaps   []SnapLine
 	Hint    map[doc.ID]bool // shapes outlined, as an arrow's target
+	Aim     *geo.Vec        // where an arrow being drawn holds on to its target
 	Erasing map[doc.ID]bool
 	DropOn  doc.ID // the frame shapes would drop into
 	Trails  []*Trail

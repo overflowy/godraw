@@ -166,7 +166,7 @@ func (e *Editor) cancelGesture() {
 	if g := e.gesture; g != nil {
 		e.gesture = nil
 		g.cancel(e)
-		e.Brush, e.Snaps, e.Hint, e.DropOn, e.Erasing = nil, nil, nil, "", nil
+		e.Brush, e.Snaps, e.Hint, e.Aim, e.DropOn, e.Erasing = nil, nil, nil, nil, "", nil
 	}
 }
 
@@ -394,8 +394,10 @@ func (e *Editor) linearHandles(s *doc.Shape) []Handle {
 	if s.Type == doc.TypeArrow {
 		info := e.Arrow(s)
 		hs = append(hs,
-			Handle{Kind: HandleArrowEnd, Term: "start", Point: m.Apply(info.Start)},
-			Handle{Kind: HandleArrowEnd, Term: "end", Point: m.Apply(info.End)},
+			// A bound end's handle sits where it holds on, which may be well inside the
+			// shape, past where the line stops.
+			Handle{Kind: HandleArrowEnd, Term: "start", Point: m.Apply(info.RawStart)},
+			Handle{Kind: HandleArrowEnd, Term: "end", Point: m.Apply(info.RawEnd)},
 		)
 		if s.Kind != "elbow" {
 			hs = append(hs, Handle{Kind: HandleArrowBend, Point: m.Apply(info.Mid)})
@@ -1715,7 +1717,7 @@ func newArrowCreate(e *Editor) *arrowCreate {
 func (g *arrowCreate) move(e *Editor) { g.drag.move(e) }
 
 func (g *arrowCreate) up(e *Editor) {
-	e.Hint = nil
+	e.Hint, e.Aim = nil, nil
 	s := e.Doc.Shapes[g.id]
 	info := e.Arrow(s)
 	if !e.dragged() || info.RawStart.Dist(info.RawEnd) < 3 {
@@ -1731,7 +1733,7 @@ func (g *arrowCreate) up(e *Editor) {
 
 func (g *arrowCreate) cancel(e *Editor) {
 	e.rollback()
-	e.Hint = nil
+	e.Hint, e.Aim = nil, nil
 }
 
 // bindTargetAt returns the shape an arrow's end at a point would bind to.
@@ -1802,6 +1804,18 @@ func (e *Editor) bindTerminal(arrow doc.ID, term string, target doc.ID, p geo.Ve
 	e.putBinding(nb)
 }
 
+// middleNear returns the middle of a closed shape, in the page, if a point is on it:
+// what an end dragged there takes to go all the way in, the line crossing the edge.
+func (e *Editor) middleNear(target doc.ID, p geo.Vec) (geo.Vec, bool) {
+	g := e.Geometry(e.Doc.Shapes[target])
+	m := e.PageMat(target)
+	reach := min(max(min(g.Bounds.W, g.Bounds.H)*0.15, 4), 16) / e.Cam().Z
+	if !g.Closed || m.Invert().Apply(p).Dist(g.Bounds.Center()) >= reach {
+		return geo.Vec{}, false
+	}
+	return m.Apply(g.Bounds.Center()), true
+}
+
 // unbind lets an end of an arrow go, leaving it where it shows.
 func (e *Editor) unbind(arrow doc.ID, term string) {
 	s := e.Doc.Shapes[arrow]
@@ -1844,10 +1858,19 @@ func (g *arrowEndDrag) move(e *Editor) {
 	if !e.pointer.Mods.Cmd {
 		target = e.bindTargetAt(p, g.id)
 	}
-	e.Hint = nil
+	e.Hint, e.Aim = nil, nil
 	if target != "" {
 		e.Hint = map[doc.ID]bool{target: true}
-		e.bindTerminal(g.id, g.term, target, p, e.pointer.Mods.Alt)
+		exact := e.pointer.Mods.Alt
+		if c, ok := e.middleNear(target, p); ok {
+			p, exact = c, true
+		}
+		e.bindTerminal(g.id, g.term, target, p, exact)
+		// An arrow being drawn isn't selected yet, so it has no handle to show this.
+		if g.nested {
+			aim := e.anchorOf(e.bindingOf(g.id, g.term), e.Doc.Shapes[target])
+			e.Aim = &aim
+		}
 		return
 	}
 	if b := e.bindingOf(g.id, g.term); b != nil {

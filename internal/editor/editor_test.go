@@ -296,7 +296,7 @@ func TestArrowBindsAndFollows(t *testing.T) {
 	b := h.rect(500, 100, 100, 100)
 	h.Next.Dash = "solid"
 	h.SetTool(ToolArrow)
-	h.drag(150, 150, 550, 150)
+	h.drag(150, 150, 530, 150)
 	arrow := h.shape(h.Selection()[0])
 	if arrow.Type != doc.TypeArrow {
 		t.Fatalf("selected %s", arrow.Type)

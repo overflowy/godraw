@@ -350,3 +350,124 @@ func TestElbowCornersAreRound(t *testing.T) {
 		t.Errorf("head doesn't look down its leg: %v", pts)
 	}
 }
+
+// Dragged into a shape with nothing held, an arrow's end crosses its edge: the line
+// stops there, but the end holds on to the middle, and its handle shows that. Taken
+// up again from there, it stays, rather than start from the edge.
+func TestArrowEndCrossesTheEdgeToTheMiddle(t *testing.T) {
+	h := newHarness(t)
+	box := h.rect(400, 300, 200, 120)
+	bounds := h.PageBounds(box.ID)
+	center := bounds.Center()
+
+	h.SetTool(ToolArrow)
+	h.PointerMove(100, 100, Mods{}, 0)
+	h.PointerDown(100, 100, 0, 1, Mods{}, 0)
+	h.PointerMove(300, 200, Mods{}, 0)
+	if h.Aim != nil {
+		t.Errorf("aiming at %v over nothing", *h.Aim)
+	}
+	h.PointerMove(center.X+20, center.Y-10, Mods{}, 0)
+	if h.Aim == nil || h.Aim.Dist(center) > 1e-6 {
+		t.Errorf("drawing it, aiming at %v, not %v", h.Aim, center)
+	}
+	h.PointerUp(center.X+20, center.Y-10, Mods{}, 0)
+	if h.Aim != nil {
+		t.Errorf("still aiming at %v when it's drawn", *h.Aim)
+	}
+	id := h.Selection()[0]
+	end := func() Handle {
+		for _, handle := range h.Handles() {
+			if handle.Kind == HandleArrowEnd && handle.Term == "end" {
+				return handle
+			}
+		}
+		t.Fatal("no end handle")
+		return Handle{}
+	}
+	if got := end().Point; got.Dist(center) > 1e-6 {
+		t.Errorf("handle at %v, not %v", got, center)
+	}
+	tip := h.PageMat(id).Apply(h.Arrow(h.shape(id)).End)
+	if bounds.Expand(-1).Contains(tip) {
+		t.Errorf("the line went in, to %v", tip)
+	}
+	if b := h.bindingOf(id, "end"); b.IsPrecise || b.IsExact {
+		t.Errorf("bound by %+v", b)
+	}
+
+	if got := h.HandleAt(h.ToScreen(center)); got.Kind != HandleArrowEnd || got.Term != "end" {
+		t.Errorf("at the middle, handle %+v", got)
+	}
+	h.PointerMove(center.X, center.Y, Mods{}, 0)
+	h.PointerDown(center.X, center.Y, 0, 1, Mods{}, 0)
+	h.PointerMove(center.X+15, center.Y+15, Mods{}, 0)
+	h.PointerUp(center.X+15, center.Y+15, Mods{}, 0)
+	if got := end().Point; got.Dist(center) > 1e-6 {
+		t.Errorf("taken up again, handle at %v, not %v", got, center)
+	}
+
+	// Out by an edge, it holds on where it's dropped, and the handle goes with it.
+	near := geo.V(590, 310)
+	h.PointerMove(center.X, center.Y, Mods{}, 0)
+	h.PointerDown(center.X, center.Y, 0, 1, Mods{}, 0)
+	h.PointerMove(near.X, near.Y, Mods{}, 0)
+	h.PointerUp(near.X, near.Y, Mods{}, 0)
+	if got := end().Point; got.Dist(near) > 1e-6 {
+		t.Errorf("near the corner, handle at %v, not %v", got, near)
+	}
+}
+
+// Dragged right onto the middle of a shape, an end takes its line across the edge and
+// all the way there, whatever its kind. Near the middle it only aims there, and a
+// press there to start an arrow leaves from the edge.
+func TestArrowDraggedOntoTheMiddleGoesIn(t *testing.T) {
+	for _, kind := range []string{"arc", "bent", "elbow"} {
+		h := newHarness(t)
+		box := h.rect(400, 300, 200, 120)
+		bounds := h.PageBounds(box.ID)
+		center := bounds.Center()
+		tipAfter := func(x, y float64) (geo.Vec, doc.ID) {
+			h.SetTool(ToolArrow)
+			h.PointerMove(100, 100, Mods{}, 0)
+			h.PointerDown(100, 100, 0, 1, Mods{}, 0)
+			h.PointerMove(x, y, Mods{}, 0)
+			h.PointerUp(x, y, Mods{}, 0)
+			id := h.Selection()[0]
+			if kind != "arc" {
+				c := h.shape(id).Clone()
+				if kind == "elbow" {
+					c.Kind = "elbow"
+				} else {
+					c.Bend = 40
+				}
+				if err := h.Batch(func() error { h.Put(c); return nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return h.PageMat(id).Apply(h.Arrow(h.shape(id)).End), id
+		}
+		tip, id := tipAfter(center.X+5, center.Y-5)
+		if tip.Dist(center) > 1e-6 {
+			t.Errorf("%s: dropped on the middle, it ended at %v, not %v", kind, tip, center)
+		}
+		if b := h.bindingOf(id, "end"); !b.IsExact || b.Anchor != geo.V(0.5, 0.5) {
+			t.Errorf("%s: bound by %+v", kind, b)
+		}
+		if tip, _ = tipAfter(center.X+30, center.Y-20); bounds.Expand(-1).Contains(tip) {
+			t.Errorf("%s: dropped beside the middle, it went in, to %v", kind, tip)
+		}
+	}
+	h := newHarness(t)
+	box := h.rect(400, 300, 200, 120)
+	center := h.PageBounds(box.ID).Center()
+	h.SetTool(ToolArrow)
+	h.drag(center.X, center.Y, 900, 360)
+	id := h.Selection()[0]
+	if b := h.bindingOf(id, "start"); b == nil || b.IsExact {
+		t.Errorf("pressed on the middle, bound by %+v", b)
+	}
+	if start := h.PageMat(id).Apply(h.Arrow(h.shape(id)).Start); h.PageBounds(box.ID).Expand(-1).Contains(start) {
+		t.Errorf("pressed on the middle, it starts inside, at %v", start)
+	}
+}
