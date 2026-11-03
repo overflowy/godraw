@@ -371,7 +371,7 @@ func (b *builder) poster() {
 	b.arrow(link{start: geo.V(830, 324), to: list, bend: -34, color: "red", size: "s"}, f)
 
 	// Facts, on paper.
-	b.note(1130, 470, -0.045, "yellow", "11.8 MB app.\nNo Electron.")
+	b.note(1130, 470, -0.045, "yellow", "18.8 MB app.\nNo Electron.")
 	b.note(1362, 486, 0.03, "light-blue", "Drag all 1,700 strokes at 30 ms a frame")
 	b.note(1138, 700, 0.025, "light-green", "Saves to plain JSON")
 	b.note(1370, 716, -0.03, "violet", "Zero lines of JavaScript")
