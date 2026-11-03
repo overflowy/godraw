@@ -26,6 +26,15 @@ Three pages: a poster with a live diagram (drag a box and its arrows follow), a 
 flow field of 1,700 pen strokes, and a sheet of every style. `go run ./examples/showcase`
 regenerates it.
 
+## Measure it
+
+```sh
+go run ./examples/perf -n 500            # a page of 500 shapes, fitted to the window
+go run ./examples/perf -file my.tldr     # or a drawing of your own
+```
+
+This opens a window that stays on top without taking the focus, moves the camera and drags shapes on a script, and prints how long the frames of each part took on the GPU. `go test ./internal/app -bench BenchmarkCanvas -run '^$'` measures the same interactions without a window, which is what to profile.
+
 ## What it does
 
 **Tools.** Select, hand, draw, eraser, arrow, text, note, image, line, highlighter, laser,

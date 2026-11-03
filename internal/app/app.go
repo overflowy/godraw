@@ -53,7 +53,6 @@ type App struct {
 	geoOpen, pagesOpen, menuOpen, helpOpen, moreOpen bool
 	headsOpen                                        bool
 	minimap                                          bool
-	layouts                                          map[measureKey]*ui.TextLayout
 	renamingPage                                     doc.ID
 	renameText                                       string
 	editKey                                          int
@@ -69,6 +68,14 @@ type App struct {
 	dark    bool
 
 	sizeBadge bool
+
+	zoomedAt time.Time // when the zoom going on last moved; zero for none
+	zoom     zoomState
+	rest     restView
+
+	cells      map[cellKey]*cellPlan
+	details    map[detailKey]*detail
+	cellsFrame int
 
 	mcpOpen   bool
 	mcpCopied string // the field that says it copied
@@ -197,11 +204,14 @@ func modsOf(m ui.Modifiers) editor.Mods {
 // canvas builds the element the drawing is painted on and takes input on.
 func (a *App) canvas(c *ui.Context) {
 	e := a.ed
+	ui.Themed(c.Key("canvas-paint"), paintTheme(c.Theme())).Background(ui.Transparent).
+		Absolute().Top(0).Left(0).Right(0).Bottom(0).Children(func() {
+		ui.Box(c.Key("canvas-ink")).Fill().Draw(a.paintCanvas)
+	})
 	cv := ui.Box(c.Key("canvas")).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 		Focusable().FocusRing(false).Bind(&a.canvasHandle).
 		Cursor(cursorOf(e.CursorNow()))
 	cv.Label("Canvas")
-	cv.Draw(a.paintCanvas)
 	cv.HandleInput(func(ev ui.InputEvent) bool { return a.input(c, ev) })
 	cv.ContextMenu(a.contextMenu)
 }
@@ -254,14 +264,14 @@ func (a *App) input(c *ui.Context, ev ui.InputEvent) bool {
 		return true
 	case ui.InputScroll:
 		if ev.Mods&(ui.Cmd|ui.Ctrl) != 0 {
-			e.ZoomAt(geo.V(x, y), math.Exp(-float64(ev.DY)*0.01))
+			a.ZoomGesture(geo.V(x, y), math.Exp(-float64(ev.DY)*0.01), ev.Time)
 		} else {
 			e.Pan(float64(ev.DX), float64(ev.DY))
 		}
 		e.PointerMove(x, y, modsOf(ev.Mods), t)
 		return true
 	case ui.InputZoom:
-		e.ZoomAt(geo.V(x, y), float64(ev.Scale))
+		a.ZoomGesture(geo.V(x, y), float64(ev.Scale), ev.Time)
 		return true
 	case ui.InputKeyDown:
 		if ev.Key == ui.KeySpace && e.Editing == "" {

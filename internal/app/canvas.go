@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -31,10 +32,27 @@ type scene struct {
 	// of a page's many that are not to be measured path by path.
 	small bool
 	// turned counts the turned frames being painted: see spansLarge.
-	turned  int
+	turned int
+	// box is the canvas's box in the window.
+	box ui.Rect
+	// zoom is the frame of a zoom going on that this scene paints.
+	zoom *zoomPass
+	// moving says that this scene paints at a zoom other than the one that shows, in
+	// a zoom going on, and scale what takes that to the screen.
+	moving bool
+	scale  ui.Transform
+	// current is the shape that paintShape and paintHeading paint, which are made
+	// once for the frame rather than for each shape, and only which of its prims.
+	current                  *doc.Shape
+	paintShape, paintHeading func()
+	prims                    primFilter
+	noHeading                bool
+	// shown is how many pixels of the screen a unit painted comes to.
+	shown   float64
 	only    []doc.ID // what an export draws; all of the page without it
 	path    ui.Path
 	segment [2][2]float32
+	span    [1]ui.Span
 	transp  bool
 }
 
@@ -49,10 +67,24 @@ func (s *scene) camMat() geo.Mat {
 		Mul(geo.Translate(s.cam.X, s.cam.Y))
 }
 
-// buildPath writes a path into s.path under m.
+// buildPath writes a path into s.path under m, as finely as it shows.
 func (s *scene) buildPath(g *geo.Path, m geo.Mat) *ui.Path {
 	p := &s.path
 	p.Reset()
+	if lines := s.detailOf(g, m); lines != nil {
+		for _, l := range lines {
+			v := m.Apply(l.pts[0])
+			p.MoveTo(float32(v.X), float32(v.Y))
+			for _, q := range l.pts[1:] {
+				v = m.Apply(q)
+				p.LineTo(float32(v.X), float32(v.Y))
+			}
+			if l.closed {
+				p.Close()
+			}
+		}
+		return p
+	}
 	for _, seg := range g.Segs {
 		switch seg.Op {
 		case geo.OpMove:
@@ -74,19 +106,279 @@ func (s *scene) buildPath(g *geo.Path, m geo.Mat) *ui.Path {
 	return p
 }
 
+// A hand-drawn outline has points every few units of the page, which is what it
+// needs close up and far more than it needs from far away, where the frame has to
+// go through all of them only to find the mask it already has. So a path of many
+// parts paints as a line as fine as the pixels can tell, kept from frame to frame.
+const detailTolerance = 0.2 // how far a line may stray from the path, in device pixels
+
+// detailKey is a path, at how fine a line.
+type detailKey struct {
+	path *geo.Path
+	tol  float64
+}
+
+// detail is a path as a line in its own space.
+type detail struct {
+	lines []deviceLine
+	used  int
+}
+
+// detailOf returns what to paint of a path under m, nil for all of it. In a picture
+// it's all of it, as the picture may be seen closer than it's made.
+func (s *scene) detailOf(g *geo.Path, m geo.Mat) []deviceLine {
+	if s.export || len(g.Segs) < detailSegs {
+		return nil
+	}
+	// Each half an octave has one line, so that near zooms share it, and it's the
+	// finer one.
+	tol := detailTolerance / (s.cam.Z * float64(s.p.Scale()))
+	tol = math.Pow(2, math.Floor(math.Log2(tol)*2)/2)
+	key := detailKey{g, tol}
+	d := s.a.details[key]
+	if d == nil {
+		if s.a.details == nil {
+			s.a.details = map[detailKey]*detail{}
+		}
+		d = &detail{lines: flatten(g, geo.Identity, curveTolerance/tol)}
+		for i := range d.lines {
+			l := &d.lines[i]
+			for j := range l.pts {
+				l.pts[j] = l.pts[j].Mul(tol / curveTolerance)
+			}
+			l.pts = geo.Simplify(l.pts, tol)
+		}
+		s.a.details[key] = d
+	}
+	d.used = s.a.cellsFrame
+	return d.lines
+}
+
 // paintCanvas paints the whole canvas into a box of the window.
 func (a *App) paintCanvas(p *ui.Painter, r ui.Rect) {
 	e := a.ed
 	cam := e.Cam()
-	s := &scene{a: a, e: e, p: p, pal: e.Palette(), cam: cam, origin: geo.V(float64(r.X), float64(r.Y))}
+	k := float64(p.Scale())
+	s := &scene{a: a, e: e, p: p, pal: e.Palette(), cam: cam, origin: snappedOrigin(r, cam, k), box: r}
 	s.view = geo.Box{X: -cam.X, Y: -cam.Y, W: float64(r.W) / cam.Z, H: float64(r.H) / cam.Z}
+	a.pruneCells()
 	p.Fill(r, toUI(s.pal.Background), 0)
 	if e.Grid {
 		s.grid(r)
 	}
-	s.lightInk = s.maskArea(e.Children(e.Page), float64(p.Scale()), false) > atlasBudget
-	s.children(e.Page)
+	if a.zoomedAt.IsZero() {
+		s.lightInk = s.maskArea(e.Children(e.Page), k, false) > atlasBudget
+		s.children(e.Page)
+		a.rest = restView{z: cam.Z, view: s.view.Expand(40 / cam.Z)}
+	} else {
+		a.paintZooming(s)
+	}
 	s.overlays()
+}
+
+// A zoom asks for all of a page's paths and text at a new size each frame, and
+// masks and fonts of a size the next frame won't ask for again are all it gets for
+// that work. So while a zoom goes on, the page's masks stay at one of a few levels
+// of zoom, which the GPU scales to the zoom it's at, and once it stops they come to
+// the zoom it stopped at, sharp. Nor does a shape go to a new level with the frame
+// that wants it: each keeps the masks it has until a frame has the time for it, so
+// that no frame pays for all of the page.
+const (
+	// How many levels of zoom there are to a doubling: the most that a level is
+	// sharper than what it shows.
+	zoomLevelsPerDoubling = 4
+	// How long after the last of a zoom's events it counts as stopped.
+	zoomSettle = 140 * time.Millisecond
+	// How long a frame may spend on bringing shapes to a level, while a zoom goes
+	// on and once it stopped.
+	zoomBudget, settleBudget = 3 * time.Millisecond, 6 * time.Millisecond
+	// How many device pixels a side of a shape's mask may take while a zoom goes on.
+	// A larger one's fills stay soft until it stops, under lines that stay sharp:
+	// whole masks of large shapes are megabytes each.
+	zoomMaskSide = 512.0
+)
+
+// restView is what the canvas showed last with no zoom going on, for which the
+// shapes in it have masks to start a zoom from.
+type restView struct {
+	z    float64
+	view geo.Box
+}
+
+// primFilter is which of a shape's prims a scene paints.
+type primFilter uint8
+
+const (
+	allOfShape primFilter = iota
+	onlyInk
+	onlyText
+)
+
+// zoomState is a zoom going on.
+type zoomState struct {
+	level float64            // the level that shapes are going to
+	light bool               // whether that many masks take too much room: see atlasBudget
+	at    map[doc.ID]float64 // the zoom that a shape's masks are at, of those it changed
+}
+
+// zoomPass is a frame of a zoom going on.
+type zoomPass struct {
+	base    *scene
+	start   time.Time
+	budget  time.Duration
+	scenes  []*scene // one for each zoom that masks are at
+	behind  int      // shapes that aren't at the level yet
+	changed int      // shapes that came to the level in this frame
+}
+
+// ZoomGesture zooms around a point of the canvas, as part of a zoom going on at a
+// time, as a pinch.
+func (a *App) ZoomGesture(at geo.Vec, factor float64, t time.Time) {
+	a.zoomedAt = t
+	a.ed.ZoomAt(at, factor)
+}
+
+// paintZooming paints the page in a zoom going on, and asks for the frames to come.
+func (a *App) paintZooming(s *scene) {
+	cam, p := s.cam, s.p
+	left := zoomSettle - p.Now().Sub(a.zoomedAt)
+	level, budget := zoomLevel(a.zoom.level, cam.Z), zoomBudget
+	if left <= 0 {
+		// It stopped: to the zoom it's at, sharp.
+		level, budget = cam.Z, settleBudget
+	}
+	pass := &zoomPass{base: s, start: time.Now(), budget: budget}
+	s.zoom = pass
+	if a.zoom.at == nil {
+		a.zoom.at = map[doc.ID]float64{}
+	}
+	if level != a.zoom.level {
+		a.zoom.level = level
+		a.zoom.light = pass.scene(level).maskArea(s.e.Children(s.e.Page), float64(p.Scale()), level != cam.Z) > atlasBudget
+	}
+	s.children(s.e.Page)
+	if left > 0 {
+		p.After(left)
+	}
+	switch {
+	case pass.behind > 0 || pass.changed > 0:
+		// A mask lasts for the first frame it shows in, and is kept from its second:
+		// one frame more, for the next thing to move not to pay for them.
+		p.AnimationFrame()
+	case left <= 0:
+		a.zoomedAt, a.zoom = time.Time{}, zoomState{}
+		a.rest = restView{z: cam.Z, view: s.view.Expand(40 / cam.Z)}
+	}
+}
+
+// zoomLevel returns the level for a zoom, which stays the one it was while near:
+// one at or above the zoom, so that masks scale down rather than up.
+func zoomLevel(was, z float64) float64 {
+	step := math.Pow(2, 1.0/zoomLevelsPerDoubling)
+	if was != 0 && z <= was*1.02 && z >= was/(step*1.02) {
+		return was
+	}
+	return math.Pow(2, math.Ceil(math.Log2(z)*zoomLevelsPerDoubling)/zoomLevelsPerDoubling)
+}
+
+// scene returns the scene that paints with masks at a zoom.
+func (pass *zoomPass) scene(z float64) *scene {
+	for _, l := range pass.scenes {
+		if l.cam.Z == z {
+			return l
+		}
+	}
+	s := pass.base
+	l := &scene{a: s.a, e: s.e, p: s.p, pal: s.pal, view: s.view, box: s.box}
+	if z == s.cam.Z {
+		l.cam, l.origin = s.cam, s.origin
+	} else {
+		// On the same whole pixels as snappedOrigin has them, so that the masks of a
+		// zoom the view rested at are good for it. A clip under the scale that takes
+		// it to the screen would have no whole pixels to fall on, and a mask of its
+		// own: turned has it paint without cells, and moving as lines what used them.
+		k := float64(s.p.Scale())
+		snap := func(v float64) float64 { return math.Round(v*z*k) / (z * k) }
+		l.cam = editor.Camera{X: snap(s.cam.X), Y: snap(s.cam.Y), Z: z}
+		l.origin = geo.V(float64(s.box.X), float64(s.box.Y))
+		l.moving, l.turned = true, 1
+		l.shown = s.cam.Z / z
+		f := float32(l.shown)
+		l.scale = ui.Scaling(f, f).Then(ui.Translation(float32((s.cam.X-l.cam.X)*s.cam.Z), float32((s.cam.Y-l.cam.Y)*s.cam.Z)))
+	}
+	l.paintShape = func() { l.shapeNow(l.current) }
+	l.paintHeading = func() { l.heading(l.current) }
+	pass.scenes = append(pass.scenes, l)
+	return l
+}
+
+// sceneOf returns the scene to paint a shape with: at the level if there's time to
+// bring it there, otherwise at the zoom its masks are at. A shape too large for its
+// masks to go to the level has its text, whose glyphs are small, painted with another
+// scene that is, which is nil otherwise.
+func (pass *zoomPass) sceneOf(sh *doc.Shape) (l, text *scene) {
+	s := pass.base
+	z := s.a.zoom
+	b := s.e.PageBounds(sh.ID)
+	target := z.level
+	if z.level != s.cam.Z {
+		target = min(target, sideLevel(max(b.W, b.H), float64(s.p.Scale())))
+	}
+	at, ok := z.at[sh.ID]
+	if !ok {
+		at = target
+		// What showed before the zoom has masks from then, and anything else none.
+		if rest := s.a.rest; rest.z != 0 && rest.z <= target && rest.view.Overlaps(b) {
+			at = rest.z
+		}
+	}
+	if at != target {
+		if time.Since(pass.start) < pass.budget {
+			at = target
+			pass.changed++
+		} else {
+			pass.behind++
+		}
+	}
+	if !ok || at == target {
+		z.at[sh.ID] = at
+	}
+	l = pass.scene(at)
+	l.lightInk = z.light
+	if target != z.level {
+		text = pass.scene(z.level)
+	}
+	return l, text
+}
+
+// sideLevel returns the highest level at which something this long in the page is
+// within a mask's side while a zoom goes on.
+func sideLevel(side, k float64) float64 {
+	if side <= 0 {
+		return math.Inf(1)
+	}
+	return math.Pow(2, math.Floor(math.Log2(zoomMaskSide/(side*k))*zoomLevelsPerDoubling)/zoomLevelsPerDoubling)
+}
+
+// paintAt paints a shape with a scene, through what takes that scene to the screen.
+func (l *scene) paintAt(sh *doc.Shape, paint func()) {
+	l.current = sh
+	if l.moving {
+		l.p.Transform(l.scale, l.box.X, l.box.Y, paint)
+		return
+	}
+	paint()
+}
+
+// snappedOrigin returns where the canvas's corner paints, within half a device
+// pixel of where it is, so that the page moves by whole pixels. A shape then falls
+// the same way on the pixels wherever the view pans: its edges don't shimmer as it
+// moves, and the masks it was painted from last are good for this frame too.
+func snappedOrigin(r ui.Rect, cam editor.Camera, k float64) geo.Vec {
+	at := func(corner, camera float64) float64 {
+		return corner + (math.Round(camera*cam.Z*k)/k - camera*cam.Z)
+	}
+	return geo.V(at(float64(r.X), cam.X), at(float64(r.Y), cam.Y))
 }
 
 // atlasBudget is how many device pixels of masks a frame may ask for: a frame
@@ -219,11 +511,30 @@ func (s *scene) shape(sh *doc.Shape) {
 	if s.culled(sh) {
 		return
 	}
+	if s.zoom != nil {
+		l, text := s.zoom.sceneOf(sh)
+		if text == nil {
+			l.paintAt(sh, l.paintShape)
+			return
+		}
+		l.prims, text.prims = onlyInk, onlyText
+		l.paintAt(sh, l.paintShape)
+		text.paintAt(sh, text.paintShape)
+		l.prims, text.prims = allOfShape, allOfShape
+		return
+	}
+	s.shapeNow(sh)
+}
+
+func (s *scene) shapeNow(sh *doc.Shape) {
 	m := s.camMat().Mul(s.e.PageMat(sh.ID))
 	o := s.opacityOf(sh)
 	s.small = s.isSmall(s.e.PageBounds(sh.ID), float64(s.p.Scale()))
 	for _, pr := range s.e.Display(sh, s.pal) {
 		if pr.Label && sh.ID == s.e.Editing && !s.export {
+			continue
+		}
+		if s.prims != allOfShape && (s.prims == onlyText) != (pr.Kind == editor.PrimText) {
 			continue
 		}
 		s.prim(pr, m, o, sh)
@@ -240,14 +551,27 @@ func (s *scene) isSmall(b geo.Box, k float64) bool {
 func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
 	switch pr.Kind {
 	case editor.PrimFill:
+		if s.asBox(pr, m) {
+			s.fillBox(pr, m, toUI(pr.Color.Alpha(o)))
+			return
+		}
 		// Translucent, overlapping pieces of line would show: those stay whole.
-		if s.lightInk && pr.Ink != nil && pr.Color.A*o >= 1 {
+		if pr.Ink != nil && pr.Color.A*o >= 1 && (s.lightInk || s.movingLarge(pr, m)) {
 			s.inkLine(pr, m)
 			return
 		}
 		s.fill(pr.Path, m, toUI(pr.Color.Alpha(o)))
 	case editor.PrimStroke:
-		if s.lightInk && !pr.Butt && len(pr.Dash) < 2 && pr.Color.A*o >= 1 {
+		if s.asBox(pr, m) {
+			s.strokeBox(pr, m, toUI(pr.Color.Alpha(o)))
+			return
+		}
+		if pr.Hatched != nil && pr.Width/hatchCover*s.cam.Z*float64(s.p.Scale()) < hatchFinest && !s.export {
+			// Too fine to make out, it would only shimmer: what it comes to, as a tint.
+			s.fill(pr.Hatched, m, toUI(pr.Color.Alpha(o*hatchCover)))
+			return
+		}
+		if !pr.Butt && len(pr.Dash) < 2 && pr.Color.A*o >= 1 && (s.lightInk || s.movingLarge(pr, m)) {
 			s.lightLines(pr, m)
 			return
 		}
@@ -259,10 +583,56 @@ func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
 	}
 }
 
+// How much of what it fills a pattern's lines cover: their width to their spacing.
+const hatchCover = 1.6 / 8
+
+// These are variables for tests, to compare with what they stand in for.
+var (
+	// How many device pixels apart a pattern's lines have to be to make out.
+	hatchFinest = 4.0
+	// Whether a prim that is a box draws as one.
+	boxesAsBoxes = true
+	// How many parts a path has before it paints as a line as fine as it shows.
+	detailSegs = 24
+)
+
+// asBox says whether to draw a prim as the box it is, which takes neither mask nor
+// cells. A picture stays as exact as its paths are.
+func (s *scene) asBox(pr editor.Prim, m geo.Mat) bool {
+	return pr.Rounded != nil && boxesAsBoxes && !s.export && math.Abs(m.Rotation()) < 1e-4
+}
+
+// boxOf returns where a prim's box paints, and the radius of its corners.
+func (s *scene) boxOf(pr editor.Prim, m geo.Mat) (ui.Rect, float32) {
+	at, z := m.Apply(geo.V(pr.Rounded.X, pr.Rounded.Y)), s.cam.Z
+	return ui.Rect{X: float32(at.X), Y: float32(at.Y), W: float32(pr.Rounded.W * z), H: float32(pr.Rounded.H * z)}, float32(pr.Rounded.Radius * z)
+}
+
+func (s *scene) fillBox(pr editor.Prim, m geo.Mat, c ui.Color) {
+	r, radius := s.boxOf(pr, m)
+	s.p.Fill(r, c, radius)
+}
+
+// strokeBox strokes a box. A painter's Stroke goes inside its box, and a stroke of a
+// path to both sides of it.
+func (s *scene) strokeBox(pr editor.Prim, m geo.Mat, c ui.Color) {
+	r, radius := s.boxOf(pr, m)
+	w := max(float32(pr.Width*s.cam.Z), s.pixel())
+	s.p.Stroke(ui.Rect{X: r.X - w/2, Y: r.Y - w/2, W: r.W + w, H: r.H + w}, c, radius, w)
+}
+
+// movingLarge says whether a prim of a zoom going on would take a large mask.
+func (s *scene) movingLarge(pr editor.Prim, m geo.Mat) bool {
+	return s.moving && !s.small && pr.Path != nil && s.spansLargeAt(pr.Path, m, 0)
+}
+
 // inkLine draws a hand-inked stroke as a run of short lines, as wide as it is
 // at each point, a few pixels each: as much as the eye can tell.
 func (s *scene) inkLine(pr editor.Prim, m geo.Mat) {
-	const step = 3 // DIPs
+	step := 3.0 // DIPs
+	if s.shown > 0 {
+		step /= s.shown // of the screen
+	}
 	c := toUI(pr.Color)
 	z := s.cam.Z
 	pts := pr.Ink.Pts
@@ -301,8 +671,14 @@ func (s *scene) text(pr editor.Prim, m geo.Mat, o float64) {
 			}
 			a := m.Apply(geo.V(pr.X+l.X, pr.Y+l.Y+pr.Block.Line/2))
 			b := m.Apply(geo.V(pr.X+l.X+l.W, pr.Y+l.Y+pr.Block.Line/2))
-			s.buildPath((&geo.Path{}).Move(a).Line(b), geo.Identity)
-			s.p.StrokePath(&s.path, max(size/2, 0.5), c.Alpha(0.5))
+			w := max(size/2, 0.5)
+			if math.Abs(m.Rotation()) < 1e-4 {
+				s.p.Fill(ui.Rect{X: float32(a.X), Y: float32(a.Y) - w/2, W: float32(b.X - a.X), H: w}, c.Alpha(0.5), w/2)
+				continue
+			}
+			s.segment[0] = [2]float32{float32(a.X), float32(a.Y)}
+			s.segment[1] = [2]float32{float32(b.X), float32(b.Y)}
+			s.p.StrokePolyline(s.segment[:], w, c.Alpha(0.5))
 		}
 		return
 	}
@@ -311,7 +687,8 @@ func (s *scene) text(pr editor.Prim, m geo.Mat, o float64) {
 	drop := (float32(pr.Block.Line*z) - nat) / 2
 	rot := m.Rotation()
 	draw := func(q geo.Vec, text string) {
-		s.p.TextLayout(s.a.shaped(text, font, size, 0), float32(q.X), float32(q.Y)+drop, c)
+		s.span[0] = ui.Span{Text: text, Font: font, Size: size, Color: c}
+		s.p.RichText(float32(q.X), float32(q.Y)+drop, 0, s.span[:]...)
 	}
 	if math.Abs(rot) < 1e-4 {
 		for _, l := range pr.Block.Lines {
@@ -377,13 +754,26 @@ func (s *scene) frame(sh *doc.Shape) {
 	pm := s.e.PageMat(sh.ID)
 	m := s.camMat().Mul(pm)
 	o := s.opacityOf(sh)
+	rot := m.Rotation()
+	// In a zoom going on, what it holds finds its own scene, as it has masks of its
+	// own, under a clip on the screen's whole pixels, which costs nothing. A turned
+	// one's clip takes a mask anyway: it all goes at once.
+	if s.zoom != nil && math.Abs(rot) >= 1e-4 {
+		l, text := s.zoom.sceneOf(sh)
+		l.noHeading = text != nil
+		l.paintAt(sh, func() { l.frame(sh) })
+		l.noHeading = false
+		if text != nil {
+			text.paintAt(sh, text.paintHeading)
+		}
+		return
+	}
 	for _, pr := range s.e.Display(sh, s.pal) {
 		s.prim(pr, m, o, sh)
 	}
 	origin := m.Apply(geo.Vec{})
 	z := s.cam.Z
 	clip := ui.Rect{X: float32(origin.X), Y: float32(origin.Y), W: float32(sh.W * z), H: float32(sh.H * z)}
-	rot := m.Rotation()
 	inside := func() { s.children(sh.ID) }
 	if math.Abs(rot) < 1e-4 {
 		s.p.Clip(clip, 0, inside)
@@ -399,7 +789,23 @@ func (s *scene) frame(sh *doc.Shape) {
 		})
 		s.turned--
 	}
-	s.frameHeading(sh, origin, rot)
+	if s.zoom != nil {
+		l, text := s.zoom.sceneOf(sh)
+		if text != nil {
+			l = text
+		}
+		l.paintAt(sh, l.paintHeading)
+		return
+	}
+	if !s.noHeading {
+		s.frameHeading(sh, origin, rot)
+	}
+}
+
+// heading paints a frame's heading, for a scene of its own.
+func (s *scene) heading(sh *doc.Shape) {
+	m := s.camMat().Mul(s.e.PageMat(sh.ID))
+	s.frameHeading(sh, m.Apply(geo.Vec{}), m.Rotation())
 }
 
 // pixel returns how much of what is painted makes a pixel of what is shown. A
@@ -432,8 +838,8 @@ func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 		face = family(font)
 	}
 	draw := func() {
-		l := s.a.shaped(name, face, size, float32(max(sh.W*s.cam.Z, 40)))
-		s.p.TextLayout(l, float32(origin.X), float32(origin.Y)-size*1.6, color)
+		s.span[0] = ui.Span{Text: name, Font: face, Size: size, Color: color}
+		s.p.RichText(float32(origin.X), float32(origin.Y)-size*1.6, float32(max(sh.W*s.cam.Z, 40)), s.span[:]...)
 	}
 	if math.Abs(rot) < 1e-4 {
 		draw()
@@ -580,6 +986,12 @@ func (s *scene) outlineBox(id doc.ID, c ui.Color) {
 	g := s.e.Geometry(sh)
 	cs := g.Bounds.Corners()
 	m := s.camMat().Mul(s.e.PageMat(id))
+	if math.Abs(m.Rotation()) < 1e-4 {
+		at, z := m.Apply(cs[0]), s.cam.Z
+		r := ui.Rect{X: float32(at.X), Y: float32(at.Y), W: float32(g.Bounds.W * z), H: float32(g.Bounds.H * z)}
+		s.p.Stroke(ui.Rect{X: r.X - 0.5, Y: r.Y - 0.5, W: r.W + 1, H: r.H + 1}, c.Alpha(0.6), 0.5, 1)
+		return
+	}
 	s.stroke((&geo.Path{}).Poly(cs[:], true), m, stroke{width: 1, color: c.Alpha(0.6)})
 }
 

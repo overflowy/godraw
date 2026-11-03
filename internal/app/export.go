@@ -79,10 +79,12 @@ func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA 
 		}
 		side := int(math.Ceil(float64(size) / scale))
 		img := ui.Render(func(c *ui.Context) {
-			ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
-				s := sceneAt(p, tx, ty, size)
-				p.Fill(r, toUI(pal.Background), 0)
-				s.paint(ids)
+			ui.Themed(c, paintTheme(c.Theme())).Background(ui.Transparent).Fill().Children(func() {
+				ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
+					s := sceneAt(p, tx, ty, size)
+					p.Fill(r, toUI(pal.Background), 0)
+					s.paint(ids)
+				})
 			})
 		}, side, side, float32(scale))
 		draw.Draw(out, image.Rect(tx, ty, tx+size, ty+size), img, image.Point{}, draw.Src)

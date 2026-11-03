@@ -33,6 +33,14 @@ type Prim struct {
 	// Ink, on a hand-drawn stroke's fill, is the line the fill outlines: what
 	// a view with very many strokes draws in its place.
 	Ink *Ink
+	// Rounded, on a fill or a frame's border, says that its path is this box, which
+	// the GPU can draw as it is rather than from a mask of the path. It draws a border
+	// on whole pixels, which suits a frame's and not a shape's, whose weight would
+	// differ from that of a shape of another form.
+	Rounded *RoundedBox
+	// Hatched, on the lines of a pattern, is what they fill, for a view too far away
+	// to make them out.
+	Hatched *geo.Path
 
 	// Text.
 	Block *TextBlock
@@ -47,6 +55,12 @@ type Prim struct {
 	FlipX bool
 	FlipY bool
 	Crop  *doc.Crop
+}
+
+// RoundedBox is a box with rounded corners.
+type RoundedBox struct {
+	geo.Box
+	Radius float64
 }
 
 // Ink is a line through points, with its width at each.
@@ -326,10 +340,10 @@ func fillPrims(fill string, base *geo.Path, poly []geo.Vec, sw Swatch, pal *Pale
 	case "pattern":
 		return []Prim{
 			fillWith(base, sw.Semi),
-			{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Pattern},
+			{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Pattern, Hatched: base},
 		}
 	case "lined-fill":
-		return []Prim{{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Lined}}
+		return []Prim{{Kind: PrimStroke, Path: hatch(poly, 8), Width: 1.6, Color: sw.Lined, Hatched: base}}
 	}
 	return nil
 }
@@ -353,6 +367,20 @@ func geoBasePath(s *doc.Shape, w, h float64, poly []geo.Vec) *geo.Path {
 	return (&geo.Path{}).Poly(poly, true)
 }
 
+// geoBox returns the box that a geo shape's path is, if it is one.
+func geoBox(s *doc.Shape, w, h float64) *RoundedBox {
+	switch s.Geo {
+	case "rectangle", "x-box", "check-box":
+	default:
+		return nil
+	}
+	box := &RoundedBox{Box: geo.Box{W: w, H: h}}
+	if s.Dash == "draw" {
+		box.Radius = math.Min(math.Min(strokeOf(s.Size)*s.Scale*2, 10), math.Min(w, h)/2)
+	}
+	return box
+}
+
 func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 	w, h := s.W, s.H+s.GrowY
 	g := e.Geometry(s)
@@ -360,7 +388,13 @@ func (e *Editor) geoPrims(s *doc.Shape, pal *Palette) []Prim {
 	stroke := strokeOf(s.Size) * s.Scale
 	base := geoBasePath(s, w, h, g.Outline)
 	flat, _ := base.Points(10)
+	box := geoBox(s, w, h)
 	out := fillPrims(s.Fill, base, flat, sw, pal)
+	for i := range out {
+		if out[i].Kind == PrimFill {
+			out[i].Rounded = box
+		}
+	}
 	out = append(out, outlinePrims(s.Dash, base, flat, true, stroke, sw.Solid, string(s.ID))...)
 	inner := &geo.Path{}
 	switch s.Geo {
@@ -557,11 +591,15 @@ func (e *Editor) notePrims(s *doc.Shape, pal *Palette) []Prim {
 			d := float64(6-i) * s.Scale
 			sb := geo.Box{X: box.X + 3*s.Scale - d/2, Y: box.Y + d*0.9, W: box.W - 6*s.Scale + d, H: box.H}
 			c := sb.Corners()
-			out = append(out, fillWith(geo.RoundedPoly(c[:], 6*s.Scale), Color{A: 0.022}))
+			shadow := fillWith(geo.RoundedPoly(c[:], 6*s.Scale), Color{A: 0.022})
+			shadow.Rounded = &RoundedBox{sb, 6 * s.Scale}
+			out = append(out, shadow)
 		}
 	}
 	c := box.Corners()
-	out = append(out, fillWith(geo.RoundedPoly(c[:], 6*s.Scale), sw.NoteFill))
+	body := fillWith(geo.RoundedPoly(c[:], 6*s.Scale), sw.NoteFill)
+	body.Rounded = &RoundedBox{box, 6 * s.Scale}
+	out = append(out, body)
 	if s.Text != "" {
 		textColor := sw.NoteText
 		if s.LabelColor != "black" {
@@ -612,7 +650,10 @@ func (e *Editor) framePrims(s *doc.Shape, pal *Palette) []Prim {
 		stroke = strokeWith(path, strokeOf("s"), sw.Solid)
 	}
 	stroke.Butt = true
-	return []Prim{fillWith(path, sw.FrameFill), stroke}
+	fill := fillWith(path, sw.FrameFill)
+	fill.Rounded = &RoundedBox{Box: box}
+	stroke.Rounded = fill.Rounded
+	return []Prim{fill, stroke}
 }
 
 func (e *Editor) imagePrims(s *doc.Shape, pal *Palette) []Prim {

@@ -103,21 +103,16 @@ func layoutBlock(text, font string, size, width float64) editor.TextBlock {
 	return out
 }
 
-// shaped returns text laid out in a font alone, keeping what it laid out. Painting
-// it from there, rather than with Painter.RichText, matters when zoomed out: a rich
-// text's lines are at least as tall as the theme's font, and its glyphs stand as
-// far down them, so that small text falls away from where it's meant to be.
-func (a *App) shaped(text, face string, size, width float32) *ui.TextLayout {
-	k := measureKey{text, face, size, width}
-	if l, ok := a.layouts[k]; ok {
-		return l
-	}
-	if a.layouts == nil || len(a.layouts) > 4096 {
-		a.layouts = map[measureKey]*ui.TextLayout{}
-	}
-	l := ui.ShapeText(text, ui.Font{Family: face, Size: size}, width)
-	a.layouts[k] = l
-	return l
+// paintTheme returns the theme that the canvas paints with: t, with a font smaller
+// than any text it paints. A Painter.RichText's lines are at least as tall as the
+// theme's font, with their glyphs as far down them, so that small text would fall
+// away from where it's meant to be. RichText it is all the same, rather than layouts
+// kept from frame to frame: the text system lets go of its fonts when it has made
+// too many, as a zoom does, and painting a layout made before that crashes.
+func paintTheme(t *ui.Theme) *ui.Theme {
+	painted := *t
+	painted.FontSize = 1
+	return &painted
 }
 
 // naturalHeight returns the height a font's line takes, in its size, without

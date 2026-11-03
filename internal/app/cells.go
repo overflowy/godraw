@@ -1,6 +1,7 @@
 package app
 
 import (
+	"image"
 	"math"
 
 	"github.com/egoist/mygo/ui"
@@ -40,6 +41,9 @@ type stroke struct {
 	color ui.Color
 	butt  bool      // flat ends and pointed corners rather than round ones
 	dash  []float64 // lengths of a dash and a gap, if dashed
+	// kept says that the path is one the next frame strokes again, rather than one
+	// made for this frame, for its cells to be kept.
+	kept bool
 }
 
 // spansLarge says whether a path under m reaches past what one mask should hold,
@@ -50,6 +54,10 @@ func (s *scene) spansLarge(g *geo.Path, m geo.Mat, reach float64) bool {
 	if s.small || s.turned > 0 {
 		return false
 	}
+	return s.spansLargeAt(g, m, reach)
+}
+
+func (s *scene) spansLargeAt(g *geo.Path, m geo.Mat, reach float64) bool {
 	lo, hi := geo.V(math.Inf(1), math.Inf(1)), geo.V(math.Inf(-1), math.Inf(-1))
 	add := func(p geo.Vec) {
 		v := m.Apply(p)
@@ -90,32 +98,48 @@ func (s *scene) stroke(g *geo.Path, m geo.Mat, st stroke) {
 		return
 	}
 	k := float64(s.p.Scale())
-	lines := flatten(g, m, k)
-	if len(st.dash) >= 2 {
-		lines = dashed(lines, st.dash[0]*k, st.dash[1]*k)
-	}
-	grid, ok := s.gridOf(lines)
+	plan, shift := s.planOf(cellKey{path: g, reach: float32(reach*k + 2), on: float32(dashOn(st.dash) * k), off: float32(dashOff(st.dash) * k)}, m, k, st.kept)
+	first, last, ok := plan.showing(s, shift, k)
 	if !ok {
 		return
 	}
-	pieces := grid.cut(lines, reach*k+2)
-	for i := range pieces {
-		if len(pieces[i].runs) == 0 {
-			continue
-		}
-		path := &s.path
-		path.Reset()
-		for _, run := range pieces[i].runs {
-			s.addLine(path, run.pts, k)
-			if run.closed {
-				path.Close()
+	path := &s.path
+	draw := func() { s.p.StrokePath(path, st.width, st.color) }
+	for row := first.Y; row <= last.Y; row++ {
+		for col := first.X; col <= last.X; col++ {
+			i := plan.grid.index(col, row)
+			runs := plan.pieces[i].runs
+			if len(runs) == 0 {
+				continue
 			}
+			path.Reset()
+			for _, run := range runs {
+				s.addLine(path, run.pts, shift, k)
+				if run.closed {
+					path.Close()
+				}
+			}
+			if st.butt {
+				path.Cap(ui.ButtCap).Join(ui.MiterJoin)
+			}
+			s.p.Clip(plan.grid.rect(i, shift, k), 0, draw)
 		}
-		if st.butt {
-			path.Cap(ui.ButtCap).Join(ui.MiterJoin)
-		}
-		s.p.Clip(grid.rect(i, k), 0, func() { s.p.StrokePath(path, st.width, st.color) })
 	}
+}
+
+// dashOn and dashOff return the lengths of a stroke's dash and gap, none if whole.
+func dashOn(dash []float64) float64 {
+	if len(dash) >= 2 {
+		return dash[0]
+	}
+	return 0
+}
+
+func dashOff(dash []float64) float64 {
+	if len(dash) >= 2 {
+		return dash[1]
+	}
+	return 0
 }
 
 // fill fills a path under m. Cells that all of it covers have no need of a mask.
@@ -125,34 +149,35 @@ func (s *scene) fill(g *geo.Path, m geo.Mat, c ui.Color) {
 		return
 	}
 	k := float64(s.p.Scale())
-	lines := flatten(g, m, k)
-	for i := range lines {
-		lines[i].closed = true
-	}
-	grid, ok := s.gridOf(lines)
+	plan, shift := s.planOf(cellKey{path: g, fill: true}, m, k, true)
+	first, last, ok := plan.showing(s, shift, k)
 	if !ok {
 		return
 	}
-	const margin = 2.0 // antialiasing, and rounding to quarters of a pixel
-	pieces := grid.cut(lines, margin)
-	for row := range grid.rows {
-		cross := crossings(lines, grid.y0+float64(row+grid.r0)*cellSide+0.5)
+	path := &s.path
+	draw := func() { s.p.FillPath(path, c) }
+	for row := first.Y; row <= last.Y; row++ {
 		from := -1
 		flush := func(end int) {
 			if from >= 0 {
-				a, b := grid.rect(row*grid.cols+from, k), grid.rect(row*grid.cols+end-1, k)
+				a, b := plan.grid.rect(plan.grid.index(from, row), shift, k), plan.grid.rect(plan.grid.index(end-1, row), shift, k)
 				s.p.Fill(ui.Rect{X: a.X, Y: a.Y, W: b.X + b.W - a.X, H: a.H}, c, 0)
 				from = -1
 			}
 		}
-		for col := range grid.cols {
-			i := row*grid.cols + col
-			if len(pieces[i].runs) > 0 {
+		for col := first.X; col <= last.X; col++ {
+			i := plan.grid.index(col, row)
+			if polys := plan.polys[i]; len(polys) > 0 {
 				flush(col)
-				s.fillCell(lines, grid, i, margin, k, c)
+				path.Reset()
+				for _, poly := range polys {
+					s.addLine(path, poly, shift, k)
+					path.Close()
+				}
+				s.p.Clip(plan.grid.rect(i, shift, k), 0, draw)
 				continue
 			}
-			if cross.windingAt(grid.x0+float64(col+grid.c0)*cellSide+0.5) != 0 {
+			if plan.solid[i] {
 				if from < 0 {
 					from = col
 				}
@@ -160,30 +185,175 @@ func (s *scene) fill(g *geo.Path, m geo.Mat, c ui.Color) {
 				flush(col)
 			}
 		}
-		flush(grid.cols)
+		flush(last.X + 1)
 	}
 }
 
-// fillCell fills what a cell holds of a path, each subpath cut to the cell. What
-// the cut adds runs outside the clip.
-func (s *scene) fillCell(lines []deviceLine, grid cellGrid, i int, margin, k float64, c ui.Color) {
-	r := grid.deviceBox(i).Expand(margin)
-	path := &s.path
-	path.Reset()
-	for _, l := range lines {
-		if cut := clipPolygon(l.pts, r); len(cut) >= 3 {
-			s.addLine(path, cut, k)
-			path.Close()
+// cellKey is what a plan of cells depends on, besides how the path is placed.
+type cellKey struct {
+	path    *geo.Path
+	fill    bool
+	reach   float32 // how far from a line a cell holds it, in device pixels
+	on, off float32 // the lengths of a dash and a gap, in device pixels
+	a, b    float64 // the path's transform, but for where it goes
+	c, d    float64
+	k       float64 // device pixels per unit painted
+	fx, fy  float64 // where it goes within a pixel
+}
+
+// cellPlan is the work of painting a path in cells, kept from frame to frame: a view
+// that pans moves it by whole pixels, which changes nothing of it but where it goes.
+// It holds the cells of a part of the path around what showed when it was made, its
+// lines being in device pixels from a whole pixel near the path.
+type cellPlan struct {
+	fill   bool
+	reach  float64 // how far from a line a cell holds it, in device pixels
+	lines  []deviceLine
+	bounds geo.Box // around the lines
+	grid   cellGrid
+	pieces []piece       // of a stroke: what each cell holds
+	polys  [][][]geo.Vec // of a fill: what each cell holds, cut to it
+	solid  []bool        // of a fill: the cells all inside it
+	used   int           // the frame that last painted it
+}
+
+// planOf returns the plan of a path under m, and how far to move it, in device
+// pixels. It has the lines of the path; showing cuts them to the cells that show.
+func (s *scene) planOf(key cellKey, m geo.Mat, k float64, keep bool) (*cellPlan, geo.Vec) {
+	t := geo.V(m.E*k, m.F*k)
+	shift := geo.V(math.Floor(t.X), math.Floor(t.Y))
+	key.a, key.b, key.c, key.d, key.k = m.A, m.B, m.C, m.D, k
+	// As fine as it shows, and no finer: the rounding of adding up where a shape
+	// goes differs as the view pans.
+	key.fx, key.fy = math.Round((t.X-shift.X)*64)/64, math.Round((t.Y-shift.Y)*64)/64
+	plan := s.a.cells[key]
+	if plan == nil {
+		near := m
+		near.E, near.F = key.fx/k, key.fy/k
+		plan = newCellPlan(key, near, k)
+		if keep {
+			if s.a.cells == nil {
+				s.a.cells = map[cellKey]*cellPlan{}
+			}
+			s.a.cells[key] = plan
 		}
 	}
-	s.p.Clip(grid.rect(i, k), 0, func() { s.p.FillPath(path, c) })
+	plan.used = s.a.cellsFrame
+	return plan, shift
 }
 
-// addLine adds a polyline in device pixels to a path, in the painter's units.
-func (s *scene) addLine(path *ui.Path, pts []geo.Vec, k float64) {
-	path.MoveTo(float32(pts[0].X/k), float32(pts[0].Y/k))
+// pruneCells lets go of the plans no recent frame painted.
+func (a *App) pruneCells() {
+	a.cellsFrame++
+	if a.cellsFrame%120 != 0 {
+		return
+	}
+	for key, plan := range a.cells {
+		if a.cellsFrame-plan.used > 120 {
+			delete(a.cells, key)
+		}
+	}
+	for key, d := range a.details {
+		if a.cellsFrame-d.used > 120 {
+			delete(a.details, key)
+		}
+	}
+}
+
+func newCellPlan(key cellKey, m geo.Mat, k float64) *cellPlan {
+	plan := &cellPlan{fill: key.fill, reach: float64(key.reach), lines: flatten(key.path, m, k)}
+	if key.fill {
+		for i := range plan.lines {
+			plan.lines[i].closed = true
+		}
+	} else if key.off > 0 {
+		plan.lines = dashed(plan.lines, float64(key.on), float64(key.off))
+	}
+	lo, hi := geo.V(math.Inf(1), math.Inf(1)), geo.V(math.Inf(-1), math.Inf(-1))
+	for _, l := range plan.lines {
+		for _, p := range l.pts {
+			lo, hi = geo.V(min(lo.X, p.X), min(lo.Y, p.Y)), geo.V(max(hi.X, p.X), max(hi.Y, p.Y))
+		}
+	}
+	if lo.X <= hi.X {
+		plan.bounds = geo.Box{X: lo.X, Y: lo.Y, W: hi.X - lo.X, H: hi.Y - lo.Y}
+	}
+	plan.grid = cellGrid{x0: math.Floor(lo.X), y0: math.Floor(lo.Y)}
+	return plan
+}
+
+// cellMargin is how far a fill's cell holds its edges: antialiasing, and rounding to
+// quarters of a pixel.
+const cellMargin = 2.0
+
+// cellSlack is how many cells beyond what shows a plan cuts, for a view that pans
+// not to cut them again each time another row of them comes to show.
+const cellSlack = 2
+
+// showing returns the first and last columns and rows of a plan's cells that show,
+// having cut what it hasn't cut of them yet.
+func (plan *cellPlan) showing(s *scene, shift geo.Vec, k float64) (first, last image.Point, ok bool) {
+	if len(plan.lines) == 0 {
+		return first, last, false
+	}
+	v := s.p.Visible()
+	// The cells within a path's reach, and within what shows.
+	reach := cellMargin + plan.reach
+	span := func(from, to, lo, hi, origin, sh float64) (int, int) {
+		a := max(math.Floor((from*k-sh-origin-1)/cellSide), math.Floor((lo-reach-origin)/cellSide))
+		b := min(math.Ceil((to*k-sh-origin+1)/cellSide), math.Floor((hi+reach-origin)/cellSide)+1)
+		return int(a), int(b) - 1
+	}
+	c0, c1 := span(float64(v.X), float64(v.X+v.W), plan.bounds.X, plan.bounds.MaxX(), plan.grid.x0, shift.X)
+	r0, r1 := span(float64(v.Y), float64(v.Y+v.H), plan.bounds.Y, plan.bounds.MaxY(), plan.grid.y0, shift.Y)
+	if c1 < c0 || r1 < r0 {
+		return first, last, false
+	}
+	g := plan.grid
+	if g.cols == 0 || c0 < g.c0 || r0 < g.r0 || c1 >= g.c0+g.cols || r1 >= g.r0+g.rows {
+		plan.cut(c0-cellSlack, r0-cellSlack, c1+cellSlack, r1+cellSlack, reach)
+	}
+	return image.Pt(c0, r0), image.Pt(c1, r1), true
+}
+
+// cut cuts the path to a range of cells, as far as it reaches.
+func (plan *cellPlan) cut(c0, r0, c1, r1 int, reach float64) {
+	g := &plan.grid
+	first := func(lo, origin float64) int { return int(math.Floor((lo - reach - origin) / cellSide)) }
+	g.c0, g.r0 = max(c0, first(plan.bounds.X, g.x0)), max(r0, first(plan.bounds.Y, g.y0))
+	g.cols = min(c1, first(plan.bounds.MaxX()+2*reach, g.x0)) - g.c0 + 1
+	g.rows = min(r1, first(plan.bounds.MaxY()+2*reach, g.y0)) - g.r0 + 1
+	if !plan.fill {
+		plan.pieces = g.cut(plan.lines, plan.reach)
+		return
+	}
+	pieces := g.cut(plan.lines, cellMargin)
+	plan.polys = make([][][]geo.Vec, g.cols*g.rows)
+	plan.solid = make([]bool, g.cols*g.rows)
+	for row := range g.rows {
+		cross := crossings(plan.lines, g.y0+float64(row+g.r0)*cellSide+0.5)
+		for col := range g.cols {
+			i := row*g.cols + col
+			if len(pieces[i].runs) == 0 {
+				plan.solid[i] = cross.windingAt(g.x0+float64(col+g.c0)*cellSide+0.5) != 0
+				continue
+			}
+			box := g.deviceBox(i, geo.Vec{}).Expand(cellMargin)
+			for _, l := range plan.lines {
+				if poly := clipPolygon(l.pts, box); len(poly) >= 3 {
+					plan.polys[i] = append(plan.polys[i], poly)
+				}
+			}
+		}
+	}
+}
+
+// addLine adds a polyline in device pixels, moved by shift, to a path, in the
+// painter's units.
+func (s *scene) addLine(path *ui.Path, pts []geo.Vec, shift geo.Vec, k float64) {
+	path.MoveTo(float32((pts[0].X+shift.X)/k), float32((pts[0].Y+shift.Y)/k))
 	for _, p := range pts[1:] {
-		path.LineTo(float32(p.X/k), float32(p.Y/k))
+		path.LineTo(float32((p.X+shift.X)/k), float32((p.Y+shift.Y)/k))
 	}
 }
 
@@ -330,39 +500,18 @@ type cellRun struct {
 	closed bool
 }
 
-func (s *scene) gridOf(lines []deviceLine) (cellGrid, bool) {
-	lo, hi := geo.V(math.Inf(1), math.Inf(1)), geo.V(math.Inf(-1), math.Inf(-1))
-	for _, l := range lines {
-		for _, p := range l.pts {
-			lo, hi = geo.V(min(lo.X, p.X), min(lo.Y, p.Y)), geo.V(max(hi.X, p.X), max(hi.Y, p.Y))
-		}
-	}
-	if lo.X > hi.X {
-		return cellGrid{}, false
-	}
-	g := cellGrid{x0: math.Floor(lo.X), y0: math.Floor(lo.Y)}
-	k := float64(s.p.Scale())
-	v := s.p.Visible()
-	// The cells that show, whether or not the path reaches them.
-	span := func(from, to, origin float64) (first, count int) {
-		a := math.Floor((from*k - origin - 1) / cellSide)
-		b := math.Ceil((to*k - origin + 1) / cellSide)
-		return int(a), int(b - a)
-	}
-	g.c0, g.cols = span(float64(v.X), float64(v.X+v.W), g.x0)
-	g.r0, g.rows = span(float64(v.Y), float64(v.Y+v.H), g.y0)
-	return g, g.cols > 0 && g.rows > 0
-}
+// index returns the place in a plan of the cell of a column and a row.
+func (g cellGrid) index(col, row int) int { return (row-g.r0)*g.cols + col - g.c0 }
 
-// deviceBox returns a cell's box, in device pixels.
-func (g cellGrid) deviceBox(i int) geo.Box {
+// deviceBox returns a cell's box, in device pixels, moved by shift.
+func (g cellGrid) deviceBox(i int, shift geo.Vec) geo.Box {
 	col, row := i%g.cols+g.c0, i/g.cols+g.r0
-	return geo.Box{X: g.x0 + float64(col)*cellSide, Y: g.y0 + float64(row)*cellSide, W: cellSide, H: cellSide}
+	return geo.Box{X: g.x0 + shift.X + float64(col)*cellSide, Y: g.y0 + shift.Y + float64(row)*cellSide, W: cellSide, H: cellSide}
 }
 
-// rect returns a cell's box, in the painter's units.
-func (g cellGrid) rect(i int, k float64) ui.Rect {
-	b := g.deviceBox(i)
+// rect returns a cell's box, moved by shift, in the painter's units.
+func (g cellGrid) rect(i int, shift geo.Vec, k float64) ui.Rect {
+	b := g.deviceBox(i, shift)
 	return ui.Rect{X: float32(b.X / k), Y: float32(b.Y / k), W: float32(b.W / k), H: float32(b.H / k)}
 }
 
@@ -387,7 +536,7 @@ func (g cellGrid) cut(lines []deviceLine, margin float64) []piece {
 			for row := r0; row <= r1; row++ {
 				for col := c0; col <= c1; col++ {
 					i := row*g.cols + col
-					p, q, ok := clipSegment(a, b, g.deviceBox(i).Expand(margin))
+					p, q, ok := clipSegment(a, b, g.deviceBox(i, geo.Vec{}).Expand(margin))
 					if !ok {
 						continue
 					}
@@ -538,7 +687,7 @@ func (r rowCrossings) windingAt(x float64) int {
 
 // strokePrim strokes what a shape draws, at the camera's zoom.
 func (s *scene) strokePrim(pr editor.Prim, m geo.Mat, c ui.Color) {
-	st := stroke{width: float32(pr.Width * s.cam.Z), color: c, butt: pr.Butt}
+	st := stroke{width: float32(pr.Width * s.cam.Z), color: c, butt: pr.Butt, kept: true}
 	if len(pr.Dash) >= 2 {
 		st.dash = []float64{pr.Dash[0] * s.cam.Z, pr.Dash[1] * s.cam.Z}
 	}
@@ -581,7 +730,7 @@ func (s *scene) lightLines(pr editor.Prim, m geo.Mat) {
 // large one's is what its cells hold near each line, up to all of what shows of
 // it, as hatching comes to. k is device pixels per unit painted.
 func (s *scene) primMaskArea(pr editor.Prim, m geo.Mat, k float64, turned bool) float64 {
-	if pr.Path == nil || (pr.Kind != editor.PrimFill && pr.Kind != editor.PrimStroke) {
+	if pr.Path == nil || (pr.Kind != editor.PrimFill && pr.Kind != editor.PrimStroke) || s.asBox(pr, m) {
 		return 0
 	}
 	reach := 2.0

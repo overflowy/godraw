@@ -1139,3 +1139,36 @@ func TestChildrenStayRight(t *testing.T) {
 		check(step)
 	}
 }
+
+// An arrow lies in its own space: moved along with what it's bound to it's what it
+// was, and moved apart from it it isn't.
+func TestArrowMemoFollowsPlacement(t *testing.T) {
+	e := newHarness(t).Editor
+	box := func(x float64) doc.ID {
+		e.SetGeoTool("rectangle")
+		e.PointerDown(x, 100, 0, 1, Mods{}, 0)
+		e.PointerMove(x+80, 180, Mods{}, 0.1)
+		e.PointerUp(x+80, 180, Mods{}, 0.2)
+		return e.Selection()[0]
+	}
+	a, b := box(100), box(400)
+	e.SetTool(ToolArrow)
+	e.PointerDown(140, 140, 0, 1, Mods{}, 1)
+	e.PointerMove(440, 140, Mods{}, 1.1)
+	e.PointerUp(440, 140, Mods{}, 1.2)
+	id := e.Selection()[0]
+	first := e.Arrow(e.Doc.Shapes[id])
+
+	e.Select(a, b, id)
+	e.Nudge(geo.V(37, 11))
+	if e.Arrow(e.Doc.Shapes[id]) != first {
+		t.Error("an arrow moved along with what it's bound to was computed again")
+	}
+	e.Select(b)
+	e.Nudge(geo.V(0, 90))
+	if got := e.Arrow(e.Doc.Shapes[id]); got == first {
+		t.Error("an arrow whose end moved away was not computed again")
+	} else if got.End == first.End {
+		t.Errorf("the end of an arrow stayed at %v", got.End)
+	}
+}

@@ -30,8 +30,9 @@ type arrowMemo struct {
 	s      *doc.Shape
 	starts [2]*doc.Shape
 	binds  [2]*doc.Binding
-	mats   [3]geo.Mat
+	mats   [2]geo.Mat
 	info   *ArrowInfo
+	geom   *Geometry
 	// What the arrow draws, by theme, as it lies now.
 	display [2][]Prim
 	drawn   [2]bool
@@ -70,6 +71,7 @@ func (e *Editor) bindingsTo(id doc.ID) []*doc.Binding {
 
 // Arrow returns how an arrow lies, from its props and what it is bound to.
 func (e *Editor) Arrow(s *doc.Shape) *ArrowInfo {
+	cacheOf(s) // for a copy that only moves it to be known as the same arrow
 	bs, be := e.bindingOf(s.ID, "start"), e.bindingOf(s.ID, "end")
 	var ts, te *doc.Shape
 	if bs != nil {
@@ -79,22 +81,40 @@ func (e *Editor) Arrow(s *doc.Shape) *ArrowInfo {
 		te = e.Doc.Shapes[be.To]
 	}
 	am := e.PageMat(s.ID)
-	mats := [3]geo.Mat{am}
-	if ts != nil {
-		mats[1] = e.PageMat(ts.ID)
-	}
-	if te != nil {
-		mats[2] = e.PageMat(te.ID)
+	// What an arrow is bound to, as it lies from the arrow: an arrow lies in its own
+	// space, so that all of them moving together changes nothing of it.
+	var mats [2]geo.Mat
+	if ts != nil || te != nil {
+		inv := am.Invert()
+		if ts != nil {
+			mats[0] = inv.Mul(e.PageMat(ts.ID))
+		}
+		if te != nil {
+			mats[1] = inv.Mul(e.PageMat(te.ID))
+		}
 	}
 	// An arrow is computed again when it, its bindings, what it is bound to
-	// or where any of them are changes.
-	if m := e.arrows[s.ID]; m != nil && m.s == s && m.starts == [2]*doc.Shape{ts, te} &&
-		m.binds == [2]*doc.Binding{bs, be} && m.mats == mats {
+	// or where those are from it changes.
+	if m := e.arrows[s.ID]; m != nil && sameForm(m.s, s) && sameForm(m.starts[0], ts) && sameForm(m.starts[1], te) &&
+		m.binds == [2]*doc.Binding{bs, be} && sameMat(m.mats[0], mats[0]) && sameMat(m.mats[1], mats[1]) {
 		return m.info
 	}
 	info := e.computeArrow(s, bs, be, ts, te, am)
 	e.arrows[s.ID] = &arrowMemo{s: s, starts: [2]*doc.Shape{ts, te}, binds: [2]*doc.Binding{bs, be}, mats: mats, info: info}
 	return info
+}
+
+// sameForm says whether two records of a shape, if any, have the same form: they're
+// one record, or one's a copy that only placed it elsewhere (doc.Shape.Moved).
+func sameForm(a, b *doc.Shape) bool {
+	return a == b || a != nil && b != nil && a.Cache != nil && a.Cache == b.Cache
+}
+
+// sameMat says whether two transforms are the same, but for rounding.
+func sameMat(a, b geo.Mat) bool {
+	const near = 1e-7
+	return math.Abs(a.A-b.A) < near && math.Abs(a.B-b.B) < near && math.Abs(a.C-b.C) < near &&
+		math.Abs(a.D-b.D) < near && math.Abs(a.E-b.E) < near && math.Abs(a.F-b.F) < near
 }
 
 // anchorOf returns where a binding points, in the page.
@@ -282,7 +302,15 @@ func crossAlong(line, outline []geo.Vec, atEnd bool) (float64, bool) {
 }
 
 func (e *Editor) arrowGeometry(s *doc.Shape) *Geometry {
-	info := e.Arrow(s)
+	info := e.Arrow(s) // brings its memo up to date with what it is bound to
+	m := e.arrows[s.ID]
+	if m.geom == nil {
+		m.geom = e.computeArrowGeometry(s, info)
+	}
+	return m.geom
+}
+
+func (e *Editor) computeArrowGeometry(s *doc.Shape, info *ArrowInfo) *Geometry {
 	pts := info.Line
 	box := geo.BoxOf(pts)
 	g := &Geometry{Bounds: box, Outline: pts}
