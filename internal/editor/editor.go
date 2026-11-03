@@ -265,7 +265,9 @@ func (e *Editor) commit() {
 	for id, c := range x.shapes {
 		if c.before == c.after {
 			delete(x.shapes, id)
+			continue
 		}
+		dropCache(c.before, c.after)
 	}
 	for id, c := range x.bindings {
 		if c.before == c.after {
@@ -313,12 +315,28 @@ func (e *Editor) transact(fn func()) {
 	e.commit()
 }
 
+// dropCache empties what is derived from a record leaving the document for
+// history, which would otherwise keep it for as long as undo goes back. A record
+// that only moved shares its cache with the one after it, which goes on using it.
+// Emptied rather than taken away, it lets go of older records that only moved too,
+// and arrows go on telling forms apart by it (sameForm). Should the record come
+// back, it is derived again.
+func dropCache(s, next *doc.Shape) {
+	if s == nil || s == next || next != nil && s.Cache == next.Cache {
+		return
+	}
+	if c, ok := s.Cache.(*shapeCache); ok {
+		*c = shapeCache{}
+	}
+}
+
 func (e *Editor) apply(x *entry, back bool) {
 	for id, c := range x.shapes {
 		v := c.after
 		if back {
 			v = c.before
 		}
+		dropCache(e.Doc.Shapes[id], v)
 		if v == nil {
 			delete(e.Doc.Shapes, id)
 		} else {

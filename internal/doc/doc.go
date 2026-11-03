@@ -121,7 +121,9 @@ type Shape struct {
 	Raw map[string]json.RawMessage
 
 	// Cache holds what the editor derives from the shape, as its geometry;
-	// a clone starts without it. It belongs to the main thread.
+	// a clone starts without it. It belongs to the main thread, unlike the rest
+	// of a record, which snapshots read elsewhere; the editor empties it once the
+	// record has left the document.
 	Cache any
 }
 

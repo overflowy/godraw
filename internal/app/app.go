@@ -65,6 +65,9 @@ type App struct {
 	bitmaps map[doc.ID]*ui.Bitmap
 	decoded map[doc.ID]string
 	pending map[doc.ID]bool
+	inUse   map[doc.ID]bool // the assets shapes show; nil once the document changed
+	inUseOf *doc.Drawing    // the drawing inUse is of
+	inUseN  int             // how many shapes it had, as a change not yet committed shows
 	dark    bool
 
 	sizeBadge bool
@@ -91,7 +94,10 @@ func New(d *doc.Drawing, host Host) *App {
 		minimap: false, sizeBadge: true,
 	}
 	a.ed = editor.New(d, m.measure)
-	a.ed.OnChange = host.Changed
+	a.ed.OnChange = func(d *doc.Drawing) {
+		a.inUse = nil
+		host.Changed(d)
+	}
 	return a
 }
 
@@ -107,10 +113,37 @@ func (a *App) bitmapOf(id doc.ID) *ui.Bitmap {
 	return a.bitmaps[id]
 }
 
+// assetsInUse returns the assets that shapes show, and forgets the images of the
+// others, which take far more memory than anything else a drawing has. Deleting a
+// shape leaves its asset in the document, for undo. Bringing a shape back decodes its
+// image again. It looks through the shapes only after a change to the document.
+func (a *App) assetsInUse() map[doc.ID]bool {
+	d := a.ed.Doc
+	if a.inUse != nil && a.inUseOf == d && a.inUseN == len(d.Shapes) {
+		return a.inUse
+	}
+	a.inUse, a.inUseOf, a.inUseN = map[doc.ID]bool{}, d, len(d.Shapes)
+	if len(d.Assets) > 0 {
+		for _, s := range d.Shapes {
+			if s.AssetID != "" && d.Assets[s.AssetID] != nil {
+				a.inUse[s.AssetID] = true
+			}
+		}
+	}
+	for id := range a.decoded {
+		if !a.inUse[id] {
+			delete(a.decoded, id)
+			delete(a.bitmaps, id)
+		}
+	}
+	return a.inUse
+}
+
 // decodeAssets decodes on the side what shapes are about to show.
 func (a *App) decodeAssets() {
+	inUse := a.assetsInUse()
 	for id, asset := range a.ed.Doc.Assets {
-		if a.decoded[id] == asset.Src || a.pending[id] {
+		if !inUse[id] || a.decoded[id] == asset.Src || a.pending[id] {
 			continue
 		}
 		if !strings.HasPrefix(asset.Src, "data:") {
@@ -123,6 +156,10 @@ func (a *App) decodeAssets() {
 			b := decodeDataURL(src)
 			a.host.Update(func() {
 				delete(a.pending, id)
+				// It may have left the drawing or changed meanwhile.
+				if asset := a.ed.Doc.Assets[id]; asset == nil || asset.Src != src || !a.assetsInUse()[id] {
+					return
+				}
 				a.decoded[id] = src
 				if b != nil {
 					a.bitmaps[id] = b
