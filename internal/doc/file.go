@@ -31,7 +31,7 @@ type drawingFile struct {
 const formatVersion = 1
 
 // ErrNotDrawing tells that a file is not a drawing this app reads.
-var ErrNotDrawing = errors.New("this is not a godraw file")
+var ErrNotDrawing = errors.New("this is not a GoDraw file")
 
 // Read reads a .godraw file.
 func Read(r io.Reader) (*Drawing, error) {
@@ -50,7 +50,7 @@ func Read(r io.Reader) (*Drawing, error) {
 		return nil, ErrNotDrawing
 	}
 	if f.Version > formatVersion {
-		return nil, fmt.Errorf("this file is from a newer version of godraw (format %d)", f.Version)
+		return nil, fmt.Errorf("this file is from a newer version of GoDraw (format %d)", f.Version)
 	}
 	d := &Drawing{
 		Name:     f.Name,

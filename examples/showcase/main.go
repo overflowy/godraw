@@ -300,12 +300,12 @@ func (b *builder) gopher(c geo.Vec, parent doc.ID) (tip geo.Vec) {
 // --- page 1: the poster ---
 
 func (b *builder) poster() {
-	b.newPage("page:poster", "godraw")
+	b.newPage("page:poster", "GoDraw")
 
 	// Title. Its underline is what the gopher is drawing.
-	b.text(words{x: 40, y: 0, text: "godraw", size: "xl", scale: 3.1, color: "black"}, "")
-	const titleEnd = 548.0
-	gopherAt := geo.V(titleEnd+292, 196-72)
+	b.text(words{x: 40, y: 0, text: "GoDraw", size: "xl", scale: 3.1, color: "black"}, "")
+	const underlineEnd = 548.0
+	gopherAt := geo.V(underlineEnd+292, 196-72)
 	gg := b.group("gopher")
 	tip := b.gopher(gopherAt, gg)
 	var line []geo.Vec
@@ -552,7 +552,7 @@ func (b *builder) styleSheet() {
 func main() {
 	b := &builder{
 		d: &doc.Drawing{
-			Name: "godraw showcase", GridSize: 10,
+			Name: "GoDraw showcase", GridSize: 10,
 			Shapes: map[doc.ID]*doc.Shape{}, Bindings: map[doc.ID]*doc.Binding{}, Assets: map[doc.ID]*doc.Asset{},
 		},
 		last: map[doc.ID]string{},

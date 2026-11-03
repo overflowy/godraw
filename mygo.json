@@ -1,9 +1,10 @@
 {
-  "name": "godraw",
-  "identifier": "com.example.godraw",
+  "name": "GoDraw",
+  "identifier": "com.overflowy.godraw",
   "version": "0.1.0",
   "out": "build",
+  "macos": { "icon": "icon/AppIcon.icon" },
   "fileAssociations": [
-    { "ext": ["godraw"], "name": "godraw Drawing", "mimeType": "application/vnd.godraw+json" }
+    { "ext": ["godraw"], "name": "GoDraw Drawing", "mimeType": "application/vnd.godraw+json" }
   ]
 }

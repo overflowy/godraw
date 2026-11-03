@@ -1,6 +1,6 @@
-{"godrawFileFormatVersion":1,"name":"godraw showcase","gridSize":10,
+{"godrawFileFormatVersion":1,"name":"GoDraw showcase","gridSize":10,
 "pages":[
-{"id":"page:poster","name":"godraw","index":"a1"},
+{"id":"page:poster","name":"GoDraw","index":"a1"},
 {"id":"page:flow","name":"Flow field","index":"a2"},
 {"id":"page:styles","name":"Every style","index":"a3"}],
 "shapes":[
@@ -1776,7 +1776,7 @@
 {"id":"shape:size-1764","type":"draw","parent":"page:styles","index":"aR","x":300,"y":452,"opacity":1,"scale":1,"color":"blue","labelColor":"black","fill":"none","dash":"draw","size":"m","font":"draw","align":"middle","valign":"middle","segments":[{"type":"free","path":"AAAAAAAAAAASQ0K9i0T9v2BF78AIRm/BgUaDwc1GJcHrRlzA3UZDvp9G57k1RuY0ZUXKPWJFFkFgRcpCYEUBRF9FXkRiRX1EY0VeRGdFAURsRcpCcUUWQXhFyj1SRuU0yEbnuQ5HRL4iR1vABkcmwbpGgsE+RnDBkUXuwLRE/r9MQ0K9","dim":2}],"scaleX":1,"scaleY":1},
 {"id":"shape:size-1765","type":"draw","parent":"page:styles","index":"aS","x":300,"y":494,"opacity":1,"scale":1,"color":"blue","labelColor":"black","fill":"none","dash":"draw","size":"l","font":"draw","align":"middle","valign":"middle","segments":[{"type":"free","path":"AAAAAAAAAABlQ6e8r0T6voVFVMAyRtfAuEYIwRVH5sBKR2/AV0dOvz1HFr36Rm+4j0YyNVRFlzxQRdU/T0U+QU5FR0JORQNDT0V1Q09FmkNSRXVDVEUDQ1dFR0JcRT5BYUXVP2ZFlzwbRlU1gEaqtsVGK7zqRiq+7karv9BGVcCTRpbANUaVwLZFVcAWRau/VkQrvulCK7w=","dim":2}],"scaleX":1,"scaleY":1},
 {"id":"shape:size-1766","type":"draw","parent":"page:styles","index":"aT","x":300,"y":536,"opacity":1,"scale":1,"color":"blue","labelColor":"black","fill":"none","dash":"draw","size":"xl","font":"draw","align":"middle","valign":"middle","segments":[{"type":"free","path":"AAAAAAAAAAD+Qoq7VESBvQxF2r6oRcy/K0YuwI9GQ8DaRiXAB0ervxpHp74RRz697EbiuqtG/LRPRmA1p0UlPKRF+z6jRaxAoUWdQaFFU0KhRcxCokUIQ6RFCEOmRcxCqUVTQqxFnUGxRaxAtUX7PrtFJTxsRmA10kb7tBlH4rpERz69UkenvkJHrL8URyXAykZDwGJGLcDcRc6/OkXZvnlEgb04Q4u7","dim":2}],"scaleX":1,"scaleY":1},
-{"id":"shape:text-1","type":"text","parent":"page:poster","index":"a1","x":40,"opacity":1,"w":8,"scale":3.1,"color":"black","labelColor":"black","fill":"none","dash":"draw","size":"xl","font":"draw","align":"middle","valign":"middle","textAlign":"start","autoSize":true,"text":"godraw"},
+{"id":"shape:text-1","type":"text","parent":"page:poster","index":"a1","x":40,"opacity":1,"w":8,"scale":3.1,"color":"black","labelColor":"black","fill":"none","dash":"draw","size":"xl","font":"draw","align":"middle","valign":"middle","textAlign":"start","autoSize":true,"text":"GoDraw"},
 {"id":"shape:text-111","type":"text","parent":"shape:frame-96","index":"aF","x":800,"y":330,"rotation":-0.05,"opacity":1,"w":8,"scale":1,"color":"red","labelColor":"black","fill":"none","dash":"draw","size":"s","font":"draw","align":"middle","valign":"middle","textAlign":"start","autoSize":true,"text":"grab this box,\nthe arrows follow"},
 {"id":"shape:text-117","type":"text","parent":"page:poster","index":"aD","x":1134,"y":925,"opacity":1,"w":8,"scale":0.72,"color":"grey","labelColor":"black","fill":"none","dash":"draw","size":"s","font":"sans","align":"middle","valign":"middle","textAlign":"start","autoSize":true,"text":"gopher after Renée French, CC BY"},
 {"id":"shape:text-1736","type":"text","parent":"page:flow","index":"bP7","x":66,"y":804,"opacity":1,"w":8,"scale":1,"color":"black","labelColor":"black","fill":"none","dash":"draw","size":"m","font":"draw","align":"middle","valign":"middle","textAlign":"start","autoSize":true,"text":"Every line here is a real pen stroke."},

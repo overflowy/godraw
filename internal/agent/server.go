@@ -59,7 +59,7 @@ type Host interface {
 }
 
 const (
-	instructions = "Draw on the godraw canvas open on this machine: guide explains how, view shows the result."
+	instructions = "Draw on the GoDraw canvas open on this machine: guide explains how, view shows the result."
 	endpoint     = "/mcp"
 
 	// How long a batch waits out a gesture or typing, and how long any call
@@ -344,7 +344,7 @@ func text(s string) []mcp.Content { return []mcp.Content{&mcp.TextContent{Text: 
 func (s *server) canvas(name string) (Canvas, error) {
 	all := s.host.Canvases()
 	if len(all) == 0 {
-		return nil, errors.New("no drawing is open in godraw; apply opens a new one")
+		return nil, errors.New("no drawing is open in GoDraw; apply opens a new one")
 	}
 	if name == "" {
 		return all[0], nil
@@ -377,7 +377,7 @@ func onMain(ctx context.Context, c Canvas, fn func() error) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(mainWait):
-		return errors.New("godraw didn't answer in time; check with read before trying again")
+		return errors.New("GoDraw didn't answer in time; check with read before trying again")
 	}
 }
 

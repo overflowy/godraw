@@ -1,4 +1,4 @@
-// godraw is a local whiteboard, drawn with MyGo's native UI. Its drawings are
+// GoDraw is a local whiteboard, drawn with MyGo's native UI. Its drawings are
 // .godraw files.
 package main
 
@@ -134,7 +134,7 @@ func main() {
 	}
 	agents := &canvases{}
 	docs = mygo.NewDocuments(mygo.DocumentsOptions[*doc.Drawing]{
-		Types: []mygo.DocumentType{{Name: "godraw Drawing", Extensions: []string{"godraw"}}},
+		Types: []mygo.DocumentType{{Name: "GoDraw Drawing", Extensions: []string{"godraw"}}},
 		New:   doc.New,
 		// With files to open, no untitled document comes up beside them.
 		NoUntitled: len(files) > 0,

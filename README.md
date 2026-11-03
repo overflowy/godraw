@@ -1,4 +1,4 @@
-# godraw
+# GoDraw
 
 A local, native whiteboard written in Go and drawn with
 [MyGo](https://github.com/egoist/mygo)'s native UI: no web view, no JavaScript. Drawings are
@@ -10,7 +10,7 @@ diff well.
 ```sh
 go run .                    # a new drawing
 go run . drawing.godraw      # open a file
-go tool mygo build          # package build/<platform>/godraw.app and a .dmg
+go tool mygo build          # package build/<platform>/GoDraw.app and a .dmg
 go test ./...
 task check                  # show every format, vet and lint issue, changing nothing
 task fix                    # apply what the formatters and linters can fix themselves
@@ -69,9 +69,9 @@ crash recovery, Open Recent, and pick-up of changes made to the file by other ap
 
 ## Drawing from an agent
 
-While godraw runs, it serves [MCP](https://modelcontextprotocol.io) at
+While GoDraw runs, it serves [MCP](https://modelcontextprotocol.io) at
 `http://127.0.0.1:7463/mcp`. The server lives in the app's process, so it starts when you
-launch godraw and is gone when you quit. The **MCP** button at the top left shows its
+launch GoDraw and is gone when you quit. The **MCP** button at the top left shows its
 state, and opens a dialog with the command and URL to copy. MCP Server… in the File menu and
 in the ⋯ menu opens the same dialog. Connect any MCP client to that URL:
 
@@ -82,7 +82,7 @@ claude mcp add --scope project --transport http godraw http://127.0.0.1:7463/mcp
 Run that in your project's folder. It writes the project's `.mcp.json`, and Claude Code asks
 you to approve the server in the next session there. This repository already has that file. A client that only
 speaks stdio can use `npx -y mcp-remote http://127.0.0.1:7463/mcp`. A client connected
-before you launched godraw has to reconnect (`/mcp` in Claude Code). Set `GODRAW_MCP_PORT`
+before you launched GoDraw has to reconnect (`/mcp` in Claude Code). Set `GODRAW_MCP_PORT`
 to use another port.
 
 | Tool | What it does |
@@ -155,6 +155,7 @@ GIF files by path.
 | `internal/app` | The native UI: canvas painter, panels, keyboard, export |
 | `internal/agent` | The MCP server and what its tools do |
 | `internal/assets` | Embedded fonts and icons |
+| `icon` | The app icon: `swift icon/make.swift` draws the stroke, writing `resources/icon.png` and the layers of `AppIcon.icon` |
 | `e2e.go` | With `-tags e2e`, lets another process drive the app over MyGo's automation socket |
 
 Committed records are immutable: an edit replaces a record. So undo holds the records

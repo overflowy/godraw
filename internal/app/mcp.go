@@ -96,7 +96,7 @@ func (a *App) mcpDialog(c *ui.Context) {
 		case st.Problem != "":
 			ui.Text(c, st.Problem).FontSize(13).TextColor(t.TextMuted)
 		case st.URL != "":
-			ui.Text(c, "Agents can draw on this canvas over MCP while godraw is open.").FontSize(13).TextColor(t.TextMuted)
+			ui.Text(c, "Agents can draw on this canvas over MCP while GoDraw is open.").FontSize(13).TextColor(t.TextMuted)
 			a.mcpField(c, "Claude Code", "Run this in your project's folder, then approve the server in a new session there.", st.ClaudeCommand())
 			a.mcpField(c, "Other MCP clients", "Add this URL as a Streamable HTTP server.", st.URL)
 		}

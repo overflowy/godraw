@@ -115,7 +115,7 @@ func serveMCP(s *canvases) {
 	case err == nil:
 		st.URL = url
 	case errors.Is(err, syscall.EADDRINUSE):
-		st.Problem = fmt.Sprintf("Port %s is in use, probably by another copy of godraw. Quit that copy and open this one again, or set GODRAW_MCP_PORT to another port.", port)
+		st.Problem = fmt.Sprintf("Port %s is in use, probably by another copy of GoDraw. Quit that copy and open this one again, or set GODRAW_MCP_PORT to another port.", port)
 	default:
 		st.Problem = err.Error()
 	}
