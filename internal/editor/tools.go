@@ -1536,7 +1536,7 @@ func (e *Editor) fitLabel(s *doc.Shape) {
 	switch s.Type {
 	case doc.TypeGeo:
 		size := labelSizeOf(s.Size) * s.Scale
-		pad := labelPadding * s.Scale
+		pad := LabelPad(s)
 		text := s.Text
 		if text == "" {
 			s.GrowY = 0
@@ -1546,7 +1546,7 @@ func (e *Editor) fitLabel(s *doc.Shape) {
 		s.GrowY = math.Max(0, b.H+2*pad-s.H)
 	case doc.TypeNote:
 		size := labelSizeOf(s.Size) * s.Scale
-		pad := labelPadding * s.Scale
+		pad := LabelPad(s)
 		b := e.Measure(s.Text+" ", s.Font, size, noteSize*s.Scale-2*pad)
 		s.GrowY = math.Max(0, (b.H+2*pad-noteSize*s.Scale)/s.Scale)
 	}
@@ -1588,22 +1588,19 @@ func (e *Editor) EditBox() (box geo.Box, size float64, font, align string, c Col
 		box = e.Geometry(s).Bounds
 		box.H = math.Max(box.H, size*LineHeight)
 		align = s.TextAlign
-		c = pal.Swatch(s.Color).Solid
+		c = pal.InkOf(s)
 	case doc.TypeNote:
 		size = labelSizeOf(s.Size) * s.Scale
 		box = *e.Geometry(s).Label
 		align = s.Align
-		c = pal.Swatch(s.Color).NoteText
-		if s.LabelColor != "black" {
-			c = pal.Swatch(s.LabelColor).Solid
-		}
+		c = pal.InkOf(s)
 	case doc.TypeGeo:
 		size = labelSizeOf(s.Size) * s.Scale
 		w, h := s.W, s.H+s.GrowY
 		l := e.labelBox(s, w, h, size)
 		box = *l
 		align = s.Align
-		c = pal.Swatch(s.LabelColor).Solid
+		c = pal.InkOf(s)
 	case doc.TypeArrow:
 		size = arrowLabelSizeOf(s.Size) * s.Scale
 		box = *e.arrowLabelBox(s)
@@ -1612,7 +1609,7 @@ func (e *Editor) EditBox() (box geo.Box, size float64, font, align string, c Col
 		box.W += 40
 		box.H = math.Max(box.H, size*LineHeight)
 		align = "middle"
-		c = pal.Swatch(s.LabelColor).Solid
+		c = pal.InkOf(s)
 	case doc.TypeFrame:
 		z := e.Cam().Z
 		size = 12 / z

@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"godraw/internal/editor"
@@ -34,27 +35,29 @@ line: d w h color dash size spline. Draggable vertices; spline:"cubic" curves th
 arrow: from to, or x1 y1 x2 y2, and more: see arrows.
 Example: [{"add":"rectangle","id":"a","text":"API","color":"blue","fill":"solid"},{"add":"ellipse","id":"b","text":"DB","right":"a"},{"add":"arrow","from":"a","to":"b","text":"reads"}]`,
 
-	"styles": `color: ` + strings.Join(styleEnums["color"], " ") + ` (a fixed palette that adapts to dark mode; no hex). labelColor is the same list, for labels.
-fill: ` + strings.Join(styleEnums["fill"], " ") + `. semi is plain paper (near black in the dark theme), solid a tint of the color, pattern and lined-fill hatch it, fill the color itself.
-dash: ` + strings.Join(styleEnums["dash"], " ") + `. draw is hand-drawn; solid is crisp.
+	"styles": `color: ` + strings.Join(styleEnums["color"], " ") + ` (a palette that adapts to dark mode), or "#rrggbb", the same in both themes and in tldraw the nearest of the palette. labelColor is the same, for labels.
+fill: ` + strings.Join(styleEnums["fill"], " ") + `. semi is plain paper (near black in the dark theme), solid a tint of the color, pattern and lined-fill hatch it, fill the color itself. For a tint between, fill with a hex or with opacity.
+gradient:["blue","#ffffff"] fills with 2 to ` + strconv.Itoa(maxGradient) + ` colors, evenly spaced; [] clears it, as does a fill. gradientAngle is in degrees, as in CSS: 180, the default, runs top to bottom, 90 left to right. tldraw shows color and fill instead.
+dash: ` + strings.Join(styleEnums["dash"], " ") + `. draw is hand-drawn; solid is crisp; none has no outline, for shapes that fill (tldraw shows solid).
 size: ` + strings.Join(styleEnums["size"], " ") + ` (stroke and text). font: ` + strings.Join(styleEnums["font"], " ") + `. scale multiplies text and notes.
 align, valign: start middle end. opacity: 0 to 1. spline: line cubic.
 arrow kind: arc elbow. head, tail: ` + strings.Join(styleEnums["head"], " ") + `.
 {"style":{...}} sets defaults for the rest of the ops in that apply: [{"style":{"color":"blue","dash":"solid"}},{"add":"star","w":80,"h":80}]`,
 
-	"place": `Every shape can say id in x y rot opacity locked right left above below gap. Arrows use their ends instead.
+	"place": `Every shape can say id in x y rot opacity locked right left above below gap behind over. Arrows use their ends instead.
 x,y are the top left of its box in page coordinates, always, even inside a frame.
 right,left,above,below name a shape to sit beside, centered on it, gap apart (default 120). x or y overrides the other axis.
 Neither: under what is already on the page, or in the frame. Paths stay at their own coordinates.
 rot is degrees clockwise in the page, around its center. in names a frame or group to go in.
+behind,over name a shape to paint just under or above; without them a new shape is on top.
 id is yours to choose, unique in the document; without one you get s1, s2...
 Example: [{"add":"frame","id":"f","name":"Plan","x":0,"y":0,"w":500,"h":300},{"add":"note","id":"n","text":"Idea","in":"f","x":40,"y":60,"color":"yellow"},{"add":"text","text":"Then","right":"n","gap":24}]`,
 
-	"layout": `Font px at size s m l xl: labels ` + sizes(editor.LabelSize) + `; text shapes ` + sizes(editor.TextSize) + `; arrow labels ` + sizes(editor.ArrowLabelSize) + `. A line is ` + num(editor.LineHeight) + ` times that high. A character averages, times that: draw 0.51, sans 0.44, serif 0.45, mono 0.62. Labels sit ` + num(editor.LabelPadding) + ` in from the box.
+	"layout": `Font px at size s m l xl: labels ` + sizes(editor.LabelSize) + `; text shapes ` + sizes(editor.TextSize) + `; arrow labels ` + sizes(editor.ArrowLabelSize) + `. A line is ` + num(editor.LineHeight) + ` times that high. A character averages, times that: draw 0.51, sans 0.44, serif 0.45, mono 0.62. Labels sit ` + num(editor.LabelPadding) + ` in from the box; padding sets that on a shape or note: a 44 wide badge keeps its size with padding:0.
 A box keeps its w: text wraps, and the box grows past h to hold it. Without h it fits.
 To measure exactly, apply with "dry":true: {"add":"rectangle","text":"Hi","w":200} answers with the box it would get, {"add":"text","text":"Hi"} with the text's size. Try whole layouts the same way.
-Warnings leave alone a box wholly inside another, unless it covers text, and overlaps of shapes without text. They speak of what that apply touched; read with "check":true lists those of the whole page, to see that a finished page is clean.
-A label has one style. For a title and body, add a card: color is its box and title, labelColor its body, size its title, with the body smaller. Without w it fits, up to ` + num(cardMaxW) + ` wide. Set title, body, w or h and it sizes itself again. Arrows bind to it by its id.
+Warnings tell of text or a line that hardly shows in either theme, of arrows through a box or sharing a line, and of more. They leave alone a box wholly inside another, unless it covers text, and overlaps of shapes without text. They speak of what that apply touched; read with "check":true lists those of the whole page, to see that a finished page is clean.
+A label has one style. For a title and body, add a card: color is its box and title, labelColor its body, size its title, with the body smaller, font both and bodyFont the body. Without w it fits, up to ` + num(cardMaxW) + ` wide. Set title, body, w or h and it sizes itself again. Arrows bind to it by its id.
 To hold shapes without clipping them, group them with a rectangle behind them.
 Example: [{"add":"card","id":"auth","title":"Auth","body":"Sign-in and sessions","color":"violet","x":0,"y":0},{"add":"rectangle","id":"db","text":"DB","right":"auth"},{"add":"arrow","from":"auth","to":"db","straight":"h","label":"above","text":"reads"}]`,
 
@@ -62,12 +65,11 @@ Example: [{"add":"card","id":"auth","title":"Auth","body":"Sign-in and sessions"
 from,to bind to a shape, and it follows when that shape moves. Free ends use x1,y1 and x2,y2.
 A group binds by the shape that is most of it, as a path's main stroke; if none is, the error names them.
 fromAt,toAt are [x,y], 0 to 1 across the shape; the default is its center.
-kind:"arc", the default, curves by bend, px off straight. kind:"elbow" runs in right angles, and takes no bend.
+kind:"arc", the default, curves by bend, px off straight: positive bulges to the right of travel (running left to right, down), negative to the left. kind:"elbow" runs in right angles, without bend.
 An elbow's anchor on an edge sets the side it leaves or arrives by: [0.5,0] top, [0.5,1] bottom, [0,0.5] left, [1,0.5] right.
-via:[[x,y],...] are page points an elbow passes through. They follow when both ends move alike; else they stay, unless a clear route has fewer turns. Moved into a shape, an elbow goes around it. via:[] clears them.
+via:[[x,y],...] are page points an elbow passes through. They follow when both ends move alike; else they stay, unless a clear route has fewer turns. An elbow goes around what moves into it. via:[] clears them.
 straight:"h" or "v" on an arrow with from and to runs it level where both shapes share height (or width), and keeps it so as they move or grow. at, 0 to 1, picks where: 0.25 and 0.75 for a pair. straight:"off" or fromAt,toAt end it.
-label:"above" takes an arrow's label off its line; "center" puts it back.
-Warnings tell of an arrow through a box, along its edge or over a frame's name, of a route crossing itself, and of arrows sharing a line; from one anchor, a trunk a tree may mean.
+A label opens a gap in its line, with what's behind showing. label:"above" takes it off the line; "center" puts it back.
 Example: [{"add":"card","id":"a","title":"A","x":0,"y":0},{"add":"card","id":"m","title":"M","right":"a"},{"add":"card","id":"b","title":"B","right":"m"},{"add":"arrow","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[400,-60]]}]`,
 
 	"paths": `d is an SVG path: M L H V C S Q T A Z, absolute or relative. "M0 0 C40 80 80 -80 120 0"
@@ -81,7 +83,7 @@ One x or y lines several shapes up. {"del":IDS} deletes, with what those hold, {
 {"dup":IDS,"dx":0,"dy":0,"n":1} copies; each copy is offset one more step, beside the original by default. A copied arrow stays bound only to what is copied with it.
 {"group":IDS,"id":"g"} {"ungroup":IDS}
 {"arrange":IDS,"how":HOW} ` + strings.Join(verbHows["arrange"], " ") + `
-{"order":IDS,"how":HOW} ` + strings.Join(verbHows["order"], " ") + `
+{"order":IDS,"how":HOW} ` + strings.Join(verbHows["order"], " ") + `, or {"order":IDS,"behind":"x"} and "over":"x" for just under or above x. read lists shapes bottom first.
 {"flip":IDS,"how":"h"} or "v". An arrow only turns if what it joins flips with it.
 {"page":"Name"} goes to that page, making it if new; add "name" to rename it. {"delPage":"Name"}
 {"camera":"fit"} or {"camera":IDS} moves the view. New shapes out of view bring it along otherwise.

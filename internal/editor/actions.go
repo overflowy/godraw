@@ -196,10 +196,13 @@ func setStyleOf(s *doc.Shape, p StyleProp, v string) {
 	switch p {
 	case StyleColor:
 		s.Color = v
+		s.SetMeta(doc.MetaColor, nil)
 	case StyleFill:
 		s.Fill = v
+		s.SetMeta(doc.MetaGradient, nil)
 	case StyleDash:
 		s.Dash = v
+		s.SetMeta(doc.MetaNoOutline, nil)
 	case StyleSize:
 		s.Size = v
 	case StyleFont:
@@ -938,6 +941,39 @@ func (e *Editor) reorderIn(parent doc.ID, ids []doc.ID, how string) {
 			}
 		}
 	}
+	e.writeOrder(order)
+}
+
+// OrderBeside moves children of a parent to just behind or over another of them,
+// keeping their order among themselves.
+func (e *Editor) OrderBeside(parent doc.ID, ids []doc.ID, ref doc.ID, over bool) {
+	moving := map[doc.ID]bool{}
+	for _, id := range ids {
+		moving[id] = true
+	}
+	kids := e.Children(parent)
+	var them, order []doc.ID
+	for _, k := range kids {
+		if moving[k] {
+			them = append(them, k)
+		}
+	}
+	for _, k := range kids {
+		switch {
+		case moving[k]:
+		case k != ref:
+			order = append(order, k)
+		case over:
+			order = append(append(order, k), them...)
+		default:
+			order = append(append(order, them...), k)
+		}
+	}
+	e.transact(func() { e.writeOrder(order) })
+}
+
+// writeOrder gives children of a parent the paint order of a list.
+func (e *Editor) writeOrder(order []doc.ID) {
 	// New indices from the bottom: simple, and they stay short.
 	idx := ""
 	for _, id := range order {
@@ -1321,7 +1357,7 @@ func (e *Editor) SVG(dark bool) ([]byte, bool) {
 			size, font := FrameHeading(s)
 			color := pal.Text
 			if size > 0 {
-				color = pal.Swatch(s.Color).Solid
+				color = pal.SwatchOf(s).Solid
 			}
 			if size == 0 {
 				size = FrameHeadingFloor
@@ -1375,6 +1411,16 @@ func (e *Editor) svgPrim(b *bytes.Buffer, p Prim, m geo.Mat) {
 	}
 	switch p.Kind {
 	case PrimFill:
+		if g := p.Gradient; g != nil {
+			name := fmt.Sprintf("gradient%d", b.Len())
+			from, to := m.Apply(g.From), m.Apply(g.To)
+			fmt.Fprintf(b, `<linearGradient id="%s" gradientUnits="userSpaceOnUse" x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f">`, name, from.X, from.Y, to.X, to.Y)
+			for i, c := range g.Colors {
+				fmt.Fprintf(b, `<stop offset="%.4g" stop-color="%s"/>`, float64(i)/float64(len(g.Colors)-1), c.CSS())
+			}
+			fmt.Fprintf(b, `</linearGradient><path d="%s" fill="url(#%s)"/>`, p.Path.SVG(m), name)
+			return
+		}
 		fmt.Fprintf(b, `<path d="%s" fill="%s"%s/>`, p.Path.SVG(m), p.Color.CSS(), alpha)
 	case PrimStroke:
 		dash := ""

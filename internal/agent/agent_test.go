@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -2540,5 +2541,504 @@ func TestLargeRequestGetsThrough(t *testing.T) {
 	r := call(t, s, "apply", map[string]any{"ops": []map[string]any{{"add": "image", "src": src, "x": 0, "y": 0}}})
 	if r.IsError {
 		t.Fatal(textOf(r))
+	}
+}
+
+// The guide says which way a bend goes, so that it needn't be found by trying.
+func TestBendGoesAsTheGuideSays(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"arrow","id":"pos","x1":0,"y1":0,"x2":200,"y2":0,"bend":40},{"add":"arrow","id":"neg","x1":0,"y1":100,"x2":200,"y2":100,"bend":-40},{"add":"arrow","id":"back","x1":200,"y1":200,"x2":0,"y2":200,"bend":40}]`)
+	mid := func(id string) float64 { return e.Arrow(e.Doc.Shapes[doc.ID("shape:"+id)]).At(0.5).Y }
+	if y := mid("pos"); math.Abs(y-40) > 1 {
+		t.Errorf("a positive bend running right reaches y %v, not 40, below it", y)
+	}
+	if y := mid("neg"); math.Abs(y-60) > 1 {
+		t.Errorf("a negative bend running right reaches y %v, not 60, above it", y)
+	}
+	if y := mid("back"); math.Abs(y-160) > 1 {
+		t.Errorf("a positive bend running left reaches y %v, not 160, to the right of its way", y)
+	}
+	if !strings.Contains(guideTopics["arrows"], "positive bulges to the right of travel") {
+		t.Error("the guide doesn't say which way a bend goes")
+	}
+}
+
+// Text lost in the theme that isn't being looked at is what a warning is for, and
+// text that shows is what it must leave alone.
+func TestContrast(t *testing.T) {
+	two := `{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":400,"y":0,"w":100,"h":100},`
+	for _, c := range []struct {
+		name, ops string
+		want      string // what a warning says, or nothing
+	}{
+		{"white arrow label on the page", `[` + two + `{"add":"arrow","id":"r","from":"a","to":"b","text":"reads","labelColor":"white"}]`, "r's label hardly shows in the light theme: white on #f9fafb"},
+		{"white text on the page", `[{"add":"text","id":"t","text":"Hi","color":"white"}]`, "t's text hardly shows in the light theme"},
+		{"white on a pale tint", `[{"add":"rectangle","id":"s","text":"Hi","labelColor":"white","color":"blue","fill":"solid"}]`, "s's label hardly shows in the light theme"},
+		{"black on black", `[{"add":"rectangle","id":"s","text":"Hi","color":"black","fill":"fill"}]`, "s's label hardly shows in either theme"},
+		{"default label on a white fill", `[{"add":"rectangle","id":"s","text":"Hi","color":"white","fill":"fill"}]`, "s's label hardly shows in the dark theme"},
+		{"a card's body", `[{"add":"card","id":"k","title":"T","body":"Words","labelColor":"white"}]`, "k's body hardly shows in the light theme"},
+		{"a white arrow", `[` + two + `{"add":"arrow","id":"r","from":"a","to":"b","color":"white"}]`, "r's line hardly shows in the light theme"},
+		{"a white line", `[{"add":"line","id":"l","d":"M0 0L100 0","color":"white"}]`, "l's line hardly shows in the light theme"},
+		{"a white frame's name", `[{"add":"frame","id":"f","name":"Plan","size":"m","color":"white","x":0,"y":100}]`, "f's name hardly shows in the light theme"},
+		{"a faded label", `[{"add":"text","id":"t","text":"Hi","opacity":0.1}]`, "t's text hardly shows in either theme"},
+		{"text half on a shape", `[{"add":"rectangle","x":0,"y":0,"w":30,"h":100,"color":"blue","fill":"fill","dash":"none"},{"add":"text","id":"t","x":0,"y":30,"text":"A long enough title","color":"white"}]`, "t's text hardly shows"},
+		{"a hex on a like hex", `[{"add":"rectangle","id":"s","text":"Hi","labelColor":"#101010","color":"#111111","fill":"fill"}]`, "s's label hardly shows in either theme"},
+		{"a gradient to white", `[{"add":"rectangle","id":"s","w":300,"h":100,"text":"Hi","labelColor":"white","gradient":["#000000","#ffffff"],"gradientAngle":90,"align":"end"}]`, "s's label hardly shows"},
+
+		{"the default", `[` + two + `{"add":"arrow","id":"r","from":"a","to":"b","text":"reads"}]`, ""},
+		{"white on a color", `[{"add":"rectangle","text":"Hi","labelColor":"white","color":"blue","fill":"fill"}]`, ""},
+		{"white on a shape behind", `[{"add":"rectangle","x":0,"y":0,"w":300,"h":100,"color":"violet","fill":"fill"},{"add":"text","x":20,"y":30,"text":"Hi","color":"white"}]`, ""},
+		{"white over a shape, in a frame", `[{"add":"frame","id":"f","x":0,"y":0,"w":300,"h":200},{"add":"rectangle","in":"f","x":0,"y":0,"w":300,"h":200,"color":"#222222","fill":"fill"},{"add":"text","in":"f","x":20,"y":30,"text":"Hi","color":"white"}]`, ""},
+		{"the palette's yellow", `[{"add":"text","text":"Hi","color":"yellow"}]`, ""},
+		{"a label on a dark gradient", `[{"add":"rectangle","w":300,"h":100,"text":"Hi","labelColor":"white","gradient":["#000000","#333333"]}]`, ""},
+		{"a shape of no text", `[{"add":"rectangle","color":"white"}]`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out := ops(t, newEditor(), c.ops)
+			if c.want == "" && strings.Contains(out, "hardly shows") {
+				t.Errorf("warned: %s", out)
+			}
+			if c.want != "" && !strings.Contains(out, c.want) {
+				t.Errorf("wanted %q in: %s", c.want, out)
+			}
+		})
+	}
+
+	// What's behind can't be told of a picture, so it says nothing.
+	e := newEditor()
+	path := filepath.Join(t.TempDir(), "p.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 8, 8))); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	src, _ := json.Marshal(path)
+	if out := ops(t, e, `[{"add":"image","src":`+string(src)+`,"x":0,"y":0,"w":300,"h":100},{"add":"text","x":20,"y":30,"text":"Hi","color":"white"}]`); strings.Contains(out, "hardly shows") {
+		t.Errorf("warned of what it can't see: %s", out)
+	}
+
+	// Taking what was behind a text away loses it as much as changing the text.
+	e = newEditor()
+	if out := ops(t, e, `[{"add":"rectangle","id":"back","x":0,"y":0,"w":300,"h":100,"color":"blue","fill":"fill"},{"add":"text","id":"t","x":20,"y":30,"text":"Hi","color":"white"}]`); strings.Contains(out, "hardly shows") {
+		t.Fatalf("warned: %s", out)
+	}
+	if out := ops(t, e, `[{"set":"back","fill":"none"}]`); !strings.Contains(out, "t's text hardly shows") {
+		t.Errorf("no warning of what its fill showed up: %s", out)
+	}
+	list, _ := checkWholePage(e)
+	if !slices.ContainsFunc(list, func(w string) bool { return strings.Contains(w, "t's text hardly shows") }) {
+		t.Errorf("check doesn't tell of it: %v", list)
+	}
+}
+
+// A small badge stays the size asked of it, if it says so, and says how if it doesn't.
+func TestPadding(t *testing.T) {
+	e := newEditor()
+	out := ops(t, e, `[{"add":"ellipse","id":"b","text":"1","size":"s","x":0,"y":0,"w":44,"h":44}]`)
+	if !strings.Contains(out, "b grew 44→56.3 to hold its text; padding:0 keeps it 44 high") {
+		t.Errorf("no way out in the warning: %s", out)
+	}
+	out = ops(t, e, `[{"set":"b","padding":0,"h":44}]`)
+	if !strings.Contains(out, "b 0,0 44x44") || strings.Contains(out, "grew") {
+		t.Errorf("padding:0 doesn't keep it: %s", out)
+	}
+	e = newEditor()
+	out = ops(t, e, `[{"add":"ellipse","id":"b","text":"12","size":"s","padding":0,"x":0,"y":0,"w":44,"h":44},{"add":"rectangle","id":"c","text":"12","padding":4,"x":100,"y":0}]`)
+	if !strings.Contains(out, "b 0,0 44x44") || strings.Contains(out, "warnings") {
+		t.Errorf("a badge: %s", out)
+	}
+	// With padding said and no size, it takes only what it needs: no least size.
+	c := e.Doc.Shapes["shape:c"]
+	if c.W >= 120 || c.H >= 72 {
+		t.Errorf("fits to %vx%v", c.W, c.H)
+	}
+	// Text in a box of little padding sits to the edge of it.
+	if pad := e.Geometry(e.Doc.Shapes["shape:b"]).Label.X; pad != 0 {
+		t.Errorf("label sits %v in", pad)
+	}
+	if out := ops(t, e, `[{"add":"note","id":"n","text":"N","padding":2}]`); strings.Contains(out, "warnings") {
+		t.Errorf("a note: %s", out)
+	}
+	if got, _ := details(e, names{"b"}); !strings.Contains(got, "padding 0") {
+		t.Errorf("read doesn't say: %s", got)
+	}
+	// It stays with the file, and has no number a file can't take.
+	if _, err := tryOps(e, `[{"set":"b","padding":-1}]`); err == nil {
+		t.Error("padding below 0 taken")
+	}
+	if _, err := tryOps(e, `[{"add":"text","text":"x","padding":2}]`); err == nil {
+		t.Error("padding taken by a kind that has none")
+	}
+	back := roundTrip(t, e)
+	if got := editor.LabelPad(back.Shapes["shape:b"]); got != 0 {
+		t.Errorf("after saving, padding %v", got)
+	}
+}
+
+// roundTrip writes a drawing to a file and reads it back.
+func roundTrip(t *testing.T, e *editor.Editor) *doc.Drawing {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := doc.Write(&buf, e.Doc); err != nil {
+		t.Fatal(err)
+	}
+	d, err := doc.Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func kinds(prims []editor.Prim, k editor.PrimKind) []editor.Prim {
+	var out []editor.Prim
+	for _, p := range prims {
+		if p.Kind == k {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Without an outline a shape only fills, and the file still says what tldraw takes.
+func TestNoOutline(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100,"color":"blue","fill":"fill","dash":"none"},{"add":"draw","id":"d","d":"M200 0C260 0 260 80 200 80Z","fill":"fill","color":"blue","dash":"none"}]`)
+	for _, id := range []doc.ID{"shape:r", "shape:d"} {
+		s := e.Doc.Shapes[id]
+		prims := e.Display(s, editor.Light)
+		if len(prims) != 1 || prims[0].Kind != editor.PrimFill || prims[0].Ink != nil {
+			t.Errorf("%s draws %d prims", id, len(prims))
+		}
+		if s.Dash != "solid" {
+			t.Errorf("%s has dash %q in its file", id, s.Dash)
+		}
+	}
+	if got, _ := details(e, names{"r"}); !strings.Contains(got, "no-outline") {
+		t.Errorf("read doesn't say: %s", got)
+	}
+	back := roundTrip(t, e)
+	if !back.Shapes["shape:r"].NoOutline() {
+		t.Error("lost in the file")
+	}
+	// Another dash brings the line back, as a fill does for the picker.
+	ops(t, e, `[{"set":"r","dash":"dashed"}]`)
+	if s := e.Doc.Shapes["shape:r"]; s.NoOutline() || s.Dash != "dashed" || len(kinds(e.Display(s, editor.Light), editor.PrimStroke)) != 1 {
+		t.Errorf("no line back: %+v", s.Dash)
+	}
+	e.Select("shape:d")
+	e.SetStyle(editor.StyleDash, "solid")
+	if s := e.Doc.Shapes["shape:d"]; s.NoOutline() || len(kinds(e.Display(s, editor.Light), editor.PrimStroke)) != 1 {
+		t.Error("the style panel can't bring a line back")
+	}
+
+	for _, bad := range []string{
+		`[{"add":"arrow","x1":0,"y1":0,"x2":9,"y2":9,"dash":"none"}]`,
+		`[{"add":"line","d":"M0 0L9 9","dash":"none"}]`,
+	} {
+		if _, err := tryOps(e, bad); err == nil || !strings.Contains(err.Error(), "its line") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	ops(t, e, `[{"add":"line","id":"l","d":"M0 300L90 300"}]`)
+	if _, err := tryOps(e, `[{"set":"l","dash":"none"}]`); err == nil {
+		t.Error("set took a line's line away")
+	}
+	// Defaults and what a group holds keep a line its line.
+	ops(t, e, `[{"style":{"dash":"none"}},{"add":"line","id":"l2","d":"M0 400L90 400"}]`)
+	if e.Doc.Shapes["shape:l2"].NoOutline() {
+		t.Error("a default took a line's line away")
+	}
+
+	out := ops(t, e, `[{"add":"rectangle","id":"gone","x":0,"y":500,"w":10,"h":10,"dash":"none"},{"add":"rectangle","id":"named","x":200,"y":500,"w":100,"h":100,"text":"Hi","dash":"none"}]`)
+	if !strings.Contains(out, "gone shows nothing") || strings.Contains(out, "named shows") {
+		t.Errorf("of what shows nothing: %s", out)
+	}
+}
+
+// A color of a shape's own paints all a palette color does, and tldraw is told the
+// nearest of its own.
+func TestCustomColors(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":100,"color":"#FF8800","labelColor":"#123456","fill":"fill","text":"Hi"}]`)
+	s := e.Doc.Shapes["shape:r"]
+	if s.Color != "orange" || s.LabelColor != "black" {
+		t.Errorf("the file says %s and %s", s.Color, s.LabelColor)
+	}
+	want, ink := editor.Hex("#ff8800"), editor.Hex("#123456")
+	for _, pal := range []*editor.Palette{editor.Light, editor.Dark} {
+		prims := e.Display(s, pal)
+		if c := kinds(prims, editor.PrimFill)[0].Color; c != want {
+			t.Errorf("fills %v", c)
+		}
+		if c := kinds(prims, editor.PrimText)[0].Color; c != ink {
+			t.Errorf("label %v", c)
+		}
+	}
+	// A tint of it follows the theme it's on.
+	ops(t, e, `[{"set":"r","fill":"solid"}]`)
+	s = e.Doc.Shapes["shape:r"]
+	light, dark := kinds(e.Display(s, editor.Light), editor.PrimFill)[0].Color, kinds(e.Display(s, editor.Dark), editor.PrimFill)[0].Color
+	if light == want || dark == want || light == dark {
+		t.Errorf("tints %v and %v", light, dark)
+	}
+	if got, _ := details(e, names{"r"}); !strings.Contains(got, "#ff8800") || !strings.Contains(got, "labelColor #123456") {
+		t.Errorf("read doesn't say: %s", got)
+	}
+	back := roundTrip(t, e)
+	if got := editor.Light.SwatchOf(back.Shapes["shape:r"]).Solid; got != want {
+		t.Errorf("after saving, %v", got)
+	}
+	// A palette color takes over again, from an op or the style panel.
+	ops(t, e, `[{"set":"r","labelColor":"red"}]`)
+	if e.Doc.Shapes["shape:r"].MetaValue(doc.MetaLabelColor, new(string)) {
+		t.Error("labelColor kept its hex")
+	}
+	e.Select("shape:r")
+	e.SetStyle(editor.StyleColor, "green")
+	if c := editor.Light.SwatchOf(e.Doc.Shapes["shape:r"]).Solid; c != editor.Light.Swatch("green").Solid {
+		t.Errorf("the style panel left %v", c)
+	}
+	// In all that takes a color.
+	ops(t, e, `[{"style":{"color":"#00ff00"}},{"add":"text","id":"t","text":"T","x":0,"y":300},{"add":"frame","id":"f","name":"F","size":"s","x":300,"y":300},{"add":"arrow","id":"a","x1":0,"y1":500,"x2":90,"y2":500}]`)
+	for _, id := range []doc.ID{"shape:t", "shape:a"} {
+		if c := e.Display(e.Doc.Shapes[id], editor.Dark)[0].Color; c != editor.Hex("#00ff00") {
+			t.Errorf("%s is %v", id, c)
+		}
+	}
+	for _, bad := range []string{`"#fff"`, `"#ggggg0"`, `"#+12345"`, `"blu"`} {
+		_, err := tryOps(e, `[{"add":"rectangle","color":`+bad+`}]`)
+		if err == nil || !strings.Contains(err.Error(), "#rrggbb") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}
+
+func TestGradient(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"rectangle","id":"r","x":0,"y":0,"w":100,"h":200,"gradient":["#000000","#ffffff"],"dash":"none"},{"add":"rectangle","id":"s","x":200,"y":0,"w":100,"h":100,"gradient":["blue","#ffffff","red"],"gradientAngle":90},{"add":"draw","id":"d","d":"M400 0C460 0 460 80 400 80Z","gradient":["#000000","#ffffff"]},{"add":"card","id":"k","title":"T","gradient":["#000000","#111111"],"labelColor":"white","color":"white","x":600,"y":0}]`)
+	g := e.Display(e.Doc.Shapes["shape:r"], editor.Light)[0].Gradient
+	if g == nil {
+		t.Fatal("no gradient")
+	}
+	// By default it runs top to bottom, over the whole box.
+	if g.From.Dist(geo.V(50, 0)) > 1e-6 || g.To.Dist(geo.V(50, 200)) > 1e-6 {
+		t.Errorf("runs %v to %v", g.From, g.To)
+	}
+	if c := g.At(g.Along(geo.V(50, 100))); c != editor.Hex("#808080") {
+		t.Errorf("halfway is %v", c)
+	}
+	h := e.Display(e.Doc.Shapes["shape:s"], editor.Dark)[0].Gradient
+	if h == nil || h.From.Dist(geo.V(0, 50)) > 1e-6 || h.To.Dist(geo.V(100, 50)) > 1e-6 {
+		t.Fatalf("at 90 degrees: %+v", h)
+	}
+	// Palette colors adapt, and those of its own don't.
+	if h.Colors[0] != editor.Dark.Swatch("blue").Fill || h.Colors[1] != editor.Hex("#ffffff") {
+		t.Errorf("colors %v", h.Colors)
+	}
+	if e.Display(e.Doc.Shapes["shape:d"], editor.Light)[0].Gradient == nil {
+		t.Error("a path doesn't fill with it")
+	}
+	if e.Display(e.Doc.Shapes["shape:k-box"], editor.Light)[0].Gradient == nil {
+		t.Error("a card doesn't fill with it")
+	}
+	// tldraw sees what fills in its place, and a press on it hits it.
+	if s := e.Doc.Shapes["shape:r"]; s.Fill != "fill" || !e.Geometry(s).Filled {
+		t.Errorf("fill %q", s.Fill)
+	}
+	if !strings.Contains(line(e, "shape:s"), `gradient blue,#ffffff,red angle 90`) {
+		t.Errorf("read: %s", line(e, "shape:s"))
+	}
+	svg, ok := e.SVG(false)
+	if !ok || !bytes.Contains(svg, []byte(`<linearGradient`)) || !bytes.Contains(svg, []byte(`stop-color="#ffffff"`)) {
+		t.Errorf("SVG: %.200s", svg)
+	}
+	if back := roundTrip(t, e); back.Shapes["shape:s"].Gradient() == nil {
+		t.Error("lost in the file")
+	}
+
+	// An angle alone turns it; a fill or [] clears it.
+	ops(t, e, `[{"set":"r","gradientAngle":0}]`)
+	g = e.Display(e.Doc.Shapes["shape:r"], editor.Light)[0].Gradient
+	if g.From.Dist(geo.V(50, 200)) > 1e-6 || g.To.Dist(geo.V(50, 0)) > 1e-6 {
+		t.Errorf("turned, runs %v to %v", g.From, g.To)
+	}
+	ops(t, e, `[{"set":"r","fill":"solid"},{"set":"s","gradient":[]}]`)
+	for _, id := range []doc.ID{"shape:r", "shape:s"} {
+		if e.Doc.Shapes[id].Gradient() != nil {
+			t.Errorf("%s keeps it", id)
+		}
+	}
+	e.Select("shape:d")
+	e.SetStyle(editor.StyleFill, "solid")
+	if e.Doc.Shapes["shape:d"].Gradient() != nil {
+		t.Error("the style panel can't clear it")
+	}
+	ops(t, e, `[{"set":"k","gradient":["#101010","#202020"],"gradientAngle":45}]`)
+	if g := e.Doc.Shapes["shape:k-box"].Gradient(); g == nil || g.Angle != 45 {
+		t.Errorf("a card's: %+v", g)
+	}
+
+	ops(t, e, `[{"add":"rectangle","id":"plain","x":0,"y":500}]`)
+	for bad, want := range map[string]string{
+		`[{"add":"rectangle","gradient":["red"]}]`:                                                 "from 2 to",
+		`[{"add":"rectangle","gradient":["red","nope"]}]`:                                          "nope",
+		`[{"add":"rectangle","gradient":"red"}]`:                                                   "list of colors",
+		`[{"add":"rectangle","gradient":["red","blue"],"fill":"none"}]`:                            "would hide",
+		`[{"add":"rectangle","gradientAngle":10}]`:                                                 "goes with a gradient",
+		`[{"set":"plain","gradientAngle":10}]`:                                                     "goes with a gradient",
+		`[{"add":"text","text":"x","gradient":["red","blue"]}]`:                                    "no \"gradient\"",
+		`[{"add":"rectangle","gradient":["red","red","red","red","red","red","red","red","red"]}]`: "from 2 to",
+	} {
+		if _, err := tryOps(e, bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}
+
+// A label is cut out of its line, not put on a box of the page's color, which would
+// show on anything but the page.
+func TestArrowLabelShowsWhatsBehind(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"arrow","id":"on","x1":0,"y1":0,"x2":400,"y2":0,"text":"reads","dash":"solid"},{"add":"arrow","id":"above","x1":0,"y1":200,"x2":400,"y2":200,"text":"reads","dash":"solid","label":"above"},{"add":"arrow","id":"bare","x1":0,"y1":400,"x2":400,"y2":400,"dash":"solid"}]`)
+	for _, pal := range []*editor.Palette{editor.Light, editor.Dark} {
+		for _, p := range e.Display(e.Doc.Shapes["shape:on"], pal) {
+			if p.Kind == editor.PrimFill && p.Color == pal.Background {
+				t.Error("a label has a backing")
+			}
+		}
+	}
+	stroked := func(id doc.ID) int {
+		n := 0
+		for _, p := range kinds(e.Display(e.Doc.Shapes[id], editor.Light), editor.PrimStroke) {
+			if p.Width == 3.5 && len(p.Path.Segs) == 2 {
+				n++
+			}
+		}
+		return n
+	}
+	if n := stroked("shape:on"); n < 2 {
+		t.Errorf("a label on its line leaves %d pieces", n)
+	}
+	s := e.Doc.Shapes["shape:on"]
+	lb := e.ArrowLabelBox(s)
+	for _, p := range kinds(e.Display(s, editor.Light), editor.PrimStroke) {
+		pts, _ := p.Path.Points(8)
+		for _, q := range pts {
+			if q.Y == 0 && q.X > lb.X+1 && q.X < lb.MaxX()-1 {
+				t.Errorf("the line goes on through its label, at %v in %v", q, *lb)
+			}
+		}
+	}
+	// A label off the line, and the rest of the line, take nothing out of it.
+	if a, b := len(kinds(e.Display(e.Doc.Shapes["shape:above"], editor.Light), editor.PrimStroke)), len(kinds(e.Display(e.Doc.Shapes["shape:bare"], editor.Light), editor.PrimStroke)); a != b {
+		t.Errorf("above draws %d strokes, without a label %d", a, b)
+	}
+}
+
+// With nothing behind a label, what's under it shows through, so it's told of.
+func TestArrowLabelsInTheWay(t *testing.T) {
+	e := newEditor()
+	out := ops(t, e, `[{"add":"arrow","id":"a","x1":0,"y1":0,"x2":400,"y2":0,"text":"first"},{"add":"arrow","id":"b","x1":0,"y1":10,"x2":400,"y2":10,"text":"second"}]`)
+	if !strings.Contains(out, "b's label covers a's label") {
+		t.Errorf("of two labels: %s", out)
+	}
+	e = newEditor()
+	out = ops(t, e, `[{"add":"arrow","id":"a","x1":0,"y1":0,"x2":400,"y2":0,"text":"first"},{"add":"arrow","id":"c","x1":200,"y1":-100,"x2":200,"y2":100}]`)
+	if !strings.Contains(out, "c runs over a's label") {
+		t.Errorf("of a line over a label: %s", out)
+	}
+	e = newEditor()
+	out = ops(t, e, `[{"add":"arrow","id":"a","x1":0,"y1":0,"x2":400,"y2":0,"text":"first"},{"add":"arrow","id":"d","x1":0,"y1":200,"x2":400,"y2":200,"text":"second"}]`)
+	if strings.Contains(out, "label") {
+		t.Errorf("of labels apart: %s", out)
+	}
+}
+
+// "Put this behind that" takes no counting of steps.
+func TestOrderBeside(t *testing.T) {
+	order := func(e *editor.Editor, parent doc.ID) string {
+		var out []string
+		for _, id := range e.Children(parent) {
+			out = append(out, shortID(id))
+		}
+		return strings.Join(out, " ")
+	}
+	setup := `[{"add":"rectangle","id":"a","x":0,"y":0},{"add":"rectangle","id":"b","x":200,"y":0},{"add":"rectangle","id":"c","x":400,"y":0},{"add":"rectangle","id":"d","x":600,"y":0}]`
+	e := newEditor()
+	ops(t, e, setup)
+	ops(t, e, `[{"order":"d","behind":"b"}]`)
+	if got := order(e, e.Page); got != "a d b c" {
+		t.Errorf("behind: %s", got)
+	}
+	ops(t, e, `[{"order":"a","over":"b"}]`)
+	if got := order(e, e.Page); got != "d b a c" {
+		t.Errorf("over: %s", got)
+	}
+	// Several keep their order among themselves, however they're named.
+	ops(t, e, `[{"order":["c","d"],"behind":"a"}]`)
+	if got := order(e, e.Page); got != "b d c a" {
+		t.Errorf("several: %s", got)
+	}
+	ops(t, e, `[{"set":"b","over":"a"}]`)
+	if got := order(e, e.Page); got != "d c a b" {
+		t.Errorf("by set: %s", got)
+	}
+	// New shapes of every sort go where they're told.
+	ops(t, e, `[{"add":"star","id":"s","x":0,"y":200,"w":40,"h":40,"behind":"a"},{"add":"draw","id":"p","d":"M0 300L40 340M60 300L90 340","behind":"d"},{"add":"card","id":"k","title":"T","x":0,"y":500,"over":"d"},{"add":"arrow","id":"r","from":"a","to":"b","behind":"a"}]`)
+	if got := order(e, e.Page); got != "p d k c s r a b" {
+		t.Errorf("added: %s", got)
+	}
+
+	// What a frame holds has an order of its own, and goes beside what's on the
+	// page by what holds it.
+	e = newEditor()
+	ops(t, e, setup)
+	ops(t, e, `[{"add":"frame","id":"f","x":0,"y":300,"w":300,"h":200},{"add":"rectangle","id":"i","in":"f","x":10,"y":310},{"add":"rectangle","id":"j","in":"f","x":20,"y":320}]`)
+	ops(t, e, `[{"order":"j","behind":"i"}]`)
+	if got := order(e, "shape:f"); got != "j i" {
+		t.Errorf("in a frame: %s", got)
+	}
+	ops(t, e, `[{"order":"c","behind":"i"}]`)
+	if got := order(e, e.Page); got != "a b d c f" {
+		t.Errorf("behind what a frame holds: %s", got)
+	}
+	_, err := tryOps(e, `[{"order":"i","behind":"a"}]`)
+	if err == nil || !strings.Contains(err.Error(), "order f instead") {
+		t.Errorf("out of a frame: %v", err)
+	}
+
+	for bad, want := range map[string]string{
+		`[{"order":"a","behind":"a"}]`:                  "beside itself",
+		`[{"order":["a","b"],"behind":"a"}]`:            "beside itself",
+		`[{"order":"f","behind":"i"}]`:                  "beside itself",
+		`[{"order":"a","behind":"nope"}]`:               "no shape",
+		`[{"order":"a"}]`:                               "behind or over",
+		`[{"order":"a","how":"front","over":"b"}]`:      "not both",
+		`[{"order":"a","behind":"b","over":"c"}]`:       "one of behind, over",
+		`[{"add":"rectangle","behind":"b","over":"c"}]`: "one of behind, over",
+	} {
+		if _, err := tryOps(e, bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}
+
+// A card's title and body can have a font each.
+func TestCardBodyFont(t *testing.T) {
+	e := newEditor()
+	ops(t, e, `[{"add":"card","id":"k","title":"T","body":"Words","font":"draw","bodyFont":"sans","x":0,"y":0}]`)
+	if h, b := e.Doc.Shapes["shape:k-head"].Font, e.Doc.Shapes["shape:k-body"].Font; h != "draw" || b != "sans" {
+		t.Errorf("title %s, body %s", h, b)
+	}
+	ops(t, e, `[{"set":"k","bodyFont":"mono"}]`)
+	if h, b := e.Doc.Shapes["shape:k-head"].Font, e.Doc.Shapes["shape:k-body"].Font; h != "draw" || b != "mono" {
+		t.Errorf("after set: title %s, body %s", h, b)
+	}
+	ops(t, e, `[{"set":"k","font":"serif"}]`)
+	if h, b := e.Doc.Shapes["shape:k-head"].Font, e.Doc.Shapes["shape:k-body"].Font; h != "serif" || b != "serif" {
+		t.Errorf("font alone sets both: title %s, body %s", h, b)
 	}
 }

@@ -158,6 +158,14 @@ const (
 	MetaViaAuto    = "godrawViaAuto"    // that the app chose it, to go around something
 	MetaFrameSize  = "godrawFrameSize"  // a frame's size style, for its heading and border
 	MetaFrameFont  = "godrawFrameFont"  // the font of a frame's heading
+
+	// What a file keeps for this app alone, as tldraw's validators take only its own
+	// colors and dashes. There, a shape shows as its props say, without these.
+	MetaColor      = "godrawColor"      // #rrggbb, in place of color
+	MetaLabelColor = "godrawLabelColor" // #rrggbb, in place of labelColor
+	MetaNoOutline  = "godrawNoOutline"  // that a shape draws no outline
+	MetaGradient   = "godrawGradient"   // what a shape fills with, in place of fill
+	MetaPadding    = "godrawPadding"    // how far a label sits in from its box
 )
 
 // MetaValue reads a key of the shape's meta into v, and says whether it could.
@@ -181,6 +189,9 @@ func (s *Shape) SetMeta(key string, v any) {
 		return
 	}
 	if v == nil {
+		if _, ok := m[key]; !ok {
+			return
+		}
 		delete(m, key)
 	} else {
 		raw, err := json.Marshal(v)
@@ -192,6 +203,29 @@ func (s *Shape) SetMeta(key string, v any) {
 	if b, err := json.Marshal(m); err == nil {
 		s.Meta = b
 	}
+}
+
+// Gradient is a fill that blends colors, evenly spaced along a line. Angle is that
+// line's direction, in degrees as CSS has them: 180 runs top to bottom, 90 left to
+// right.
+type Gradient struct {
+	Colors []string `json:"colors"`
+	Angle  float64  `json:"angle"`
+}
+
+// Gradient returns what a shape fills with instead of its fill, if anything.
+func (s *Shape) Gradient() *Gradient {
+	var g Gradient
+	if !s.MetaValue(MetaGradient, &g) || len(g.Colors) < 2 {
+		return nil
+	}
+	return &g
+}
+
+// NoOutline says that a shape draws no outline, whatever its dash.
+func (s *Shape) NoOutline() bool {
+	var none bool
+	return s.MetaValue(MetaNoOutline, &none) && none
 }
 
 // Via returns the points an elbow arrow passes through, in its own space.

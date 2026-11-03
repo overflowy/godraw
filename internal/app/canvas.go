@@ -551,6 +551,10 @@ func (s *scene) isSmall(b geo.Box, k float64) bool {
 func (s *scene) prim(pr editor.Prim, m geo.Mat, o float64, sh *doc.Shape) {
 	switch pr.Kind {
 	case editor.PrimFill:
+		if pr.Gradient != nil {
+			s.fillGradient(pr, m, o)
+			return
+		}
 		if s.asBox(pr, m) {
 			s.fillBox(pr, m, toUI(pr.Color.Alpha(o)))
 			return
@@ -831,7 +835,7 @@ func (s *scene) frameHeading(sh *doc.Shape, origin geo.Vec, rot float64) {
 	size := max(float32(page*s.cam.Z), floor)
 	color := toUI(s.pal.Text.Alpha(0.65))
 	if page > 0 {
-		color = toUI(s.pal.Swatch(sh.Color).Solid)
+		color = toUI(s.pal.SwatchOf(sh).Solid)
 	}
 	face := s.p.Theme().Font
 	if font != "" {

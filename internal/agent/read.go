@@ -189,7 +189,7 @@ func line(e *editor.Editor, id doc.ID) string {
 		}
 	}
 	if s.Type != doc.TypeFrame && s.Type != doc.TypeGroup && s.Type != doc.TypeImage {
-		for _, v := range []struct{ val, def string }{{s.Color, "black"}, {s.Fill, "none"}, {s.Dash, "draw"}, {s.Size, "m"}} {
+		for _, v := range []struct{ val, def string }{{colorName(s), "black"}, {fillName(s), "none"}, {dashName(s), "draw"}, {s.Size, "m"}} {
 			if v.val != "" && v.val != v.def {
 				b.WriteByte(' ')
 				b.WriteString(v.val)
@@ -212,6 +212,29 @@ func line(e *editor.Editor, id doc.ID) string {
 		b.WriteString(" locked")
 	}
 	return b.String()
+}
+
+// colorName is a shape's color as an op says it.
+func colorName(s *doc.Shape) string {
+	var hex string
+	if s.MetaValue(doc.MetaColor, &hex) {
+		return hex
+	}
+	return s.Color
+}
+
+func fillName(s *doc.Shape) string {
+	if g := s.Gradient(); g != nil {
+		return "gradient " + strings.Join(g.Colors, ",") + " angle " + num(g.Angle)
+	}
+	return s.Fill
+}
+
+func dashName(s *doc.Shape) string {
+	if s.NoOutline() {
+		return "no-outline"
+	}
+	return s.Dash
 }
 
 func kindName(s *doc.Shape) string {
@@ -256,7 +279,13 @@ func details(e *editor.Editor, list names) (string, error) {
 			kv("font", s.Font)
 			kv("align", s.Align)
 			kv("valign", s.VAlign)
-			kv("labelColor", s.LabelColor)
+			labelColor := s.LabelColor
+			s.MetaValue(doc.MetaLabelColor, &labelColor)
+			kv("labelColor", labelColor)
+			var padding float64
+			if s.MetaValue(doc.MetaPadding, &padding) {
+				kv("padding", num(padding))
+			}
 		case doc.TypeText:
 			kv("font", s.Font)
 			kv("align", s.TextAlign)

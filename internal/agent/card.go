@@ -93,11 +93,15 @@ func styleBody(body *doc.Shape, title string) {
 func stylePart(part *doc.Shape, role string, f *fields) {
 	switch role {
 	case "box":
-		assign(part, &fields{Color: f.Color, Fill: f.Fill, Dash: f.Dash, Opacity: f.Opacity})
+		assign(part, &fields{Color: f.Color, Fill: f.Fill, Gradient: f.Gradient, GradientAngle: f.GradientAngle, Dash: f.Dash, Opacity: f.Opacity})
 	case "head":
 		assign(part, &fields{Color: f.Color, Font: f.Font, Size: f.Size, Align: f.Align, Opacity: f.Opacity})
 	case "body":
-		assign(part, &fields{Color: f.LabelColor, Font: f.Font, Align: f.Align, Opacity: f.Opacity})
+		font := f.Font
+		if f.BodyFont != nil {
+			font = f.BodyFont
+		}
+		assign(part, &fields{Color: f.LabelColor, Font: font, Align: f.Align, Opacity: f.Opacity})
 		if f.Size != nil {
 			styleBody(part, *f.Size)
 		}
@@ -269,7 +273,8 @@ func (r *run) setCard(c *card, f *fields) (*fields, error) {
 	}
 	rest := *f
 	rest.Title, rest.Body, rest.W, rest.H = nil, nil, nil, nil
-	rest.Color, rest.LabelColor, rest.Fill, rest.Dash, rest.Size, rest.Font, rest.Align = nil, nil, nil, nil, nil, nil, nil
+	rest.Color, rest.LabelColor, rest.Fill, rest.Dash, rest.Size, rest.Font, rest.BodyFont, rest.Align = nil, nil, nil, nil, nil, nil, nil, nil
+	rest.Gradient, rest.GradientAngle = nil, nil
 
 	parts := []struct {
 		role string

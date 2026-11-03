@@ -244,3 +244,70 @@ func TestCellPlansAreKept(t *testing.T) {
 		t.Errorf("%d plans grew to %d with nothing moving", before, len(a.cells))
 	}
 }
+
+// A gradient comes out the same however it's painted: as a box, a path, a path in
+// cells, or turned. Each paints over a box of its own, and has to meet the rest.
+func TestGradientPaintsAlongItsLine(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		geo        string
+		rot        float64
+		w, h, x, y float64
+		z          float64
+		angle      float64
+	}{
+		{"a box", "rectangle", 0, 300, 200, 100, 100, 1, 180},
+		{"a path", "ellipse", 0, 60, 60, 100, 100, 1, 90},
+		{"a large path, in cells", "ellipse", 0, 900, 600, 100, 100, 1, 180},
+		{"across, in cells", "ellipse", 0, 900, 600, 100, 100, 1, 60},
+		{"turned", "ellipse", 0.5, 400, 300, 200, 200, 1, 90},
+		{"a turned box", "rectangle", 0.5, 400, 300, 200, 200, 1, 180},
+		{"zoomed in", "ellipse", 0, 300, 200, 100, 100, 3, 180},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := doc.New()
+			s := doc.NewShape(doc.NewID("shape"), doc.TypeGeo)
+			s.Parent, s.Index, s.Geo, s.Fill, s.Dash = "page:page", doc.FirstIndex, c.geo, "fill", "solid"
+			s.X, s.Y, s.W, s.H, s.Rotation = c.x, c.y, c.w, c.h, c.rot
+			s.SetMeta(doc.MetaNoOutline, true)
+			s.SetMeta(doc.MetaGradient, doc.Gradient{Colors: []string{"#000000", "#ff0000", "#ffffff"}, Angle: c.angle})
+			d.Shapes[s.ID] = s
+			a, tt := canvasOnly(d, editor.Camera{Z: c.z})
+			e := a.Editor()
+			g := e.Display(e.Doc.Shapes[s.ID], editor.Light)[0].Gradient
+			if g == nil {
+				t.Fatal("no gradient")
+			}
+			img := tt.Image()
+			m := e.PageMat(s.ID)
+			seen := 0
+			for i := 1; i < 8; i++ {
+				for j := 1; j < 8; j++ {
+					q := geo.V(float64(i)/8*c.w, float64(j)/8*c.h)
+					// What's in the shape, well inside its edge.
+					if c.geo == "ellipse" && math.Hypot(q.X/c.w-0.5, q.Y/c.h-0.5) > 0.45 {
+						continue
+					}
+					at := e.ToScreen(m.Apply(q))
+					px, py := int(at.X*2), int(at.Y*2)
+					if !image.Pt(px, py).In(img.Bounds()) {
+						continue
+					}
+					seen++
+					want := g.At(g.Along(q))
+					o := img.PixOffset(px, py)
+					got := img.Pix[o : o+3 : o+3]
+					for ch, v := range []uint8{want.R, want.G, want.B} {
+						if d := math.Abs(float64(got[ch]) - float64(v)); d > 6 {
+							t.Errorf("at %v, in the page %v: %v, wanted %v", q, m.Apply(q), got, want)
+							break
+						}
+					}
+				}
+			}
+			if seen < 8 {
+				t.Errorf("only %d points to compare", seen)
+			}
+		})
+	}
+}

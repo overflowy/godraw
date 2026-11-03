@@ -142,10 +142,103 @@ func dashOff(dash []float64) float64 {
 	return 0
 }
 
-// fill fills a path under m. Cells that all of it covers have no need of a mask.
+// fill fills a path under m.
 func (s *scene) fill(g *geo.Path, m geo.Mat, c ui.Color) {
+	s.fillWith(g, m, brush{color: c})
+}
+
+// brush is what a path fills with: a color, or a gradient if it has one.
+type brush struct {
+	color    ui.Color
+	gradient *gradientLine
+}
+
+// path fills a path whose bounds, as a painter finds them, are given.
+func (b brush) path(p *ui.Painter, path *ui.Path, bounds ui.Rect) {
+	if b.gradient != nil {
+		p.FillPathGradient(path, b.gradient.over(bounds))
+		return
+	}
+	p.FillPath(path, b.color)
+}
+
+func (b brush) rect(p *ui.Painter, r ui.Rect) {
+	if b.gradient != nil {
+		p.FillGradient(r, b.gradient.over(r), 0)
+		return
+	}
+	p.Fill(r, b.color, 0)
+}
+
+// gradientLine is a shape's gradient as it lies on the painter.
+type gradientLine struct {
+	fill     *editor.GradientFill
+	from, to geo.Vec
+	opacity  float64
+}
+
+// fillGradient fills what a prim fills with its gradient.
+func (s *scene) fillGradient(pr editor.Prim, m geo.Mat, o float64) {
+	line := &gradientLine{fill: pr.Gradient, from: m.Apply(pr.Gradient.From), to: m.Apply(pr.Gradient.To), opacity: o}
+	if s.asBox(pr, m) {
+		r, radius := s.boxOf(pr, m)
+		s.p.FillGradient(r, line.over(r), radius)
+		return
+	}
+	s.fillWith(pr.Path, m, brush{gradient: line})
+}
+
+// over returns the painter's gradient for a box of it. A painter lays a gradient
+// over what it fills, so what's filled in parts, each over a box of its own, needs
+// the part of the line that the box's own line covers for them all to meet.
+func (l *gradientLine) over(r ui.Rect) ui.LinearGradient {
+	d := l.to.Sub(l.from)
+	u := d.Uni()
+	half := (math.Abs(float64(r.W)*u.X) + math.Abs(float64(r.H)*u.Y)) / 2
+	c := geo.V(float64(r.X+r.W/2), float64(r.Y+r.H/2))
+	along := func(p geo.Vec) float64 { return p.Sub(l.from).Dot(d) / d.Dot(d) }
+	t0, t1 := along(c.Sub(u.Mul(half))), along(c.Add(u.Mul(half)))
+	color := func(t float64) ui.Color { return toUI(l.fill.At(t).Alpha(l.opacity)) }
+	g := ui.LinearGradient{Angle: float32(math.Atan2(u.X, -u.Y) * 180 / math.Pi)}
+	if t1 <= t0 {
+		g.From, g.To = color(t0), color(t0)
+		return g
+	}
+	g.Stops = append(g.Stops, ui.GradientStop{Color: color(t0)})
+	for i, c := range l.fill.Colors {
+		if t := float64(i) / float64(len(l.fill.Colors)-1); t > t0 && t < t1 {
+			g.Stops = append(g.Stops, ui.GradientStop{Color: toUI(c.Alpha(l.opacity)), At: float32((t - t0) / (t1 - t0))})
+		}
+	}
+	g.Stops = append(g.Stops, ui.GradientStop{Color: color(t1), At: 1})
+	return g
+}
+
+// boundsOf returns the box a painter finds around a path it flattens under m.
+func (s *scene) boundsOf(g *geo.Path, m geo.Mat) ui.Rect {
+	k := float64(s.p.Scale())
+	var box geo.Box
+	first := true
+	for _, l := range flatten(g, m, k) {
+		b := geo.BoxOf(l.pts)
+		if first {
+			box, first = b, false
+		} else {
+			box = box.Union(b)
+		}
+	}
+	return ui.Rect{X: float32(box.X / k), Y: float32(box.Y / k), W: float32(box.W / k), H: float32(box.H / k)}
+}
+
+// fillWith fills a path under m. Cells that all of it covers have no need of a mask.
+func (s *scene) fillWith(g *geo.Path, m geo.Mat, c brush) {
 	if !s.spansLarge(g, m, 0) {
-		s.p.FillPath(s.buildPath(g, m), c)
+		path := s.buildPath(g, m)
+		var bounds ui.Rect
+		if c.gradient != nil {
+			bounds = s.boundsOf(g, m)
+		}
+		c.path(s.p, path, bounds)
 		return
 	}
 	k := float64(s.p.Scale())
@@ -155,13 +248,13 @@ func (s *scene) fill(g *geo.Path, m geo.Mat, c ui.Color) {
 		return
 	}
 	path := &s.path
-	draw := func() { s.p.FillPath(path, c) }
+	draw := func() { c.path(s.p, path, path.Bounds()) }
 	for row := first.Y; row <= last.Y; row++ {
 		from := -1
 		flush := func(end int) {
 			if from >= 0 {
 				a, b := plan.grid.rect(plan.grid.index(from, row), shift, k), plan.grid.rect(plan.grid.index(end-1, row), shift, k)
-				s.p.Fill(ui.Rect{X: a.X, Y: a.Y, W: b.X + b.W - a.X, H: a.H}, c, 0)
+				c.rect(s.p, ui.Rect{X: a.X, Y: a.Y, W: b.X + b.W - a.X, H: a.H})
 				from = -1
 			}
 		}

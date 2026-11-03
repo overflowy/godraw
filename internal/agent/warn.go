@@ -233,6 +233,8 @@ func (r *run) checkPage(ids []doc.ID, touched map[doc.ID]bool) {
 	r.checkArrows(ids, items, touched)
 	r.checkFrames(ids, touched)
 	r.checkHeadings(ids, items, touched)
+	r.checkContrast(ids, touched)
+	r.checkArrowLabels(ids, touched)
 	r.checkShared(ids, touched)
 }
 
@@ -293,13 +295,27 @@ func (r *run) reportGrowth() {
 	var lines []string
 	for id, g := range r.grown {
 		if g.asked && !g.told {
-			lines = append(lines, shortID(id)+" "+g.String()+" to hold its text")
+			lines = append(lines, shortID(id)+" "+g.String()+" to hold its text"+r.paddingHint(id, g))
 		}
 	}
 	slices.Sort(lines)
 	for _, line := range lines {
 		r.warnAt(rankGrowth, "%s", line)
 	}
+}
+
+// paddingHint says that less padding would keep a box the height it was asked to be,
+// if that's so.
+func (r *run) paddingHint(id doc.ID, g *growth) string {
+	s := r.e.Doc.Shapes[id]
+	if s == nil || (s.Type != doc.TypeGeo && s.Type != doc.TypeNote) || editor.LabelPad(s) == 0 {
+		return ""
+	}
+	w := r.e.Geometry(s).Bounds.W
+	if r.e.Measure(s.Text, s.Font, editor.LabelSize(s.Size)*s.Scale, w).H > g.from {
+		return ""
+	}
+	return "; padding:0 keeps it " + num(g.from) + " high"
 }
 
 func (r *run) items(ids []doc.ID, touched map[doc.ID]bool) []*item {
@@ -869,6 +885,297 @@ func sharedLength(a, b []geo.Vec) float64 {
 		}
 	}
 	return total
+}
+
+// minContrast is how far apart a text or line and what's behind it have to stand
+// for it to show. It's well below what's comfortable to read, as the palette's own
+// yellow on white is, for a warning to mean that it has all but gone.
+const minContrast = 1.4
+
+// painter is a shape that may paint what's behind a text or line.
+type painter struct {
+	s     *doc.Shape
+	box   geo.Box
+	inv   geo.Mat
+	order int
+}
+
+// checkContrast tells of text and lines that hardly show, in either theme: colors
+// that adapt can be fine in the theme that's being looked at and lost in the other.
+// A shape changing under them can do that as much as they themselves.
+func (r *run) checkContrast(ids []doc.ID, touched map[doc.ID]bool) {
+	var painters []painter
+	var filled []geo.Box
+	for order, id := range ids {
+		s := r.e.Doc.Shapes[id]
+		switch s.Type {
+		case doc.TypeGeo, doc.TypeDraw, doc.TypeNote, doc.TypeFrame, doc.TypeImage:
+		default:
+			continue
+		}
+		box := r.e.PageBounds(id)
+		painters = append(painters, painter{s, box, r.e.PageMat(id).Invert(), order})
+		if touched[id] {
+			filled = append(filled, box)
+		}
+	}
+	for order, id := range ids {
+		if r.warned() {
+			return
+		}
+		s := r.e.Doc.Shapes[id]
+		samples, what := r.inked(s)
+		if len(samples) == 0 {
+			r.checkShows(s, touched)
+			continue
+		}
+		affected := touched[id] || (s.Type == doc.TypeArrow && r.arrowTouched(id, touched))
+		if !affected {
+			box := geo.BoxOf(samples)
+			affected = slices.ContainsFunc(filled, box.Overlaps)
+		}
+		if affected {
+			r.checkInk(s, order, samples, what, painters)
+		}
+	}
+}
+
+// checkShows tells of a shape with neither outline nor fill nor text.
+func (r *run) checkShows(s *doc.Shape, touched map[doc.ID]bool) {
+	if !touched[s.ID] || !s.NoOutline() || s.Text != "" {
+		return
+	}
+	if s.Fill == "none" || (s.Type == doc.TypeDraw && !s.IsClosed) {
+		r.warn("%s shows nothing: it has no outline, and nothing fills it", r.name(s.ID))
+	}
+}
+
+// inked returns points of the page along what a shape inks that needs what's behind
+// it to stand out from, and what to call it.
+func (r *run) inked(s *doc.Shape) ([]geo.Vec, string) {
+	m := r.e.PageMat(s.ID)
+	along := func(b geo.Box) []geo.Vec {
+		y := b.Center().Y
+		return []geo.Vec{m.Apply(geo.V(b.X+b.W*0.1, y)), m.Apply(b.Center()), m.Apply(geo.V(b.X+b.W*0.9, y))}
+	}
+	switch s.Type {
+	case doc.TypeArrow:
+		info := r.e.Arrow(s)
+		if len(info.Line) < 2 {
+			return nil, ""
+		}
+		if s.Text != "" {
+			if lb := r.e.ArrowLabelBox(s); lb != nil {
+				return along(lb.Expand(-4.25 * s.Scale)), "label"
+			}
+		}
+		return []geo.Vec{m.Apply(info.At(0.25)), m.Apply(info.At(0.75))}, "line"
+	case doc.TypeLine:
+		g := r.e.Geometry(s)
+		if len(g.Outline) < 2 {
+			return nil, ""
+		}
+		return []geo.Vec{m.Apply(g.Outline[len(g.Outline)/2])}, "line"
+	case doc.TypeFrame:
+		// A name of no size of its own takes the theme's color, and shows.
+		if size, _ := editor.FrameHeading(s); size == 0 || s.Name == "" {
+			return nil, ""
+		}
+		b := r.e.FrameHeadingBox(s, 1)
+		y := b.Center().Y
+		return []geo.Vec{geo.V(b.X+b.W*0.1, y), b.Center(), geo.V(b.X+b.W*0.9, y)}, "name"
+	case doc.TypeGeo, doc.TypeNote, doc.TypeText:
+		if s.Text == "" {
+			return nil, ""
+		}
+		b := r.inkBox(s)
+		switch role := ""; {
+		case s.Type != doc.TypeText:
+			return along(b), "label"
+		case s.MetaValue(doc.MetaCard, &role) && role == "head":
+			return along(b), "title"
+		case role == "body":
+			return along(b), "body"
+		}
+		return along(b), "text"
+	}
+	return nil, ""
+}
+
+// inkBox returns what a shape's lines of text cover, in its own space.
+func (r *run) inkBox(s *doc.Shape) geo.Box {
+	g := r.e.Geometry(s)
+	b := *g.Label
+	size := editor.LabelSize(s.Size) * s.Scale
+	align := s.Align
+	if s.Type == doc.TypeText {
+		size, align = editor.TextSize(s.Size)*s.Scale, s.TextAlign
+	}
+	w := 0.0
+	for _, l := range r.e.Measure(s.Text, s.Font, size, math.Max(b.W, 8)).Lines {
+		w = math.Max(w, l.W)
+	}
+	w = math.Min(w, b.W)
+	switch align {
+	case "start":
+	case "end":
+		b.X += b.W - w
+	default:
+		b.X += (b.W - w) / 2
+	}
+	b.W = w
+	return b
+}
+
+// checkInk tells of a shape's ink where it stands out least, in each theme.
+func (r *run) checkInk(s *doc.Shape, order int, samples []geo.Vec, what string, painters []painter) {
+	type lost struct {
+		theme   string
+		on      editor.Color
+		against float64
+	}
+	var found []lost
+	for _, theme := range []struct {
+		name string
+		pal  *editor.Palette
+	}{{"light", editor.Light}, {"dark", editor.Dark}} {
+		worst := lost{theme: theme.name, against: math.Inf(1)}
+		for _, p := range samples {
+			on, known := r.behind(s, order, p, theme.pal, painters)
+			if !known {
+				continue
+			}
+			ink := r.inkOf(s, theme.pal)
+			shown := on.Mix(ink, r.opacityOf(s))
+			if c := editor.Contrast(shown, on); c < worst.against {
+				worst.on, worst.against = on, c
+			}
+		}
+		if worst.against < minContrast {
+			found = append(found, worst)
+		}
+	}
+	name := r.name(s.ID)
+	switch len(found) {
+	case 1:
+		l := found[0]
+		r.warnAt(rankText, "%s's %s hardly shows in the %s theme: %s on %s, contrast %s", name, what, l.theme, r.inkName(s), l.on.CSS(), num(l.against))
+	case 2:
+		r.warnAt(rankText, "%s's %s hardly shows in either theme: %s on %s and %s", name, what, r.inkName(s), found[0].on.CSS(), found[1].on.CSS())
+	}
+}
+
+// inkOf returns the color a shape inks what inked says of it.
+func (r *run) inkOf(s *doc.Shape, pal *editor.Palette) editor.Color {
+	if s.Type == doc.TypeArrow && s.Text == "" || s.Type == doc.TypeLine || s.Type == doc.TypeFrame {
+		return pal.SwatchOf(s).Solid
+	}
+	return pal.InkOf(s)
+}
+
+// inkName says that color as an op does.
+func (r *run) inkName(s *doc.Shape) string {
+	if s.Type == doc.TypeText || s.Type == doc.TypeLine || s.Type == doc.TypeFrame || (s.Type == doc.TypeArrow && s.Text == "") {
+		return colorName(s)
+	}
+	name := s.LabelColor
+	s.MetaValue(doc.MetaLabelColor, &name)
+	return name
+}
+
+// opacityOf returns how opaque a shape paints, with what holds it.
+func (r *run) opacityOf(s *doc.Shape) float64 {
+	o := s.Opacity
+	for p := r.e.Doc.Shapes[s.Parent]; p != nil; p = r.e.Doc.Shapes[p.Parent] {
+		o *= p.Opacity
+	}
+	return o
+}
+
+// behind returns what's painted at a point of the page under a shape's ink, with
+// its own fill, or known false if a picture has a part in it.
+func (r *run) behind(s *doc.Shape, order int, at geo.Vec, pal *editor.Palette, painters []painter) (editor.Color, bool) {
+	type layer struct {
+		c editor.Color
+		a float64
+	}
+	var layers []layer
+walk:
+	for i := len(painters) - 1; i >= 0; i-- {
+		p := painters[i]
+		if p.order > order || !p.box.Contains(at) {
+			continue
+		}
+		c, known := r.e.FillAt(p.s, pal, p.inv.Apply(at))
+		if !known {
+			return editor.Color{}, false
+		}
+		if c.A == 0 {
+			continue
+		}
+		a := c.A * r.opacityOf(p.s)
+		layers = append(layers, layer{c, a})
+		if a >= 1 {
+			break walk
+		}
+	}
+	under := pal.Background
+	for i := len(layers) - 1; i >= 0; i-- {
+		under = under.Mix(layers[i].c, layers[i].a)
+	}
+	return under, true
+}
+
+// checkArrowLabels tells of arrows' labels in one another's way, and of arrows run
+// over another's label. A label has nothing behind it to hide what's under it.
+func (r *run) checkArrowLabels(ids []doc.ID, touched map[doc.ID]bool) {
+	type labeled struct {
+		id  doc.ID
+		box geo.Box
+	}
+	type drawn struct {
+		id  doc.ID
+		pts []geo.Vec
+		box geo.Box
+	}
+	var labels []labeled
+	var arrows []drawn
+	for _, id := range ids {
+		s := r.e.Doc.Shapes[id]
+		if s.Type != doc.TypeArrow {
+			continue
+		}
+		pts := r.pageLine(id, r.e.Arrow(s))
+		if len(pts) > 0 {
+			arrows = append(arrows, drawn{id, pts, geo.BoxOf(pts)})
+		}
+		if s.Text == "" {
+			continue
+		}
+		if lb := r.e.ArrowLabelBox(s); lb != nil {
+			pad := -4.25 * s.Scale // what's around its text
+			labels = append(labels, labeled{id, r.e.PageMat(id).BoundsOf(lb.Expand(pad))})
+		}
+	}
+	for i, a := range labels {
+		for _, b := range labels[i+1:] {
+			if !r.arrowTouched(a.id, touched) && !r.arrowTouched(b.id, touched) {
+				continue
+			}
+			if w, h := depth(a.box, b.box); w > 1 && h > 1 {
+				r.warnAt(rankText, "%s's label covers %s's label", shortID(b.id), shortID(a.id))
+			}
+		}
+		corners := a.box.Corners()
+		for _, l := range arrows {
+			if l.id == a.id || !l.box.Overlaps(a.box) || (!r.arrowTouched(a.id, touched) && !r.arrowTouched(l.id, touched)) {
+				continue
+			}
+			if lineHitsBox(l.pts, a.box, corners[:]) {
+				r.warnAt(rankText, "%s runs over %s's label", shortID(l.id), shortID(a.id))
+			}
+		}
+	}
 }
 
 // checkFrames tells of what a frame cuts off.

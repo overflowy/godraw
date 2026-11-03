@@ -142,7 +142,7 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 	if text == "" {
 		text = " "
 	}
-	pad := labelPadding * s.Scale
+	pad := LabelPad(s)
 	b := e.Measure(text, s.Font, size, math.Max(w-2*pad, 8))
 	box := geo.Box{W: math.Max(w-2*pad, 8), H: b.H}
 	box.X = pad
@@ -155,6 +155,13 @@ func (e *Editor) labelBox(s *doc.Shape, w, h, size float64) *geo.Box {
 		box.Y = (h - b.H) / 2
 	}
 	return &box
+}
+
+// LabelPad returns how far a shape's label sits in from its box.
+func LabelPad(s *doc.Shape) float64 {
+	pad := float64(labelPadding)
+	s.MetaValue(doc.MetaPadding, &pad)
+	return pad * s.Scale
 }
 
 // strokePoints returns the points of a freehand shape in its space.

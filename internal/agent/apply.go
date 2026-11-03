@@ -79,6 +79,9 @@ type fields struct {
 	Above *string `json:"above"`
 	Below *string `json:"below"`
 
+	Behind *string `json:"behind"`
+	Over   *string `json:"over"`
+
 	Text  *string `json:"text"`
 	Title *string `json:"title"`
 	Body  *string `json:"body"`
@@ -88,18 +91,22 @@ type fields struct {
 	Src   *string `json:"src"`
 	D     *string `json:"d"`
 
-	Color      *string  `json:"color"`
-	LabelColor *string  `json:"labelColor"`
-	Fill       *string  `json:"fill"`
-	Dash       *string  `json:"dash"`
-	Size       *string  `json:"size"`
-	Font       *string  `json:"font"`
-	Align      *string  `json:"align"`
-	VAlign     *string  `json:"valign"`
-	Spline     *string  `json:"spline"`
-	Opacity    *float64 `json:"opacity"`
-	Scale      *float64 `json:"scale"`
-	Locked     *bool    `json:"locked"`
+	Color         *string   `json:"color"`
+	LabelColor    *string   `json:"labelColor"`
+	Fill          *string   `json:"fill"`
+	Gradient      *[]string `json:"gradient"`
+	GradientAngle *float64  `json:"gradientAngle"`
+	Dash          *string   `json:"dash"`
+	Size          *string   `json:"size"`
+	Font          *string   `json:"font"`
+	BodyFont      *string   `json:"bodyFont"`
+	Align         *string   `json:"align"`
+	VAlign        *string   `json:"valign"`
+	Padding       *float64  `json:"padding"`
+	Spline        *string   `json:"spline"`
+	Opacity       *float64  `json:"opacity"`
+	Scale         *float64  `json:"scale"`
+	Locked        *bool     `json:"locked"`
 
 	From   *string      `json:"from"`
 	To     *string      `json:"to"`
@@ -155,21 +162,21 @@ type picture struct {
 var (
 	// What each kind of shape takes, besides where it goes (placeFields).
 	addFields = map[string]string{
-		doc.TypeGeo:       "w h text color labelColor fill dash size font align valign url",
+		doc.TypeGeo:       "w h text color labelColor fill gradient gradientAngle dash size font align valign padding url",
 		doc.TypeText:      "w text color size font align scale",
-		doc.TypeNote:      "text color labelColor size font align valign scale url",
+		doc.TypeNote:      "text color labelColor size font align valign padding scale url",
 		doc.TypeFrame:     "w h name color size font",
 		doc.TypeImage:     "src w h alt url",
-		doc.TypeDraw:      "d w h color fill dash size",
+		doc.TypeDraw:      "d w h color fill gradient gradientAngle dash size",
 		doc.TypeHighlight: "d w h color size",
 		doc.TypeLine:      "d w h color dash size spline",
-		cardKind:          "title body w h color labelColor fill dash size font align",
+		cardKind:          "title body w h color labelColor fill gradient gradientAngle dash size font bodyFont align",
 		doc.TypeArrow:     "from to fromAt toAt x1 y1 x2 y2 text color labelColor fill dash size font kind bend via head tail straight at label",
 	}
-	placeFields = "id in x y rot opacity locked right left above below gap"
+	placeFields = "id in x y rot opacity locked right left above below gap behind over"
 	verbFields  = map[string]string{
 		"del": "", "ungroup": "", "camera": "", "delPage": "",
-		"group": "id", "arrange": "how", "order": "how", "flip": "how",
+		"group": "id", "arrange": "how", "order": "how behind over", "flip": "how",
 		"dup": "dx dy n", "page": "name",
 	}
 
@@ -177,9 +184,10 @@ var (
 		"color":      editor.Colors,
 		"labelColor": editor.Colors,
 		"fill":       {"none", "semi", "solid", "pattern", "fill", "lined-fill"},
-		"dash":       {"draw", "dashed", "dotted", "solid"},
+		"dash":       {"draw", "dashed", "dotted", "solid", "none"},
 		"size":       {"s", "m", "l", "xl"},
 		"font":       {"draw", "sans", "serif", "mono"},
+		"bodyFont":   {"draw", "sans", "serif", "mono"},
 		"align":      {"start", "middle", "end"},
 		"valign":     {"start", "middle", "end"},
 		"spline":     {"line", "cubic"},
@@ -279,7 +287,7 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 		}
 		for _, name := range said(o.Style) {
 			if !isStyleField(name) {
-				return nil, fmt.Errorf("style can't set %q; it takes color labelColor fill dash size font align valign spline opacity", name)
+				return nil, fmt.Errorf("style can't set %q; it takes color labelColor fill gradient gradientAngle dash size font bodyFont align valign padding spline opacity", name)
 			}
 		}
 		return o, nil
@@ -297,6 +305,9 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 			if !allows(addFields[kind], name) && !allows(placeFields, name) {
 				return nil, fmt.Errorf("%s has no %q; it takes %s %s", *o.Add, name, addFields[kind], placeFields)
 			}
+		}
+		if o.Dash != nil && *o.Dash == "none" && !outlineOptional(kind) {
+			return nil, fmt.Errorf(`a %s is its line, so it can't have dash "none"`, kind)
 		}
 		if kind == doc.TypeArrow {
 			for _, name := range []string{"x", "y", "rot", "right", "left", "above", "below", "gap"} {
@@ -334,8 +345,15 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 				return nil, fmt.Errorf("%s has no %q", o.verb, name)
 			}
 		}
-		if hows := verbHows[o.verb]; hows != nil {
+		beside := o.Behind != nil || o.Over != nil
+		if beside && o.How != nil {
+			return nil, errors.New("order takes how, or behind or over, not both")
+		}
+		if hows := verbHows[o.verb]; hows != nil && !beside {
 			if o.How == nil || !slices.Contains(hows, *o.How) {
+				if o.verb == "order" {
+					return nil, fmt.Errorf(`order needs how: %s; or behind or over, naming a shape`, strings.Join(hows, ", "))
+				}
 				return nil, fmt.Errorf("%s needs how: %s", o.verb, strings.Join(hows, ", "))
 			}
 		}
@@ -359,7 +377,18 @@ func decodeOp(raw json.RawMessage) (*op, error) {
 
 func isStyleField(name string) bool {
 	_, enum := styleEnums[name]
-	return (enum && !slices.Contains([]string{"head", "tail", "kind", "straight", "label"}, name)) || name == "opacity"
+	return (enum && !slices.Contains([]string{"head", "tail", "kind", "straight", "label"}, name)) ||
+		slices.Contains([]string{"opacity", "padding", "gradient", "gradientAngle"}, name)
+}
+
+// outlineOptional says whether a kind of shape shows without its line.
+func outlineOptional(kind string) bool {
+	return kind != doc.TypeArrow && kind != doc.TypeLine
+}
+
+// isColor says whether a string names a color: the palette's, or one of its own.
+func isColor(s string) bool {
+	return slices.Contains(editor.Colors, s) || editor.IsHex(s)
 }
 
 // checkValues checks each value against what its field can hold.
@@ -372,13 +401,38 @@ func checkValues(f *fields) error {
 		}
 		name := v.Type().Field(i).Tag.Get("json")
 		if s, ok := field.Interface().(*string); ok {
-			if enum := styleEnums[name]; enum != nil && !slices.Contains(enum, *s) {
+			enum := styleEnums[name]
+			if name == "color" || name == "labelColor" {
+				if !isColor(*s) {
+					return fmt.Errorf("%s %q: use %s, or #rrggbb", name, *s, strings.Join(enum, ", "))
+				}
+			} else if enum != nil && !slices.Contains(enum, *s) {
 				return fmt.Errorf("%s %q: use %s", name, *s, strings.Join(enum, ", "))
 			}
 		}
 		if n, ok := field.Interface().(*float64); ok && !inReach(*n) {
 			return fmt.Errorf("%s must be a number from %s to %s", name, num(-maxNumber), num(maxNumber))
 		}
+	}
+	if f.Padding != nil && *f.Padding < 0 {
+		return errors.New("padding can't be below 0")
+	}
+	if f.Gradient != nil {
+		g := *f.Gradient
+		if len(g) == 1 || len(g) > maxGradient {
+			return fmt.Errorf("%s, from 2 to %d of them, or [] to clear it", gradientHelp, maxGradient)
+		}
+		for _, c := range g {
+			if !isColor(c) {
+				return fmt.Errorf("gradient color %q: use %s, or #rrggbb", c, strings.Join(editor.Colors, ", "))
+			}
+		}
+		if len(g) > 0 && f.Fill != nil && *f.Fill == "none" {
+			return errors.New(`fill "none" would hide its gradient`)
+		}
+	}
+	if f.Behind != nil && f.Over != nil {
+		return errors.New("use one of behind, over")
 	}
 	if f.Opacity != nil && (*f.Opacity < 0 || *f.Opacity > 1) {
 		return errors.New("opacity must be between 0 and 1")
@@ -433,9 +487,13 @@ func inReach(n float64) bool { return math.Abs(n) <= maxNumber }
 // costing every frame.
 const maxVia = 32
 
+// maxGradient is more colors than a fill should need.
+const maxGradient = 8
+
 const (
-	viaHelp    = "via is a list of [x,y] points in the page"
-	anchorHelp = "fromAt and toAt are [x,y], each 0 to 1 across the shape"
+	gradientHelp = "gradient is a list of colors"
+	viaHelp      = "via is a list of [x,y] points in the page"
+	anchorHelp   = "fromAt and toAt are [x,y], each 0 to 1 across the shape"
 )
 
 // wrongType says what a field should have held, in place of what the decoder
@@ -449,6 +507,8 @@ func wrongType(e *json.UnmarshalTypeError) error {
 	switch name {
 	case "via":
 		return errors.New(viaHelp)
+	case "gradient":
+		return errors.New(gradientHelp)
 	case "fromAt", "toAt":
 		return errors.New(anchorHelp)
 	}
@@ -612,7 +672,12 @@ func (r *run) checkReach() error {
 func (r *run) do(o *op) error {
 	switch o.verb {
 	case "add":
-		return r.add(o)
+		if err := r.add(o); err != nil {
+			return err
+		}
+		if o.Behind != nil || o.Over != nil {
+			return r.orderBeside(r.added[len(r.added)-1:], &o.fields)
+		}
 	case "set":
 		return r.set(o)
 	case "del":
@@ -643,6 +708,9 @@ func (r *run) do(o *op) error {
 		if err != nil {
 			return err
 		}
+		if o.How == nil {
+			return r.orderBeside(ids, &o.fields)
+		}
 		r.e.Select(ids...)
 		r.e.Reorder(*o.How)
 		r.markChanged(ids)
@@ -671,6 +739,53 @@ func (r *run) do(o *op) error {
 	case "style":
 		merge(&r.style, o.Style)
 	}
+	return nil
+}
+
+// orderBeside moves shapes to just behind or over the shape fields name. Paint
+// order is among what shares a parent, so a shape held by something the other isn't
+// in has to go beside what holds that one: or, moving what's held, can't.
+func (r *run) orderBeside(ids []doc.ID, f *fields) error {
+	name, over := f.Behind, false
+	if f.Over != nil {
+		name, over = f.Over, true
+	}
+	target, err := r.current(*name)
+	if err != nil {
+		return err
+	}
+	type beside struct {
+		ref doc.ID
+		ids []doc.ID
+	}
+	byParent := map[doc.ID]*beside{}
+	var parents []doc.ID
+	for _, id := range ids {
+		parent := r.e.Doc.Shapes[id].Parent
+		ref := target
+		for ref != nil && ref.Parent != parent {
+			ref = r.e.Doc.Shapes[ref.Parent]
+		}
+		if ref == nil {
+			return fmt.Errorf("%s is in %s and %s isn't, and only what shares a parent has an order; order %s instead", shortID(id), shortID(parent), *name, shortID(parent))
+		}
+		if ref.ID == id {
+			return fmt.Errorf("%s can't go beside itself or what it holds", shortID(id))
+		}
+		if byParent[parent] == nil {
+			byParent[parent] = &beside{ref: ref.ID}
+			parents = append(parents, parent)
+		}
+		byParent[parent].ids = append(byParent[parent].ids, id)
+	}
+	for _, parent := range parents {
+		b := byParent[parent]
+		if slices.Contains(b.ids, b.ref) {
+			return fmt.Errorf("%s can't go beside itself or what it holds", shortID(b.ref))
+		}
+		r.e.OrderBeside(parent, b.ids, b.ref, over)
+	}
+	r.markChanged(ids)
 	return nil
 }
 
@@ -791,6 +906,9 @@ func (r *run) add(o *op) error {
 	if err != nil {
 		return err
 	}
+	if o.GradientAngle != nil && o.Gradient == nil && r.style.Gradient == nil {
+		return errors.New("gradientAngle goes with a gradient")
+	}
 	switch kind {
 	case doc.TypeArrow:
 		return r.addArrow(o)
@@ -864,10 +982,34 @@ func assign(s *doc.Shape, f *fields) {
 			*dst = *v
 		}
 	}
-	str(&s.Color, f.Color)
-	str(&s.LabelColor, f.LabelColor)
-	str(&s.Fill, f.Fill)
-	str(&s.Dash, f.Dash)
+	color := func(dst *string, v *string, key string) {
+		if v == nil {
+			return
+		}
+		if editor.IsHex(*v) {
+			*dst = editor.NearestColor(*v)
+			s.SetMeta(key, strings.ToLower(*v))
+			return
+		}
+		*dst = *v
+		s.SetMeta(key, nil)
+	}
+	color(&s.Color, f.Color, doc.MetaColor)
+	color(&s.LabelColor, f.LabelColor, doc.MetaLabelColor)
+	assignFill(s, f)
+	if f.Dash != nil && (*f.Dash != "none" || outlineOptional(s.Type)) {
+		// tldraw has no dash for this, so the file says one it has, and crisp.
+		if *f.Dash == "none" {
+			s.Dash = "solid"
+			s.SetMeta(doc.MetaNoOutline, true)
+		} else {
+			s.Dash = *f.Dash
+			s.SetMeta(doc.MetaNoOutline, nil)
+		}
+	}
+	if f.Padding != nil {
+		s.SetMeta(doc.MetaPadding, *f.Padding)
+	}
 	str(&s.Size, f.Size)
 	str(&s.Font, f.Font)
 	str(&s.VAlign, f.VAlign)
@@ -932,6 +1074,38 @@ func assign(s *doc.Shape, f *fields) {
 	}
 }
 
+// assignFill writes what a shape fills with. A fill said alone takes over from a
+// gradient, and a gradient needs a fill for tldraw to show, and to be pressed on.
+func assignFill(s *doc.Shape, f *fields) {
+	if f.Fill != nil {
+		s.Fill = *f.Fill
+		s.SetMeta(doc.MetaGradient, nil)
+	}
+	angle := 180.0
+	if g := s.Gradient(); g != nil {
+		angle = g.Angle
+	}
+	if f.GradientAngle != nil {
+		angle = *f.GradientAngle
+	}
+	colors := []string(nil)
+	switch {
+	case f.Gradient != nil:
+		colors = *f.Gradient
+	case f.GradientAngle != nil && s.Gradient() != nil:
+		colors = s.Gradient().Colors
+	}
+	switch {
+	case len(colors) > 0:
+		s.SetMeta(doc.MetaGradient, doc.Gradient{Colors: colors, Angle: angle})
+		if s.Fill == "none" {
+			s.Fill = "fill"
+		}
+	case f.Gradient != nil:
+		s.SetMeta(doc.MetaGradient, nil)
+	}
+}
+
 // sizeGeo gives a geo shape the size asked for. What isn't asked for fits its
 // label, with room for the corners of what isn't a rectangle.
 func (r *run) sizeGeo(s *doc.Shape, f *fields) {
@@ -939,14 +1113,19 @@ func (r *run) sizeGeo(s *doc.Shape, f *fields) {
 	s.W, s.H = 160, 100
 	if s.Text != "" {
 		size := editor.LabelSize(s.Size) * s.Scale
-		pad := 2 * editor.LabelPadding * s.Scale
+		pad := 2 * editor.LabelPad(s)
 		k := 1.0
 		if s.Geo != "rectangle" && s.Geo != "x-box" && s.Geo != "check-box" {
 			k = 1.4
 		}
 		b := r.e.Measure(s.Text, s.Font, size, 0)
-		s.W = math.Min(math.Max(b.W*k+pad+size/2, 120), maxAuto)
-		s.H = math.Max(size*editor.LineHeight*k+pad, 72)
+		s.W = math.Min(b.W*k+pad+size/2, maxAuto)
+		s.H = size*editor.LineHeight*k + pad
+		// Padding said is a size asked for: no more than it takes.
+		var said float64
+		if !s.MetaValue(doc.MetaPadding, &said) {
+			s.W, s.H = math.Max(s.W, 120), math.Max(s.H, 72)
+		}
 	}
 	if f.W != nil {
 		s.W = *f.W
@@ -1562,6 +1741,9 @@ func (r *run) set(o *op) error {
 		}
 		r.changed[id] = true
 	}
+	if f.Behind != nil || f.Over != nil {
+		return r.orderBeside(ids, f)
+	}
 	return nil
 }
 
@@ -1570,6 +1752,11 @@ func (r *run) setOne(id doc.ID, o *op) error {
 	s := r.e.Doc.Shapes[id]
 	if err := r.checkSet(s, f); err != nil {
 		return err
+	}
+	if f.GradientAngle != nil && f.Gradient == nil && !slices.ContainsFunc(r.leaves(id), func(l *doc.Shape) bool {
+		return l.Gradient() != nil
+	}) {
+		return errors.New("gradientAngle goes with a gradient, and it has none")
 	}
 	if c := r.cardOf(id); c != nil {
 		if _, ok := r.before[id]; !ok {
@@ -1682,16 +1869,19 @@ func (r *run) setOne(id doc.ID, o *op) error {
 
 // checkSet says whether a shape takes what set says.
 func (r *run) checkSet(s *doc.Shape, f *fields) error {
-	const placing = "x y dx dy in right left above below gap locked rot opacity"
+	const placing = "x y dx dy in right left above below gap behind over locked rot opacity"
 	list, known := addFields[s.Type]
 	switch {
 	case s.Type == doc.TypeGroup:
-		list = "w h color labelColor fill dash size font align valign"
+		list = "w h color labelColor fill gradient gradientAngle dash size font align valign padding"
 		if r.cardOf(s.ID) != nil {
 			list = addFields[cardKind]
 		}
 	case !known:
 		list = "w h" // a type this app only keeps, as an embed
+	}
+	if f.Dash != nil && *f.Dash == "none" && !outlineOptional(s.Type) {
+		return fmt.Errorf(`a %s is its line, so it can't have dash "none"`, s.Type)
 	}
 	for _, name := range said(f) {
 		if s.Type == doc.TypeArrow {

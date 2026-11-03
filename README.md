@@ -81,8 +81,10 @@ Known differences:
   similar to tldraw's, not identical. The colors, sizes and fonts are tldraw's.
 - SVG export names its fonts instead of embedding them, so a viewer without Shantell Sans and
   IBM Plex falls back to others.
-- Elbow waypoints, a frame's heading size and font, and labels above an arrow are this app's
-  own. tldraw keeps them in the file but doesn't show them, and it doesn't update waypoints
+- Elbow waypoints, a frame's heading size and font, labels above an arrow, hex colors,
+  gradients, shapes without an outline and label padding are this app's own. tldraw keeps
+  them in the file but doesn't show them: it shows the nearest palette color, the shape's
+  fill and a solid outline. It doesn't update waypoints
   when shapes move. An elbow arrow from a shape back to itself runs through the shape in
   tldraw, and a long label above an arrow wraps there as tldraw's labels do.
 - Not implemented: cropping images, note "clone" handles, video playback, multiplayer.
