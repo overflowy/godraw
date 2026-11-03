@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	// elbowStub is how far a route runs straight out of a side before it turns,
-	// and how far it keeps from the shapes it joins as it goes around them.
+	// elbowStub is how far a route through via points runs straight out of a side
+	// before it turns, and how far it keeps from the shapes it joins as it goes
+	// around them.
 	elbowStub = 24.0
-	// elbowEdge is how near an edge an anchor counts as being on that side.
-	elbowEdge = 0.01
-	// What a route pays, in pixels of length: a route that breaks a rule always
-	// loses to one that doesn't.
+	// elbowOnEdge is how near an edge an anchor counts as being on that side.
+	elbowOnEdge = 0.01
+	// What a route through via points pays, in pixels of length: a route that breaks
+	// a rule always loses to one that doesn't.
 	elbowBend    = 40.0
 	elbowThrough = 1e4 // through a shape it joins
 	elbowOffSide = 1e5 // not leaving or reaching a side the way it should
@@ -23,22 +24,38 @@ const (
 	elbowSlant   = 1e7 // not right-angled
 )
 
-// computeElbow lays out a right-angled arrow. An anchor on the edge of a shape
-// says the side the arrow leaves by, and via what it passes through. With
-// neither, it goes out from each end along the longer axis, with its bend
-// where elbowMidPoint says.
+// computeElbow lays out a right-angled arrow. With no via, it picks a route for how
+// its two ends lie. With via, an anchor on the edge of a shape says the side the arrow
+// leaves by, and it goes through the points in turn.
 func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, bs, be *doc.Binding, ts, te *doc.Shape, inv geo.Mat, outlineIn func(*doc.Shape) []geo.Vec) *ArrowInfo {
 	a, b := info.RawStart, info.RawEnd
 	mid := s.ElbowMidPoint
 	if mid == 0 {
 		mid = 0.5
 	}
+	var pts []geo.Vec
+	if len(s.Via) == 0 {
+		start := e.elbowEndOf(s, bs, ts, a, s.HeadStart, inv, outlineIn)
+		end := e.elbowEndOf(s, be, te, b, s.HeadEnd, inv, outlineIn)
+		expand, least := elbowLegs(s)
+		pts = routeElbowEnds(start, end, mid, expand, least)
+		if pts == nil {
+			pts = e.straightElbow(s, a, b, ts, te, outlineIn)
+		}
+	} else {
+		pts = e.viaElbow(s, a, b, mid, bs, be, ts, te, inv, outlineIn)
+	}
+	info.Elbow, info.Line = pts, pts
+	info.Start, info.End = pts[0], pts[len(pts)-1]
+	info.Mid = info.at(0.5)
+	return info
+}
+
+// viaElbow goes through an arrow's via points in turn.
+func (e *Editor) viaElbow(s *doc.Shape, a, b geo.Vec, mid float64, bs, be *doc.Binding, ts, te *doc.Shape, inv geo.Mat, outlineIn func(*doc.Shape) []geo.Vec) []geo.Vec {
 	stops := slices.Concat([]geo.Vec{a}, s.Via, []geo.Vec{b})
 	out := e.elbowSide(bs, ts, inv, a, stops[1])
 	in := e.elbowSide(be, te, inv, b, stops[len(stops)-2])
-	if len(stops) == 2 && out == (geo.Vec{}) && in == (geo.Vec{}) {
-		return e.plainElbow(s, info, ts, te, mid, outlineIn)
-	}
 	var avoid []geo.Box
 	if out != (geo.Vec{}) {
 		avoid = append(avoid, geo.BoxOf(outlineIn(ts)))
@@ -47,51 +64,40 @@ func (e *Editor) computeElbow(s *doc.Shape, info *ArrowInfo, bs, be *doc.Binding
 		avoid = append(avoid, geo.BoxOf(outlineIn(te)))
 	}
 	pts := routeElbow(stops, out, in, mid, avoid)
-
 	if ts != nil {
-		pts = meetOutline(pts, out, outlineIn(ts))
+		pts = backOff(meetOutline(pts, out, outlineIn(ts)), e.elbowHeadRoom(s, s.HeadStart, ts))
 	}
 	if te != nil {
 		slices.Reverse(pts)
-		pts = meetOutline(pts, in, outlineIn(te))
-		if d := pts[1].Sub(pts[0]); d.Len() > strokeWidthOf(s) {
-			pts[0] = pts[0].Add(d.Uni().Mul(strokeWidthOf(s)))
-		}
+		pts = backOff(meetOutline(pts, in, outlineIn(te)), e.elbowHeadRoom(s, s.HeadEnd, te))
 		slices.Reverse(pts)
 	}
-	info.Elbow, info.Line = pts, pts
-	info.Start, info.End = pts[0], pts[len(pts)-1]
-	info.Mid = info.at(0.5)
-	return info
+	return pts
 }
 
-// plainElbow goes out from each end along the longer axis.
-func (e *Editor) plainElbow(s *doc.Shape, info *ArrowInfo, ts, te *doc.Shape, mid float64, outlineIn func(*doc.Shape) []geo.Vec) *ArrowInfo {
-	a, b := info.RawStart, info.RawEnd
-	d := b.Sub(a)
-	var pts []geo.Vec
-	if math.Abs(d.X) >= math.Abs(d.Y) {
-		x := a.X + d.X*mid
-		pts = []geo.Vec{a, geo.V(x, a.Y), geo.V(x, b.Y), b}
-	} else {
-		y := a.Y + d.Y*mid
-		pts = []geo.Vec{a, geo.V(a.X, y), geo.V(b.X, y), b}
+// backOff moves the start of a route along its first leg, if that has the length.
+func backOff(pts []geo.Vec, by float64) []geo.Vec {
+	if d := pts[1].Sub(pts[0]); by > 0 && d.Len() > by {
+		pts[0] = pts[0].Add(d.Uni().Mul(by))
 	}
-	// Clip each bound end to its target, along its first and last legs.
+	return pts
+}
+
+// straightElbow is for two ends with no route between them, as when they're in one
+// place: a line, from outline to outline.
+func (e *Editor) straightElbow(s *doc.Shape, a, b geo.Vec, ts, te *doc.Shape, outlineIn func(*doc.Shape) []geo.Vec) []geo.Vec {
+	from, to := a, b
 	if ts != nil {
-		if p, ok := lastCross(pts[0], pts[1], outlineIn(ts)); ok {
-			pts[0] = p
+		if p, ok := lastCross(a, b, outlineIn(ts)); ok {
+			from = p.Add(b.Sub(a).Uni().Mul(e.elbowHeadRoom(s, s.HeadStart, ts)))
 		}
 	}
 	if te != nil {
-		if p, ok := lastCross(pts[3], pts[2], outlineIn(te)); ok {
-			pts[3] = p.Add(pts[2].Sub(pts[3]).Uni().Mul(strokeWidthOf(s)))
+		if p, ok := lastCross(b, a, outlineIn(te)); ok {
+			to = p.Add(a.Sub(b).Uni().Mul(e.elbowHeadRoom(s, s.HeadEnd, te)))
 		}
 	}
-	info.Elbow, info.Line = pts, pts
-	info.Start, info.End = pts[0], pts[3]
-	info.Mid = geo.Med(pts[1], pts[2])
-	return info
+	return []geo.Vec{from, to}
 }
 
 // elbowSide returns the way out of the side of its shape that a bound end's
@@ -102,16 +108,16 @@ func (e *Editor) elbowSide(b *doc.Binding, t *doc.Shape, inv geo.Mat, at, toward
 		return geo.Vec{}
 	}
 	var sides []geo.Vec
-	if b.Anchor.X <= elbowEdge {
+	if b.Anchor.X <= elbowOnEdge {
 		sides = append(sides, geo.V(-1, 0))
 	}
-	if b.Anchor.X >= 1-elbowEdge {
+	if b.Anchor.X >= 1-elbowOnEdge {
 		sides = append(sides, geo.V(1, 0))
 	}
-	if b.Anchor.Y <= elbowEdge {
+	if b.Anchor.Y <= elbowOnEdge {
 		sides = append(sides, geo.V(0, -1))
 	}
-	if b.Anchor.Y >= 1-elbowEdge {
+	if b.Anchor.Y >= 1-elbowOnEdge {
 		sides = append(sides, geo.V(0, 1))
 	}
 	m := inv.Mul(e.PageMat(t.ID))

@@ -798,6 +798,18 @@ func (e *Editor) imagePrims(s *doc.Shape, pal *Palette) []Prim {
 
 // --- arrows ---
 
+// roundedElbow returns a right-angled line with its corners rounded, by r or a
+// quarter of a leg, whichever is less.
+func roundedElbow(pts []geo.Vec, r float64) *geo.Path {
+	p := (&geo.Path{}).Move(pts[0])
+	for i := 1; i < len(pts)-1; i++ {
+		before, after := pts[i].Sub(pts[i-1]), pts[i+1].Sub(pts[i])
+		p.Line(pts[i].Sub(before.Uni().Mul(min(r, before.Len()/4))))
+		p.Quad(pts[i], pts[i].Add(after.Uni().Mul(min(r, after.Len()/4))))
+	}
+	return p.Line(pts[len(pts)-1])
+}
+
 func (e *Editor) arrowPrims(s *doc.Shape, pal *Palette) []Prim {
 	info := e.Arrow(s)
 	sw := pal.SwatchOf(s)
@@ -818,10 +830,14 @@ func (e *Editor) arrowPrims(s *doc.Shape, pal *Palette) []Prim {
 	var out []Prim
 	for i, piece := range pieces {
 		body := (&geo.Path{}).Poly(piece, false)
+		if info.Elbow != nil {
+			body = roundedElbow(piece, stroke*2)
+			piece, _ = body.Points(6)
+		}
 		out = append(out, outlinePrims(s.Dash, body, piece, false, stroke, sw.Solid, fmt.Sprint(s.ID, i))...)
 	}
-	out = append(out, arrowhead(s.HeadEnd, info.Line, false, stroke, sw.Solid)...)
-	out = append(out, arrowhead(s.HeadStart, info.Line, true, stroke, sw.Solid)...)
+	out = append(out, arrowhead(s.HeadEnd, info.Line, false, stroke, sw.Solid, info.Elbow != nil)...)
+	out = append(out, arrowhead(s.HeadStart, info.Line, true, stroke, sw.Solid, info.Elbow != nil)...)
 	if lb != nil {
 		size := arrowLabelSizeOf(s.Size) * s.Scale
 		pad := 4.25 * s.Scale
@@ -888,7 +904,7 @@ func inBox(a, b geo.Vec, box geo.Box) (t0, t1 float64, in bool) {
 }
 
 // arrowhead draws a head at an end of a line.
-func arrowhead(kind string, line []geo.Vec, atStart bool, w float64, c Color) []Prim {
+func arrowhead(kind string, line []geo.Vec, atStart bool, w float64, c Color, onLeg bool) []Prim {
 	if kind == "none" || kind == "" || len(line) < 2 {
 		return nil
 	}
@@ -897,9 +913,9 @@ func arrowhead(kind string, line []geo.Vec, atStart bool, w float64, c Color) []
 		tip, back = line[0], line[1]
 	}
 	// The direction the head points, taken a little back along the line,
-	// so that a curve's head follows its body.
+	// so that a curve's head follows its body. On an elbow, it's its last leg.
 	reach := 0.0
-	for i := 1; i < len(line) && reach < w*4; i++ {
+	for i := 1; i < len(line) && reach < w*4 && !onLeg; i++ {
 		var a, b geo.Vec
 		if atStart {
 			a, b = line[i-1], line[i]

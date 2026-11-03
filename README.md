@@ -132,8 +132,8 @@ was left out, while an id that can't take a field fails the op. Either way, a fi
 show is refused rather than stored, as with `radius` on an ellipse.
 
 An arrow with `straight` set stays level when an agent moves or resizes what it joins. An
-elbow arrow leaves by the side its anchor is on, and `via` takes it through points on the
-way. Those points move with the arrow when both its ends move alike, by an agent or a drag.
+elbow arrow leaves by the side its anchor is nearest, or with its anchor at the center, the
+side that suits how the shapes lie, and `via` takes it through points on the way. Those points move with the arrow when both its ends move alike, by an agent or a drag.
 When only one end moves they stay, unless there's a clear way with fewer turns, keeping out
 of the shapes nearby: then the route takes it, and undo brings the points back. An elbow arrow
 with no points that's moved into a shape goes around it, adding points only for as long as it

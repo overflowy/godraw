@@ -2,8 +2,10 @@ package editor
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
+	"godraw/internal/doc"
 	"godraw/internal/geo"
 )
 
@@ -16,8 +18,8 @@ func sideOf(b geo.Box, out geo.Vec) geo.Vec {
 	return b.Center().Add(geo.V(out.X*b.W/2, out.Y*b.H/2))
 }
 
-// However two shapes lie, a route between any two of their sides leaves and
-// arrives the way it was told, in right angles, and stays out of both.
+// However two shapes lie, a route through via points between any two of their sides
+// leaves and arrives the way it was told, in right angles, and stays out of both.
 func TestElbowRoutesEverySide(t *testing.T) {
 	a := geo.Box{X: 0, Y: 0, W: 120, H: 80}
 	for name, from := range elbowSides {
@@ -64,8 +66,8 @@ func checkRoute(t *testing.T, label string, pts []geo.Vec, from, to geo.Vec, box
 	}
 }
 
-// Sides that face each other in line take the straight way, and those that
-// don't, no more turns than they need.
+// Between via points, sides that face each other in line take the straight way, and
+// those that don't, no more turns than they need.
 func TestElbowRoutesAreSimple(t *testing.T) {
 	a := geo.Box{X: 0, Y: 0, W: 100, H: 100}
 	for _, c := range []struct {
@@ -137,5 +139,214 @@ func TestPolygonsHaveAPointOnTop(t *testing.T) {
 		if top != 1 {
 			t.Errorf("%s has %d points on top", kind, top)
 		}
+	}
+}
+
+// boxEnd is an end of an arrow bound to a box with no head, aiming at a part of it.
+func boxEnd(id string, b geo.Box, anchor geo.Vec, side elbowFace) elbowEnd {
+	c := b.Corners()
+	return elbowEnd{
+		id: doc.ID(id), box: b, outline: c[:], closed: true, side: side, minEnd: 5.25,
+		target: geo.V(b.X+anchor.X*b.W, b.Y+anchor.Y*b.H),
+		onEdge: anchor.X == 0 || anchor.X == 1 || anchor.Y == 0 || anchor.Y == 1,
+	}
+}
+
+func pointEnd(p geo.Vec) elbowEnd {
+	return elbowEnd{box: geo.Box{X: p.X, Y: p.Y}, target: p, side: faceAny, point: true, minEnd: 5.25}
+}
+
+// Each shape a route can take, by how its ends lie.
+func TestElbowRouteShapes(t *testing.T) {
+	a := geo.Box{X: 0, Y: 0, W: 100, H: 100}
+	mid := geo.V(0.5, 0.5)
+	top, bottom, left, right := geo.V(0.5, 0), geo.V(0.5, 1), geo.V(0, 0.5), geo.V(1, 0.5)
+	for _, c := range []struct {
+		name       string
+		start, end elbowEnd
+		mid        float64
+		want       []geo.Vec
+	}{
+		{
+			"straight across", boxEnd("a", a, mid, faceAny), boxEnd("b", geo.Box{X: 300, Y: 0, W: 100, H: 100}, mid, faceAny), 0.5,
+			[]geo.Vec{geo.V(100, 50), geo.V(300, 50)},
+		},
+		{
+			"a step, on the line between", boxEnd("a", a, right, faceRight), boxEnd("b", geo.Box{X: 300, Y: 200, W: 100, H: 100}, left, faceLeft), 0.5,
+			[]geo.Vec{geo.V(100, 50), geo.V(200, 50), geo.V(200, 250), geo.V(300, 250)},
+		},
+		{
+			"that line, moved along", boxEnd("a", a, right, faceRight), boxEnd("b", geo.Box{X: 300, Y: 200, W: 100, H: 100}, left, faceLeft), 0.25,
+			[]geo.Vec{geo.V(100, 50), geo.V(168, 50), geo.V(168, 250), geo.V(300, 250)},
+		},
+		{
+			"a corner", boxEnd("a", a, right, faceRight), boxEnd("b", geo.Box{X: 300, Y: 200, W: 100, H: 100}, top, faceTop), 0.5,
+			[]geo.Vec{geo.V(100, 50), geo.V(350, 50), geo.V(350, 200)},
+		},
+		{
+			"out by the same side of each", boxEnd("a", a, top, faceTop), boxEnd("b", geo.Box{X: 300, Y: 0, W: 100, H: 100}, top, faceTop), 0.5,
+			[]geo.Vec{geo.V(50, 0), geo.V(50, -36), geo.V(350, -36), geo.V(350, 0)},
+		},
+		{
+			"round the back of both", boxEnd("a", a, right, faceRight), boxEnd("b", geo.Box{X: -300, Y: 200, W: 100, H: 100}, left, faceLeft), 0.5,
+			[]geo.Vec{geo.V(100, 50), geo.V(136, 50), geo.V(136, 150), geo.V(-336, 150), geo.V(-336, 250), geo.V(-300, 250)},
+		},
+		{
+			"a side only at the end", boxEnd("a", a, mid, faceAny), boxEnd("b", geo.Box{X: 300, Y: 400, W: 100, H: 100}, bottom, faceBottom), 0.5,
+			[]geo.Vec{geo.V(50, 100), geo.V(50, 536), geo.V(350, 536), geo.V(350, 500)},
+		},
+		{
+			"between points", pointEnd(geo.V(0, 0)), pointEnd(geo.V(200, 100)), 0.5,
+			[]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(200, 100)},
+		},
+	} {
+		got := routeElbowEnds(c.start, c.end, c.mid, 36, 10.5)
+		if !sameVia(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A shape turned a quarter has its top on the right.
+func TestElbowSideTurnsWithItsShape(t *testing.T) {
+	for _, c := range []struct {
+		anchor geo.Vec
+		turn   float64
+		want   elbowFace
+	}{
+		{geo.V(0.5, 0), 0, faceTop},
+		{geo.V(0.5, 1), 0, faceBottom},
+		{geo.V(0, 0.5), 0, faceLeft},
+		{geo.V(1, 0.5), 0, faceRight},
+		{geo.V(0.2, 0.45), 0, faceLeft},
+		{geo.V(0.45, 0.2), 0, faceTop},
+		{geo.V(1, 1), 0, faceRight}, // a corner leans across
+		{geo.V(0.5, 0.5), 0, faceAny},
+		{geo.V(0.5, 0), math.Pi / 2, faceRight},
+		{geo.V(1, 0.5), math.Pi / 2, faceBottom},
+		{geo.V(0.5, 0.5), math.Pi / 2, faceAny},
+	} {
+		if got := anchorFace(c.anchor, c.turn); got != c.want {
+			t.Errorf("%v turned %v: side %v, want %v", c.anchor, c.turn, got, c.want)
+		}
+	}
+}
+
+// An arrow comes to a line that doesn't close from the side with less of it.
+func TestElbowComesToAnOpenLineFromOutside(t *testing.T) {
+	far := pointEnd(geo.V(1000, 1000))
+	hook := []geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 100), geo.V(0, 100)}
+	end := elbowEnd{box: geo.BoxOf(hook), outline: hook, target: geo.V(50, 100), side: faceAny}
+	if got := end.settleOnOpenLine(far, 36).side; got != faceBottom {
+		t.Errorf("under a hook: side %v", got)
+	}
+	end.target = geo.V(50, 0)
+	if got := end.settleOnOpenLine(far, 36).side; got != faceTop {
+		t.Errorf("over a hook: side %v", got)
+	}
+	// With nothing of it on either side, either will do.
+	end.target = geo.V(100, 50)
+	if got := end.settleOnOpenLine(far, 36).side; got != faceAcross {
+		t.Errorf("beside a hook: side %v", got)
+	}
+}
+
+// Wherever two shapes lie and whatever their sides, a route comes out in right angles
+// and stays out of both, as long as they're apart.
+func TestElbowRoutesEveryLayout(t *testing.T) {
+	a := geo.Box{X: 0, Y: 0, W: 120, H: 80}
+	anchors := []geo.Vec{geo.V(0.5, 0.5), geo.V(0.5, 0), geo.V(0.5, 1), geo.V(0, 0.5), geo.V(1, 0.5)}
+	for _, from := range anchors {
+		for _, to := range anchors {
+			for dx := -480.0; dx <= 480; dx += 60 {
+				for dy := -360.0; dy <= 360; dy += 60 {
+					if max(dx, -dx) < 240 && max(dy, -dy) < 200 {
+						continue // too near for the route to go between
+					}
+					b := geo.Box{X: dx, Y: dy, W: 120, H: 80}
+					label := fmt.Sprintf("%v to %v at %v,%v", from, to, dx, dy)
+					pts := routeElbowEnds(boxEnd("a", a, from, anchorFace(from, 0)), boxEnd("b", b, to, anchorFace(to, 0)), 0.5, 36, 10.5)
+					if len(pts) < 2 {
+						t.Errorf("%s: %v has no legs", label, pts)
+						continue
+					}
+					for i := 1; i < len(pts); i++ {
+						if d := pts[i].Sub(pts[i-1]); d.X != 0 && d.Y != 0 {
+							t.Errorf("%s: %v has a slanted leg", label, pts)
+						}
+						if crossesBox(pts[i-1], pts[i], a.Expand(-1)) || crossesBox(pts[i-1], pts[i], b.Expand(-1)) {
+							t.Errorf("%s: %v enters a shape", label, pts)
+						}
+					}
+					if CrossesItself(pts) {
+						t.Errorf("%s: %v crosses itself", label, pts)
+					}
+				}
+			}
+		}
+	}
+}
+
+// From one side of a shape to the top of one above it: out and around, leaving room
+// at the end for its head, and none at the start, which has none.
+func TestElbowGoesAroundToReachAFarSide(t *testing.T) {
+	h := newHarness(t)
+	above := h.rect(180, 190, 460, 310)
+	below := h.rect(135, 615, 465, 375)
+	h.SetTool(ToolArrow)
+	h.drag(300, 800, 400, 300)
+	id := h.Selection()[0]
+	if err := h.Batch(func() error {
+		c := h.shape(id).Clone()
+		c.Kind, c.HeadStart, c.HeadEnd = "elbow", "none", "arrow"
+		h.Put(c)
+		h.Bind(id, "start", below.ID, geo.V(1, 0.5))
+		h.Bind(id, "end", above.ID, geo.V(0.5, 0))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := h.PageMat(id)
+	var got []geo.Vec
+	for _, p := range h.Arrow(h.shape(id)).Elbow {
+		got = append(got, m.Apply(p))
+	}
+	want := []geo.Vec{geo.V(600, 802.5), geo.V(676, 802.5), geo.V(676, 154), geo.V(410, 154), geo.V(410, 176.5)}
+	if !sameVia(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// An elbow's corners are round, by as much as its legs leave room for, and its head
+// looks along its last leg however short that is.
+func TestElbowCornersAreRound(t *testing.T) {
+	path := roundedElbow([]geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 8), geo.V(200, 8)}, 7)
+	quads := 0
+	for _, seg := range path.Segs {
+		if seg.Op == geo.OpQuad {
+			quads++
+		}
+	}
+	if quads != 2 {
+		t.Errorf("%d rounded corners, want 2", quads)
+	}
+	line, _ := path.Points(1)
+	if got, want := line[1], geo.V(93, 0); got.Dist(want) > 1e-9 {
+		t.Errorf("the long leg ends at %v, not %v", got, want)
+	}
+	if got, want := line[2], geo.V(100, 2); got.Dist(want) > 1e-9 {
+		t.Errorf("the short leg starts at %v, not %v", got, want)
+	}
+	straight := roundedElbow([]geo.Vec{geo.V(0, 0), geo.V(100, 0)}, 7)
+	if len(straight.Segs) != 2 {
+		t.Errorf("a straight one has %d pieces", len(straight.Segs))
+	}
+	head := arrowhead("arrow", []geo.Vec{geo.V(0, 0), geo.V(100, 0), geo.V(100, 6)}, false, 3.5, Color{}, true)
+	if len(head) == 0 {
+		t.Fatal("no head")
+	}
+	pts, _ := head[0].Path.Points(1)
+	if len(pts) != 3 || pts[0].Y != pts[2].Y || pts[0].Y >= 6 {
+		t.Errorf("head doesn't look down its leg: %v", pts)
 	}
 }

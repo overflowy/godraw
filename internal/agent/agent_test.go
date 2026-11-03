@@ -2547,7 +2547,7 @@ func TestArrowOverAFramesName(t *testing.T) {
 // that does.
 func TestWarningOfAClippedRouteSaysHowToFixIt(t *testing.T) {
 	e := newEditor()
-	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-10]]}]`,
+	wantWarnings(t, e, `[{"add":"frame","id":"f","x":0,"y":0,"w":500,"h":200},{"add":"rectangle","id":"a","in":"f","x":20,"y":50,"w":100,"h":100},{"add":"rectangle","id":"b","in":"f","x":300,"y":50,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[200,-10]]}]`,
 		`s sticks out of frame f, which clips it; in:"" takes it out of the frame`)
 	wantWarnings(t, e, `[{"set":"s","in":""}]`)
 	if e.Doc.Shapes["shape:s"].Parent != e.Page {
@@ -2736,7 +2736,9 @@ func TestWarnsOfANeedlessVia(t *testing.T) {
 		t.Errorf("check: %s", got)
 	}
 	// One turn more is only another shape of route.
-	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`)
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":400,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[60,-60]]}]`)
+	// A way over two shapes in line adds two to going straight, and it tells of that.
+	wantWarnings(t, newEditor(), `[{"add":"rectangle","id":"a","x":0,"y":0,"w":100,"h":100},{"add":"rectangle","id":"b","x":300,"y":0,"w":100,"h":100},{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","via":[[200,-60]]}]`, "s's via adds 2 turns")
 	// Going around something is what it's for.
 	wantWarnings(t, newEditor(), `[`+threeInARow+`{"add":"arrow","id":"s","from":"a","to":"b","kind":"elbow","fromAt":[0.5,0],"toAt":[0.5,0],"via":[[300,-40]]}]`)
 }
