@@ -33,6 +33,10 @@ type Host interface {
 	Changed(d *doc.Drawing)
 	// Update runs fn on the main thread, and draws a frame after it.
 	Update(fn func())
+	// Do runs fn on the main thread, drawing nothing after it, and waits for
+	// it: once the app quits, it returns without running it. It is for
+	// goroutines, which it lets do work there a turn at a time.
+	Do(fn func())
 	// Window returns the window, nil in tests.
 	Window() *mygo.Window
 	// Name returns the name of the document: its file's, or that of an untitled one.
@@ -90,6 +94,8 @@ type App struct {
 	mcpOpen   bool
 	mcpCopied string // the field that says it copied
 	mcpCopies int    // how many times it has, for a timer to know its own
+
+	pngCopies int // how many times Copy as PNG was asked, for a copy to know its own
 
 	toldPrefs settings.Prefs // what OnSettingsChange was last told of
 	toldView  settings.View

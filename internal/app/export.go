@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
@@ -73,12 +74,85 @@ func (a *App) RenderPNG(scale float64) ([]byte, bool) {
 	return buf.Bytes(), true
 }
 
+// drawTurn is about how long drawing an export on the side holds the main
+// thread at a time, before input and frames have their turn.
+const drawTurn = 12 * time.Millisecond
+
+// sideTile is the side of the tiles an export drawn on the side draws in, in
+// device pixels: a tile is the least it draws in a turn. On the showcase's
+// pages, a turn of 256 takes 12 to 15 ms and at most 40, where one shape fills
+// a tile; 512 took up to 70. Smaller ones take longer all told.
+const sideTile = 256
+
+// drawPNG draws what export draws (the selection, else the page) at a scale,
+// without making the window wait, and gives done the PNG, on a goroutine. It
+// returns false, and done isn't called, when there is nothing to export.
+//
+// Painting is the main thread's only, as all windows share their glyphs and
+// masks. So it paints there a few tiles at a time, waiting for each turn to end
+// before it asks for the next, which lets input and frames go between. It paints
+// a window of its own over a snapshot of the drawing, so that edits meanwhile
+// don't tear the picture, and it decodes images of its own, as a bitmap changes
+// as it draws. It decodes them and encodes the PNG on the side.
+func (a *App) drawPNG(scale float64, done func([]byte, bool)) bool {
+	box, ids, ok := a.ed.ExportBounds()
+	if !ok {
+		return false
+	}
+	b := New(a.ed.Doc.Snapshot(), offscreen{name: a.host.Name()})
+	b.ed.Page, b.ed.DarkMode = a.ed.Page, a.ed.DarkMode
+	untrack := collectHard()
+	go func() {
+		defer untrack()
+		b.decodeForExport()
+		var pic *picture
+		for finished := false; !finished; {
+			ran := false
+			a.host.Do(func() {
+				ran = true
+				if pic == nil {
+					pic = b.newPicture(box.Expand(32), ids, scale, sideTile)
+				}
+				finished = pic.draw(drawTurn)
+			})
+			if !ran { // the app quit
+				done(nil, false)
+				return
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, pic.out); err != nil {
+			done(nil, false)
+			return
+		}
+		done(buf.Bytes(), true)
+	}()
+	return true
+}
+
+// offscreen holds a window that only draws exports: what it would tell, or
+// ask to run, has no window to go to.
+type offscreen struct{ name string }
+
+func (offscreen) Changed(*doc.Drawing) {}
+func (offscreen) Update(fn func())     { fn() }
+func (offscreen) Do(fn func())         { fn() }
+func (offscreen) Window() *mygo.Window { return nil }
+func (o offscreen) Name() string       { return o.name }
+
 // RenderImage draws shapes in a box of the page, at a scale, and images that
 // are not decoded yet come out as they will show.
 func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA {
-	e := a.ed
+	a.decodeForExport()
+	p := a.newPicture(box, ids, scale, 1024)
+	p.draw(0)
+	return p.out
+}
+
+// decodeForExport decodes the images that shapes show and aren't decoded yet.
+func (a *App) decodeForExport() {
 	inUse := a.assetsInUse()
-	for id, asset := range e.Doc.Assets {
+	for id, asset := range a.ed.Doc.Assets {
 		if inUse[id] && a.decoded[id] != asset.Src && strings.HasPrefix(asset.Src, "data:") {
 			if b := decodeDataURL(asset.Src); b != nil {
 				a.bitmaps[id] = b
@@ -86,52 +160,87 @@ func (a *App) RenderImage(box geo.Box, ids []doc.ID, scale float64) *image.RGBA 
 			a.decoded[id] = asset.Src
 		}
 	}
+}
+
+// picture is an export being drawn, in tiles, each a frame with a mask atlas
+// of its own: a whole page of strokes wouldn't fit one, and a tile that
+// wouldn't fit it splits. Tiles are whole device pixels apart, so that nothing
+// shows where they meet.
+type picture struct {
+	a     *App
+	box   geo.Box
+	ids   []doc.ID
+	scale float64
+	pal   *editor.Palette
+	out   *image.RGBA
+	todo  []tileAt // what is left to draw, next first
+}
+
+// tileAt is a tile of a picture, its corner and side in device pixels.
+type tileAt struct{ x, y, size int }
+
+func (a *App) newPicture(box geo.Box, ids []doc.ID, scale float64, tile int) *picture {
 	// Very large pages come out at a size a file can hold.
 	const maxSide = 8192.0
 	if k := maxSide / (math.Max(box.W, box.H) * scale); k < 1 {
 		scale *= k
 	}
-	pal := e.Palette()
-	// In tiles, each a frame with a mask atlas of its own: a whole page of
-	// strokes wouldn't fit one, and a tile that wouldn't fit it splits. Tiles are
-	// whole device pixels apart, so that nothing shows where they meet.
-	const tile, smallest = 1024, 128
 	w, h := int(math.Ceil(box.W*scale)), int(math.Ceil(box.H*scale))
-	out := image.NewRGBA(image.Rect(0, 0, w, h))
-	sceneAt := func(p *ui.Painter, tx, ty, size int) *scene {
-		at := geo.V(box.X+float64(tx)/scale, box.Y+float64(ty)/scale)
-		side := math.Ceil(float64(size) / scale)
-		s := &scene{a: a, e: e, p: p, pal: pal, export: true, shrink: math.Min(scale, 1)}
-		s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
-		s.view = geo.Box{X: at.X, Y: at.Y, W: side, H: side}
-		return s
+	p := &picture{
+		a: a, box: box, ids: ids, scale: scale, pal: a.ed.Palette(),
+		out: image.NewRGBA(image.Rect(0, 0, w, h)),
 	}
-	var render func(tx, ty, size int)
-	render = func(tx, ty, size int) {
-		if tx >= w || ty >= h {
-			return
-		}
-		if size > smallest && sceneAt(nil, tx, ty, size).maskArea(ids, scale, false) > atlasBudget {
-			half := size / 2
-			render(tx, ty, half)
-			render(tx+half, ty, half)
-			render(tx, ty+half, half)
-			render(tx+half, ty+half, half)
-			return
-		}
-		img := renderFrame(int(math.Ceil(float64(size)/scale)), scale, func(p *ui.Painter, r ui.Rect) {
-			s := sceneAt(p, tx, ty, size)
-			p.Fill(r, toUI(pal.Background), 0)
-			s.paint(ids)
-		})
-		draw.Draw(out, image.Rect(tx, ty, tx+size, ty+size), img, image.Point{}, draw.Src)
-	}
-	for ty := 0; ty < h; ty += tile {
-		for tx := 0; tx < w; tx += tile {
-			render(tx, ty, tile)
+	for y := 0; y < h; y += tile {
+		for x := 0; x < w; x += tile {
+			p.todo = append(p.todo, tileAt{x, y, tile})
 		}
 	}
-	return out
+	return p
+}
+
+// draw draws tiles until they are all drawn, which it reports, or until it has
+// taken budget; 0 draws them all. A tile too full for its atlas splits in
+// four, each drawn on its own, so that a turn can end between them.
+func (p *picture) draw(budget time.Duration) bool {
+	const smallest = 128
+	start := time.Now()
+	for len(p.todo) > 0 {
+		t := p.todo[0]
+		p.todo = p.todo[1:]
+		if t.size > smallest && p.sceneAt(nil, t.x, t.y, t.size).maskArea(p.ids, p.scale, false) > atlasBudget {
+			h := t.size / 2
+			var quarters []tileAt
+			for _, q := range []tileAt{{t.x, t.y, h}, {t.x + h, t.y, h}, {t.x, t.y + h, h}, {t.x + h, t.y + h, h}} {
+				if q.x < p.out.Rect.Dx() && q.y < p.out.Rect.Dy() {
+					quarters = append(quarters, q)
+				}
+			}
+			p.todo = append(quarters, p.todo...)
+			continue
+		}
+		p.render(t)
+		if budget > 0 && time.Since(start) >= budget {
+			break
+		}
+	}
+	return len(p.todo) == 0
+}
+
+func (p *picture) sceneAt(pt *ui.Painter, tx, ty, size int) *scene {
+	at := geo.V(p.box.X+float64(tx)/p.scale, p.box.Y+float64(ty)/p.scale)
+	side := math.Ceil(float64(size) / p.scale)
+	s := &scene{a: p.a, e: p.a.ed, p: pt, pal: p.pal, export: true, shrink: math.Min(p.scale, 1)}
+	s.cam = editor.Camera{X: -at.X, Y: -at.Y, Z: 1}
+	s.view = geo.Box{X: at.X, Y: at.Y, W: side, H: side}
+	return s
+}
+
+func (p *picture) render(t tileAt) {
+	img := renderFrame(int(math.Ceil(float64(t.size)/p.scale)), p.scale, func(pt *ui.Painter, r ui.Rect) {
+		pt.Fill(r, toUI(p.pal.Background), 0)
+		p.sceneAt(pt, t.x, t.y, t.size).paint(p.ids)
+	})
+	draw.Draw(p.out, image.Rect(t.x, t.y, t.x+t.size, t.y+t.size), img, image.Point{}, draw.Src)
 }
 
 // renderFrame paints a frame of side×side DIPs at a scale. It doesn't use
@@ -167,13 +276,21 @@ func (a *App) exportName(ext string) string {
 	return name + ext
 }
 
-// ExportPNG asks where, and writes a PNG there.
+// ExportPNG asks where, and writes a PNG there. The PNG draws while the
+// dialog is open.
 func (a *App) ExportPNG() {
-	data, ok := a.RenderPNG(2)
-	if !ok {
+	type result struct {
+		data []byte
+		ok   bool
+	}
+	ready := make(chan result, 1)
+	if !a.drawPNG(2, func(data []byte, ok bool) { ready <- result{data, ok} }) {
 		return
 	}
-	a.saveAs(data, a.exportName(".png"), "PNG image", "png")
+	a.saveTo(a.exportName(".png"), "PNG image", "png", func() ([]byte, bool) {
+		r := <-ready
+		return r.data, r.ok
+	})
 }
 
 // ExportSVG asks where, and writes an SVG there.
@@ -185,16 +302,33 @@ func (a *App) ExportSVG() {
 	a.saveAs(data, a.exportName(".svg"), "SVG image", "svg")
 }
 
-// CopyPNG copies what export draws as an image.
+// CopyPNG copies what export draws as an image. It draws on the side, and a
+// copy asked for meanwhile takes the clipboard instead.
 func (a *App) CopyPNG() {
-	data, ok := a.RenderPNG(2)
-	if !ok || !a.hasSvc {
+	if !a.hasSvc {
 		return
 	}
-	a.services.WriteClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, data))))
+	a.pngCopies++
+	n, svc := a.pngCopies, a.services
+	a.drawPNG(2, func(data []byte, ok bool) {
+		if !ok {
+			return
+		}
+		a.host.Update(func() {
+			if n == a.pngCopies {
+				svc.WriteClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, data))))
+			}
+		})
+	})
 }
 
 func (a *App) saveAs(data []byte, name, kind, ext string) {
+	a.saveTo(name, kind, ext, func() ([]byte, bool) { return data, true })
+}
+
+// saveTo asks where to save a file, off the main thread, and writes there what
+// data returns, which it waits for once there is somewhere to write it.
+func (a *App) saveTo(name, kind, ext string, data func() ([]byte, bool)) {
 	win := a.host.Window()
 	go func() {
 		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
@@ -204,7 +338,12 @@ func (a *App) saveAs(data []byte, name, kind, ext string) {
 		if err != nil || path == "" {
 			return
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		b, ok := data()
+		if !ok {
+			mygo.Dialog.Error("Couldn't export", "The picture couldn't be made.")
+			return
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
 			mygo.Dialog.Error("Couldn't export", err.Error())
 		}
 	}()

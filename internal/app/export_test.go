@@ -1,14 +1,19 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"image"
+	"image/png"
 	"math"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"godraw/internal/editor"
@@ -234,4 +239,139 @@ func TestViewLeavesGCAlone(t *testing.T) {
 	if got := forcedGCs() - forced; got != 0 {
 		t.Errorf("%d views forced %d collections", 5, got)
 	}
+}
+
+// Copy as PNG sits above Export as PNG in both menus of the canvas, and puts
+// the drawing on the clipboard as a PNG.
+func TestCopyAsPNGFromTheMenus(t *testing.T) {
+	for _, menu := range []string{"more", "context"} {
+		t.Run(menu, func(t *testing.T) {
+			_, tt, h := newTest(t)
+			tt.Key(0, ui.KeyR)
+			drag(tt, 300, 300, 500, 400)
+			tt.Key(0, ui.KeyEscape)
+			tt.Frame()
+			if menu == "more" {
+				// A popover: its items are on the screen, not in tt.Menu.
+				if err := tt.Click("More"); err != nil {
+					t.Fatal(err)
+				}
+				tt.Frame()
+				cp, ok1 := tt.Find("Copy as PNG")
+				ex, ok2 := tt.Find("Export as PNG…")
+				if !ok1 || !ok2 || cp.Y >= ex.Y || ex.Y-cp.Y > 2*cp.H {
+					t.Fatalf("Copy as PNG isn't just above Export as PNG: %v %v", cp, ex)
+				}
+				if err := tt.Click("Copy as PNG"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				tt.RightClickAt(700, 600)
+				tt.Frame()
+				items := tt.Menu()
+				copyAt, exportAt := slices.Index(items, "Copy as PNG"), slices.Index(items, "Export as PNG…")
+				if copyAt < 0 || copyAt+1 != exportAt {
+					t.Fatalf("Copy as PNG isn't just above Export as PNG: %q", items)
+				}
+				if err := tt.ChooseMenuItem("Copy as PNG"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := awaitPNG(t, tt, h)
+			img, err := png.Decode(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b := img.Bounds(); b.Dx() < 400 || b.Dy() < 200 {
+				t.Errorf("a %v image of a 200 by 100 rectangle at 2x", b)
+			}
+		})
+	}
+}
+
+// awaitPNG waits for a PNG drawing on the side to reach the clipboard.
+func awaitPNG(t *testing.T, tt *ui.Tester, h *testHost) []byte {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute) // -race is slow
+	for {
+		h.pump()
+		if data, err := tt.ClipboardData().Read(transfer.PNG); err == nil {
+			return data
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no PNG reached the clipboard")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Copy as PNG draws on the side: the window goes on taking input and drawing
+// frames, editing the drawing as it goes, and what lands on the clipboard is
+// the drawing as it was when it was asked for. Run with -race.
+func TestCopyAsPNGLeavesTheWindowFree(t *testing.T) {
+	a := New(stress.Diagram(400), &testHost{})
+	h := a.host.(*testHost)
+	tt := ui.NewTester(a.View, 1280, 820)
+	tt.Frame()
+	e := a.Editor()
+	before := len(e.Doc.Shapes)
+	// What it should come out as: the drawing and theme as they were, in tiles
+	// of the same size, as gradients round a little differently in others.
+	was := New(e.Doc.Snapshot(), &testHost{})
+	box, ids, _ := was.Editor().ExportBounds()
+	wantPic := was.newPicture(box.Expand(32), ids, 2, sideTile)
+	wantPic.draw(0)
+
+	start := time.Now()
+	a.CopyPNG()
+	if took := time.Since(start); took > 150*time.Millisecond {
+		t.Errorf("CopyPNG held the window for %v", took)
+	}
+	// Meanwhile: new shapes, a pan, a theme change, frames.
+	for i := range 5 {
+		tt.Key(0, ui.KeyR)
+		x := float32(100 + 60*i)
+		drag(tt, x, 100, x+40, 140)
+		e.SetCam(editor.Camera{X: e.Cam().X + 10, Y: e.Cam().Y, Z: e.Cam().Z})
+		a.ToggleDark()
+		tt.Frame()
+	}
+	if len(e.Doc.Shapes) != before+5 {
+		t.Fatalf("%d shapes, not %d", len(e.Doc.Shapes), before+5)
+	}
+	got, err := png.Decode(bytes.NewReader(awaitPNG(t, tt, h)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantImg := wantPic.out
+	if got.Bounds() != wantImg.Bounds() {
+		t.Fatalf("copied %v, not %v", got.Bounds(), wantImg.Bounds())
+	}
+	if n := differentPixels(got, wantImg); n > 0 {
+		t.Errorf("%d pixels differ from the drawing as it was when copied", n)
+	}
+
+	// Two copies in a row: the first to finish doesn't take the clipboard from the
+	// second.
+	tt.SetClipboard("")
+	a.CopyPNG()
+	first := a.pngCopies
+	a.CopyPNG()
+	if a.pngCopies != first+1 {
+		t.Fatal("the second copy wasn't counted")
+	}
+	awaitPNG(t, tt, h)
+}
+
+func differentPixels(a, b image.Image) int {
+	n := 0
+	r := a.Bounds()
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if a.At(x, y) != b.At(x, y) {
+				n++
+			}
+		}
+	}
+	return n
 }

@@ -40,6 +40,16 @@ func (h *testHost) Update(fn func()) {
 	h.queued = append(h.queued, fn)
 }
 
+// Do waits for the test's pump to run fn, as the main thread would.
+func (h *testHost) Do(fn func()) {
+	done := make(chan struct{})
+	h.Update(func() {
+		defer close(done)
+		fn()
+	})
+	<-done
+}
+
 func (h *testHost) pump() {
 	h.mu.Lock()
 	fns := h.queued

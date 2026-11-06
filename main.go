@@ -57,6 +57,8 @@ func (w *window) Update(fn func()) {
 	}
 }
 
+func (w *window) Do(fn func()) { mygo.RunOnMain(fn) }
+
 func (w *window) Window() *mygo.Window { return w.win }
 
 func (w *window) Name() string { return w.doc.Name() }
@@ -105,9 +107,9 @@ func menu() *mygo.Menu {
 			{Role: mygo.RoleRevert},
 			mygo.Separator(),
 			{Label: "Insert Image…", Accelerator: "CmdOrCtrl+U", Click: act(func(a *app.App) { a.InsertImageFromDialog() })},
+			{Label: "Copy as PNG", Accelerator: "CmdOrCtrl+Shift+C", Click: act(func(a *app.App) { a.CopyPNG() })},
 			{Label: "Export as PNG…", Accelerator: "CmdOrCtrl+Shift+E", Click: act(func(a *app.App) { a.ExportPNG() })},
 			{Label: "Export as SVG…", Click: act(func(a *app.App) { a.ExportSVG() })},
-			{Label: "Copy as PNG", Accelerator: "CmdOrCtrl+Shift+C", Click: act(func(a *app.App) { a.CopyPNG() })},
 			mygo.Separator(),
 			{Label: "MCP Server…", Click: act(func(a *app.App) { a.ShowMCP() })},
 		}},

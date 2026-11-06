@@ -453,6 +453,9 @@ func (a *App) topLeft(c *ui.Context) {
 // moreMenu is the menu of what else there is to do.
 func (a *App) moreMenu(m *ui.Menu) {
 	e := a.ed
+	if m.Item("Copy as PNG").Chosen() {
+		a.CopyPNG()
+	}
 	if m.Item("Export as PNG…").Chosen() {
 		a.ExportPNG()
 	}

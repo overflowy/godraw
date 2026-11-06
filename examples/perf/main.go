@@ -34,6 +34,7 @@ type host struct{ win *mygo.Window }
 
 func (h *host) Changed(*doc.Drawing) {}
 func (h *host) Update(fn func())     { h.win.Update(fn) }
+func (h *host) Do(fn func())         { mygo.RunOnMain(fn) }
 func (h *host) Window() *mygo.Window { return h.win }
 func (h *host) Name() string         { return "perf" }
 

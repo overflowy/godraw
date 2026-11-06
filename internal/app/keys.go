@@ -278,6 +278,9 @@ func (a *App) contextMenu(m *ui.Menu) {
 		})
 	}
 	m.Separator()
+	if m.Item("Copy as PNG").Chosen() {
+		a.CopyPNG()
+	}
 	if m.Item("Export as PNG…").Chosen() {
 		a.ExportPNG()
 	}
