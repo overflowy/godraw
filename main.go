@@ -14,6 +14,7 @@ import (
 
 	"godraw/internal/app"
 	"godraw/internal/doc"
+	"godraw/internal/settings"
 )
 
 // window is what a document's window holds.
@@ -24,6 +25,31 @@ type window struct {
 }
 
 func (w *window) Changed(d *doc.Drawing) { w.doc.Set(d) }
+
+// rememberView keeps how the window's drawing is viewed, for the next time
+// it opens.
+func (w *window) rememberView() {
+	if store != nil {
+		store.SetView(w.doc.Path(), w.app.ViewState())
+	}
+}
+
+// store is the settings file; nil when there is nowhere to keep it.
+var store *settings.Store
+
+// openSettings opens the settings file in the app's user data directory.
+func openSettings() *settings.Store {
+	dir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		log.Printf("godraw: settings won't be kept: %v", err)
+		return nil
+	}
+	s, err := settings.Open(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		log.Printf("godraw: reading settings: %v", err)
+	}
+	return s
+}
 
 func (w *window) Update(fn func()) {
 	if w.win != nil {
@@ -126,6 +152,7 @@ func isDrawing(path string) bool { return strings.EqualFold(filepath.Ext(path), 
 
 func main() {
 	files := fileArgs()
+	store = openSettings()
 	var docs *mygo.Documents[*doc.Drawing]
 	openDrawing = func(path string) {
 		if _, err := docs.Open(path); err != nil {
@@ -147,6 +174,16 @@ func main() {
 			w := &window{doc: d}
 			w.app = app.New(d.Content().Snapshot(), w)
 			w.app.MCP = agents.Status
+			if store != nil {
+				w.app.SetPrefs(store.Prefs())
+				if v, ok := store.View(d.Path()); ok {
+					w.app.SetViewState(v)
+				}
+				w.app.OnPrefsChange = store.ChangePrefs
+				w.app.OnViewChange = func(settings.View) { w.rememberView() }
+				// Saved under a name, moved or renamed: its view goes by its new path.
+				d.OnStateChange(func(mygo.DocumentState) { w.rememberView() })
+			}
 			w.win = mygo.NewWindow(mygo.WindowOptions{
 				Width: 1280, Height: 820, MinWidth: 640, MinHeight: 420,
 				StateKey: "drawing",
@@ -156,6 +193,12 @@ func main() {
 			c := agents.add(w)
 			w.win.OnFocus(func() { agents.front(c) })
 			w.win.OnClosed(func() {
+				w.rememberView()
+				if store != nil {
+					if err := store.Flush(); err != nil {
+						log.Printf("godraw: saving settings: %v", err)
+					}
+				}
 				delete(windows, w.win)
 				agents.remove(c)
 			})
@@ -198,6 +241,13 @@ func main() {
 				docs.New() // nothing else would show a window
 			}
 		}()
+	})
+	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+		if store != nil {
+			if err := store.Flush(); err != nil {
+				log.Printf("godraw: saving settings: %v", err)
+			}
+		}
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

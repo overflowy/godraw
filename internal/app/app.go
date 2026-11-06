@@ -24,6 +24,7 @@ import (
 	"godraw/internal/doc"
 	"godraw/internal/editor"
 	"godraw/internal/geo"
+	"godraw/internal/settings"
 )
 
 // Host is what a window asks of what holds it.
@@ -42,6 +43,11 @@ type Host interface {
 type App struct {
 	// MCP tells how the app's MCP server is doing; nil shows nothing of it.
 	MCP func() MCPStatus
+	// OnPrefsChange tells that Prefs changed, from was to now, and
+	// OnViewChange that ViewState did, for them to be kept until the next
+	// launch. Nil tells no one.
+	OnPrefsChange func(was, now settings.Prefs)
+	OnViewChange  func(settings.View)
 
 	ed   *editor.Editor
 	host Host
@@ -84,6 +90,10 @@ type App struct {
 	mcpOpen   bool
 	mcpCopied string // the field that says it copied
 	mcpCopies int    // how many times it has, for a timer to know its own
+
+	toldPrefs settings.Prefs // what OnSettingsChange was last told of
+	toldView  settings.View
+	told      bool
 }
 
 // New returns the state of a window showing a drawing.
@@ -217,6 +227,63 @@ func (a *App) View(c *ui.Context) {
 	})
 	a.helpDialog(c)
 	a.mcpDialog(c)
+	a.tellSettings()
+}
+
+// Prefs returns the window's preferences.
+func (a *App) Prefs() settings.Prefs {
+	e := a.ed
+	return settings.Prefs{
+		Theme: a.theme, Grid: e.Grid, Snap: e.Snap, Minimap: a.minimap, FocusMode: e.FocusMode,
+		Style: e.Next,
+	}
+}
+
+// SetPrefs gives the window preferences, as those it had at the last launch.
+func (a *App) SetPrefs(p settings.Prefs) {
+	e := a.ed
+	a.theme, e.Grid, e.Snap, a.minimap, e.FocusMode = p.Theme, p.Grid, p.Snap, p.Minimap, p.FocusMode
+	e.Next = p.Style
+}
+
+// ViewState returns the page the window shows and the camera of each page.
+func (a *App) ViewState() settings.View {
+	return settings.View{Page: a.ed.Page, Cams: a.ed.Cams()}
+}
+
+// SetViewState shows the drawing as it was, before the window first shows.
+// What the drawing no longer has is left out.
+func (a *App) SetViewState(v settings.View) {
+	e := a.ed
+	e.SetCams(v.Cams)
+	if e.Doc.Page(v.Page) != nil {
+		e.SetPage(v.Page)
+	}
+}
+
+// tellSettings tells OnPrefsChange and OnViewChange of what changed since
+// they were last told, or since the window took its preferences and view.
+func (a *App) tellSettings() {
+	if !a.told {
+		a.toldPrefs, a.toldView, a.told = a.Prefs(), a.ViewState(), true
+		if a.OnViewChange != nil {
+			a.OnViewChange(a.toldView)
+		}
+		return
+	}
+	if p := a.Prefs(); p != a.toldPrefs {
+		was := a.toldPrefs
+		a.toldPrefs = p
+		if a.OnPrefsChange != nil {
+			a.OnPrefsChange(was, p)
+		}
+	}
+	if v := a.ViewState(); !v.Equal(a.toldView) {
+		a.toldView = v
+		if a.OnViewChange != nil {
+			a.OnViewChange(v)
+		}
+	}
 }
 
 func (a *App) applyTheme(c *ui.Context) {

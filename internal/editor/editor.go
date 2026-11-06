@@ -194,6 +194,21 @@ func (e *Editor) Cam() Camera {
 	return Camera{Z: 1}
 }
 
+// Cams returns the camera of each page that has been seen.
+func (e *Editor) Cams() map[doc.ID]Camera { return maps.Clone(e.cams) }
+
+// SetCams gives pages the cameras they had, as at the next launch, before any
+// shows. A page the drawing no longer has is left out.
+func (e *Editor) SetCams(cams map[doc.ID]Camera) {
+	for id, c := range cams {
+		if e.Doc.Page(id) == nil || !(c.Z > 0) {
+			continue
+		}
+		c.Z = math.Max(minZoom, math.Min(maxZoom, c.Z))
+		e.cams[id] = c
+	}
+}
+
 // SetCam moves the camera of the current page.
 func (e *Editor) SetCam(c Camera) {
 	c.Z = math.Max(minZoom, math.Min(maxZoom, c.Z))
