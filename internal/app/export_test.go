@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
+	"godraw/internal/doc"
 	"godraw/internal/editor"
 	"godraw/internal/geo"
 	"godraw/internal/stress"
@@ -374,4 +375,51 @@ func differentPixels(a, b image.Image) int {
 		}
 	}
 	return n
+}
+
+// An SVG is made on the side, of what export drew when it was asked for: the
+// selection then, in the theme then, whatever the window does meanwhile. Run
+// with -race.
+func TestSVGIsMadeOnTheSide(t *testing.T) {
+	a := New(stress.Diagram(400), &testHost{})
+	tt := ui.NewTester(a.View, 1280, 820)
+	tt.Frame()
+	e := a.Editor()
+	e.Select(e.Children(e.Page)[:3]...)
+	want, ok := e.SVG(e.DarkMode)
+	if !ok {
+		t.Fatal("nothing to export")
+	}
+
+	got := make(chan []byte, 1)
+	if !a.makeSVG(func(data []byte, ok bool) {
+		if !ok {
+			t.Error("no SVG")
+		}
+		got <- data
+	}) {
+		t.Fatal("makeSVG found nothing to export")
+	}
+	for i := range 5 {
+		tt.Key(0, ui.KeyR)
+		x := float32(100 + 60*i)
+		drag(tt, x, 100, x+40, 140)
+		e.SetCam(editor.Camera{X: e.Cam().X + 10, Y: e.Cam().Y, Z: e.Cam().Z})
+		a.ToggleDark()
+		tt.Frame()
+	}
+	select {
+	case data := <-got:
+		if !bytes.Equal(data, want) {
+			t.Errorf("the SVG isn't the drawing as it was: %d bytes, not %d", len(data), len(want))
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("no SVG came")
+	}
+
+	e.SelectNone()
+	empty := New(doc.New(), &testHost{})
+	if empty.makeSVG(func([]byte, bool) { t.Error("done called with nothing to export") }) {
+		t.Error("an empty page made an SVG")
+	}
 }
