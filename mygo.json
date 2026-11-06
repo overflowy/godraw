@@ -1,7 +1,7 @@
 {
   "name": "GoDraw",
   "identifier": "com.overflowy.godraw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "out": "build",
   "macos": { "icon": "icon/AppIcon.icon" },
   "linux": { "webview": false, "comment": "A local whiteboard", "categories": ["Graphics"] },
