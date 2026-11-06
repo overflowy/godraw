@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -10,6 +11,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -352,16 +354,59 @@ func TestCopyAsPNGLeavesTheWindowFree(t *testing.T) {
 		t.Errorf("%d pixels differ from the drawing as it was when copied", n)
 	}
 
-	// Two copies in a row: the first to finish doesn't take the clipboard from the
-	// second.
+	// Two copies in a row: the second ends the first, and takes the clipboard
+	// with the drawing as it is now, its shapes moved.
 	tt.SetClipboard("")
+	e.SelectAll()
+	e.Nudge(geo.V(500, 0))
 	a.CopyPNG()
-	first := a.pngCopies
+	e.SelectNone()
 	a.CopyPNG()
-	if a.pngCopies != first+1 {
-		t.Fatal("the second copy wasn't counted")
+	got, err = png.Decode(bytes.NewReader(awaitPNG(t, tt, h)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	awaitPNG(t, tt, h)
+	box, ids, _ = e.ExportBounds()
+	now := a.newPicture(box.Expand(editor.ExportPad), ids, 2, sideTile)
+	now.draw(0)
+	if got.Bounds() != now.out.Bounds() || differentPixels(got, now.out) > 0 {
+		t.Error("the clipboard doesn't have the second copy")
+	}
+}
+
+// A PNG whose context ended draws nothing more on the main thread.
+func TestAnEndedPNGStops(t *testing.T) {
+	h := &countingHost{}
+	a := New(stress.Diagram(400), h)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := make(chan bool, 1)
+	if !a.makePNG(ctx, 2, func(data []byte, ok bool) { result <- ok || data != nil }) {
+		t.Fatal("nothing to export")
+	}
+	select {
+	case made := <-result:
+		if made {
+			t.Error("an ended PNG was made")
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("done never came")
+	}
+	if h.turns.Load() != 0 {
+		t.Errorf("an ended PNG drew %d turns", h.turns.Load())
+	}
+}
+
+// countingHost runs what it is given at once, and counts the turns asked of
+// the main thread.
+type countingHost struct {
+	testHost
+	turns atomic.Int32
+}
+
+func (h *countingHost) Do(fn func()) {
+	h.turns.Add(1)
+	fn()
 }
 
 func differentPixels(a, b image.Image) int {
@@ -378,21 +423,25 @@ func differentPixels(a, b image.Image) int {
 }
 
 // An SVG is made on the side, of what export drew when it was asked for: the
-// selection then, in the theme then, whatever the window does meanwhile. Run
-// with -race.
+// selection then, in the theme then, whatever the window does meanwhile. Its
+// shapes have never been drawn, so the side derives everything about them as
+// the window derives the same, and moves them. Run with -race.
 func TestSVGIsMadeOnTheSide(t *testing.T) {
-	a := New(stress.Diagram(400), &testHost{})
-	tt := ui.NewTester(a.View, 1280, 820)
-	tt.Frame()
+	d := stress.Diagram(400)
+	a := New(d, &testHost{})
 	e := a.Editor()
-	e.Select(e.Children(e.Page)[:3]...)
-	want, ok := e.SVG(e.DarkMode)
+	// Most of the page, for the export and the window's first frame to overlap.
+	kids := e.Children(e.Page)
+	e.Select(kids[:len(kids)-3]...)
+	was := New(d.Detached(), &testHost{})
+	was.Editor().Select(e.Selection()...)
+	want, ok := was.Editor().SVG(e.DarkMode)
 	if !ok {
 		t.Fatal("nothing to export")
 	}
 
 	got := make(chan []byte, 1)
-	if !a.makeSVG(func(data []byte, ok bool) {
+	if !a.makeSVG(context.Background(), func(data []byte, ok bool) {
 		if !ok {
 			t.Error("no SVG")
 		}
@@ -400,26 +449,31 @@ func TestSVGIsMadeOnTheSide(t *testing.T) {
 	}) {
 		t.Fatal("makeSVG found nothing to export")
 	}
-	for i := range 5 {
-		tt.Key(0, ui.KeyR)
-		x := float32(100 + 60*i)
-		drag(tt, x, 100, x+40, 140)
-		e.SetCam(editor.Camera{X: e.Cam().X + 10, Y: e.Cam().Y, Z: e.Cam().Z})
-		a.ToggleDark()
-		tt.Frame()
-	}
-	select {
-	case data := <-got:
-		if !bytes.Equal(data, want) {
-			t.Errorf("the SVG isn't the drawing as it was: %d bytes, not %d", len(data), len(want))
+	// The window's first frame derives the shapes it shows as the export does.
+	tt := ui.NewTester(a.View, 1280, 820)
+	var data []byte
+	for i := 0; data == nil; i++ {
+		select {
+		case data = <-got:
+		case <-time.After(time.Minute):
+			t.Fatal("no SVG came")
+		default:
+			e.SelectAll()
+			e.Nudge(geo.V(1, 0))
+			// Not at first: the first frames derive what the export
+			// derives, in the same theme.
+			if i%10 == 9 {
+				a.ToggleDark()
+			}
+			tt.Frame()
 		}
-	case <-time.After(time.Minute):
-		t.Fatal("no SVG came")
+	}
+	if !bytes.Equal(data, want) {
+		t.Errorf("the SVG isn't the drawing as it was: %d bytes, not %d", len(data), len(want))
 	}
 
-	e.SelectNone()
 	empty := New(doc.New(), &testHost{})
-	if empty.makeSVG(func([]byte, bool) { t.Error("done called with nothing to export") }) {
+	if empty.makeSVG(context.Background(), func([]byte, bool) { t.Error("done called with nothing to export") }) {
 		t.Error("an empty page made an SVG")
 	}
 }

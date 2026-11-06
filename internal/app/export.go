@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/draw"
 	"image/png"
@@ -67,11 +68,8 @@ func (a *App) RenderPNG(scale float64) ([]byte, bool) {
 		return nil, false
 	}
 	defer collectHard()()
-	return encodePNG(a.RenderImage(box.Expand(exportPad), ids, scale))
+	return encodePNG(a.RenderImage(box.Expand(editor.ExportPad), ids, scale))
 }
-
-// exportPad is the room an exported picture leaves around what it shows.
-const exportPad = 32
 
 func encodePNG(img image.Image) ([]byte, bool) {
 	var buf bytes.Buffer
@@ -91,12 +89,14 @@ const drawTurn = 12 * time.Millisecond
 // a tile; 512 took up to 70. Smaller ones take longer all told.
 const sideTile = 256
 
-// aside returns a window of its own over a snapshot of what this one shows:
-// its drawing, page, selection and theme. Exports are made from it on the
-// side: edits meanwhile change nothing it reads, and nothing it does reaches
-// this window.
-func (a *App) aside() *App {
-	b := New(a.ed.Doc.Snapshot(), offscreen{name: a.host.Name()})
+// aside returns a window of its own over d, a snapshot of this one's
+// drawing, with its page, selection, theme and text layouts. Exports are made
+// from it on the side: edits meanwhile change nothing it reads, and nothing it
+// does reaches this window. One that works off the main thread needs d
+// detached.
+func (a *App) aside(d *doc.Drawing) *App {
+	b := New(d, offscreen{name: a.host.Name()})
+	b.meas, b.ed.Measure = a.meas, a.meas.measure
 	b.ed.Page, b.ed.DarkMode = a.ed.Page, a.ed.DarkMode
 	b.ed.Select(a.ed.Selection()...)
 	return b
@@ -113,20 +113,22 @@ func (offscreen) Window() *mygo.Window { return nil }
 func (o offscreen) Name() string       { return o.name }
 
 // makePNG draws what export draws (the selection, else the page) at a scale,
-// without making the window wait, and gives done the PNG, on a goroutine. It
-// returns false, and done isn't called, when there is nothing to export.
+// without making the window wait, and gives done the PNG, on a goroutine, or
+// nothing and false if ctx ends first. It returns false, and done isn't called,
+// when there is nothing to export.
 //
 // Painting is the main thread's only, as all windows share their glyphs and
 // masks. So it paints there a few tiles at a time, waiting for each turn to end
-// before it asks for the next, which lets input and frames go between. It
-// decodes images of its own, as a bitmap changes as it draws, and it decodes
-// them and encodes the PNG on the side.
-func (a *App) makePNG(scale float64, done func([]byte, bool)) bool {
-	b := a.aside()
-	box, ids, ok := b.ed.ExportBounds()
+// before it asks for the next, which lets input and frames go between. There, it
+// can share what the window derived from shapes. It decodes images of its own,
+// as a bitmap changes as it draws, and it decodes them and encodes the PNG on
+// the side.
+func (a *App) makePNG(ctx context.Context, scale float64, done func([]byte, bool)) bool {
+	box, ids, ok := a.ed.ExportBounds()
 	if !ok {
 		return false
 	}
+	b := a.aside(a.ed.Doc.Snapshot())
 	untrack := collectHard()
 	go func() {
 		defer untrack()
@@ -134,14 +136,16 @@ func (a *App) makePNG(scale float64, done func([]byte, bool)) bool {
 		var pic *picture
 		for finished := false; !finished; {
 			ran := false
-			a.host.Do(func() {
-				ran = true
-				if pic == nil {
-					pic = b.newPicture(box.Expand(exportPad), ids, scale, sideTile)
-				}
-				finished = pic.draw(drawTurn)
-			})
-			if !ran { // the app quit
+			if ctx.Err() == nil {
+				a.host.Do(func() {
+					ran = true
+					if pic == nil {
+						pic = b.newPicture(box.Expand(editor.ExportPad), ids, scale, sideTile)
+					}
+					finished = pic.draw(drawTurn)
+				})
+			}
+			if !ran { // ended, or the app quit
 				done(nil, false)
 				return
 			}
@@ -152,16 +156,23 @@ func (a *App) makePNG(scale float64, done func([]byte, bool)) bool {
 }
 
 // makeSVG writes what export draws as an SVG, without making the window wait,
-// and gives done the SVG, on a goroutine. It returns false, and done isn't
-// called, when there is nothing to export. Unlike a PNG it paints nothing, so
-// all of it goes on the side: text it lays out shapes under the text system's
-// lock.
-func (a *App) makeSVG(done func([]byte, bool)) bool {
-	b := a.aside()
-	if _, _, ok := b.ed.ExportBounds(); !ok {
+// and gives done the SVG, on a goroutine, or nothing and false if ctx ended
+// before it began. It returns false, and done isn't called, when there is
+// nothing to export. Unlike a PNG it paints nothing, so all of it goes on the
+// side, over a detached snapshot: text it lays out shapes under the text
+// system's lock.
+func (a *App) makeSVG(ctx context.Context, done func([]byte, bool)) bool {
+	if _, _, ok := a.ed.ExportBounds(); !ok {
 		return false
 	}
-	go func() { done(b.ed.SVG(b.ed.DarkMode)) }()
+	b := a.aside(a.ed.Doc.Detached())
+	go func() {
+		if ctx.Err() != nil {
+			done(nil, false)
+			return
+		}
+		done(b.ed.SVG(b.ed.DarkMode))
+	}()
 	return true
 }
 
@@ -303,46 +314,56 @@ func (a *App) exportName(ext string) string {
 
 // ExportPNG asks where, and writes a PNG there.
 func (a *App) ExportPNG() {
-	a.exportAs(".png", "PNG image", func(done func([]byte, bool)) bool { return a.makePNG(2, done) })
+	a.exportAs(".png", "PNG image", func(ctx context.Context, done func([]byte, bool)) bool {
+		return a.makePNG(ctx, 2, done)
+	})
 }
 
 // ExportSVG asks where, and writes an SVG there.
 func (a *App) ExportSVG() { a.exportAs(".svg", "SVG image", a.makeSVG) }
 
 // CopyPNG copies what export draws as an image. It draws on the side, and a
-// copy asked for meanwhile takes the clipboard instead.
+// copy asked for meanwhile ends it, to take the clipboard instead.
 func (a *App) CopyPNG() {
 	if !a.hasSvc {
 		return
 	}
-	a.pngCopies++
-	n, svc := a.pngCopies, a.services
-	a.makePNG(2, func(data []byte, ok bool) {
+	if a.copying != nil {
+		a.copying()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.copying = cancel
+	svc := a.services
+	a.makePNG(ctx, 2, func(data []byte, ok bool) {
 		if !ok {
 			return
 		}
 		a.host.Update(func() {
-			if n == a.pngCopies {
+			if ctx.Err() == nil {
 				svc.WriteClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, data))))
+				cancel()
 			}
 		})
 	})
 }
 
 // exportAs asks where to save a file of a kind, and writes there what start
-// makes, which makes it on the side while the dialog is open, as makePNG and
-// makeSVG do.
-func (a *App) exportAs(ext, kind string, start func(done func([]byte, bool)) bool) {
+// makes, as makePNG and makeSVG do: on the side while the dialog is open, and
+// ending it if the dialog is cancelled.
+func (a *App) exportAs(ext, kind string, start func(ctx context.Context, done func([]byte, bool)) bool) {
 	type result struct {
 		data []byte
 		ok   bool
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan result, 1)
-	if !start(func(data []byte, ok bool) { ready <- result{data, ok} }) {
+	if !start(ctx, func(data []byte, ok bool) { ready <- result{data, ok} }) {
+		cancel()
 		return
 	}
 	win, name := a.host.Window(), a.exportName(ext)
 	go func() {
+		defer cancel()
 		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
 			Parent: win, Title: "Export", DefaultPath: name,
 			Filters: []mygo.FileFilter{{Name: kind, Extensions: []string{strings.TrimPrefix(ext, ".")}}},

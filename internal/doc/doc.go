@@ -272,6 +272,17 @@ func (d *Drawing) Snapshot() *Drawing {
 	return &c
 }
 
+// Detached returns a snapshot with shapes of its own, which start without what
+// the editor derives from them. That belongs to the main thread, so a snapshot
+// that another goroutine derives from must be detached.
+func (d *Drawing) Detached() *Drawing {
+	c := d.Snapshot()
+	for id, s := range c.Shapes {
+		c.Shapes[id] = s.Clone()
+	}
+	return c
+}
+
 // Equal reports whether two snapshots hold the same records, so that undoing
 // back to what the file has leaves the document unedited.
 func Equal(a, b *Drawing) bool {

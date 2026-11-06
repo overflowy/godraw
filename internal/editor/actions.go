@@ -1371,14 +1371,16 @@ func (e *Editor) walkLayer(ids []doc.ID, highlights bool, fn func(s *doc.Shape),
 	}
 }
 
+// ExportPad is the room an export leaves around what it shows.
+const ExportPad = 32
+
 // SVG returns what export draws as an SVG document.
 func (e *Editor) SVG(dark bool) ([]byte, bool) {
 	box, ids, ok := e.ExportBounds()
 	if !ok {
 		return nil, false
 	}
-	const pad = 32
-	return e.SVGOf(box.Expand(pad), ids, dark), true
+	return e.SVGOf(box.Expand(ExportPad), ids, dark), true
 }
 
 // SVGOf returns shapes as an SVG document of a box of the page.

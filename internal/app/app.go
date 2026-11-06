@@ -4,6 +4,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"image"
 	_ "image/gif"
@@ -95,7 +96,7 @@ type App struct {
 	mcpCopied string // the field that says it copied
 	mcpCopies int    // how many times it has, for a timer to know its own
 
-	pngCopies int // how many times Copy as PNG was asked, for a copy to know its own
+	copying context.CancelFunc // ends the Copy as PNG under way
 
 	toldPrefs settings.Prefs // what OnSettingsChange was last told of
 	toldView  settings.View

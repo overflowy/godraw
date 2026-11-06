@@ -50,8 +50,10 @@ type measureKey struct {
 }
 
 // measurer lays out the text of shapes, keeping what it laid out: a shape's
-// text is measured for its geometry and its drawing alike.
+// text is measured for its geometry and its drawing alike. A window and the
+// exports it makes on the side share one, from any goroutine.
 type measurer struct {
+	mu    sync.Mutex
 	cache map[measureKey]editor.TextBlock
 }
 
@@ -62,14 +64,20 @@ func newMeasurer() *measurer {
 
 func (m *measurer) measure(text, font string, size, width float64) editor.TextBlock {
 	k := measureKey{text, font, float32(size), float32(width)}
-	if b, ok := m.cache[k]; ok {
+	m.mu.Lock()
+	b, ok := m.cache[k]
+	m.mu.Unlock()
+	if ok {
 		return b
 	}
+	// Laid out unlocked: the main thread doesn't wait for an export's text.
+	b = layoutBlock(text, font, size, width)
+	m.mu.Lock()
 	if len(m.cache) > 4096 {
 		clear(m.cache)
 	}
-	b := layoutBlock(text, font, size, width)
 	m.cache[k] = b
+	m.mu.Unlock()
 	return b
 }
 
