@@ -159,3 +159,34 @@ func TestTheFileWaitsForChangesToStop(t *testing.T) {
 		t.Errorf("wrote %+v, not the last view %+v", v, last)
 	}
 }
+
+// An untitled drawing's view is kept under its name, apart from any file's,
+// until it is forgotten.
+func TestUntitledViews(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	s := open(t, path)
+	view := View{Page: "p1", Cams: map[doc.ID]editor.Camera{"p1": {X: 5, Y: -6, Z: 3}}}
+	s.SetView(Untitled("Untitled 2"), view)
+	s.SetView(Untitled("Untitled"), View{Page: "p1", Cams: map[doc.ID]editor.Camera{"p1": {Z: 1}}})
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	again := open(t, path)
+	if got, ok := again.View(Untitled("Untitled 2")); !ok || !got.Equal(view) {
+		t.Errorf("the untitled view came back as %+v, %v", got, ok)
+	}
+	if _, ok := again.View("Untitled 2"); ok {
+		t.Error("a file named as the untitled drawing has its view")
+	}
+	again.Forget(Untitled("Untitled 2"))
+	if err := again.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	last := open(t, path)
+	if _, ok := last.View(Untitled("Untitled 2")); ok {
+		t.Error("a forgotten view came back")
+	}
+	if _, ok := last.View(Untitled("Untitled")); !ok {
+		t.Error("forgetting one view forgot another")
+	}
+}

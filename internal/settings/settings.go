@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,6 +136,15 @@ func (s *Store) Prefs() Prefs {
 	return s.data.Prefs
 }
 
+// untitledPrefix starts the keys of untitled drawings' views. A key of a
+// file is an absolute path, which never starts with it.
+const untitledPrefix = "untitled:"
+
+// Untitled returns what the view of the untitled drawing named name is kept
+// under, for View, SetView and Forget to take in place of a path. A drawing
+// left unsaved at a quit opens again under its name, and so gets its view.
+func Untitled(name string) string { return untitledPrefix + name }
+
 // View returns how the drawing at path was last viewed.
 func (s *Store) View(path string) (View, bool) {
 	if path == "" {
@@ -178,7 +188,8 @@ func merge(dst, was, now reflect.Value) {
 	}
 }
 
-// SetView keeps how the drawing at path is viewed; "", untitled, is not kept.
+// SetView keeps how the drawing at path, or of an Untitled key, is viewed;
+// "" is not kept.
 func (s *Store) SetView(path string, view View) {
 	if path == "" {
 		return
@@ -192,6 +203,21 @@ func (s *Store) SetView(path string, view View) {
 	}
 	s.data.Views[k] = &viewItem{Page: view.Page, Cams: cams, Used: time.Now()}
 	s.prune()
+	s.changed()
+}
+
+// Forget drops the view of the drawing at path, or of an Untitled key.
+func (s *Store) Forget(path string) {
+	if path == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := key(path)
+	if _, ok := s.data.Views[k]; !ok {
+		return
+	}
+	delete(s.data.Views, k)
 	s.changed()
 }
 
@@ -271,8 +297,12 @@ func writeFile(path string, b []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// key is what a drawing's view is kept under: its file's absolute path.
+// key is what a drawing's view is kept under: its file's absolute path, or
+// the Untitled key of an untitled drawing.
 func key(path string) string {
+	if strings.HasPrefix(path, untitledPrefix) {
+		return path
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		return abs
 	}

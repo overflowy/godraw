@@ -22,16 +22,36 @@ type window struct {
 	doc *mygo.Document[*doc.Drawing]
 	win *mygo.Window
 	app *app.App
+	// viewKey is what the view was last kept under. Main thread only.
+	viewKey string
 }
 
 func (w *window) Changed(d *doc.Drawing) { w.doc.Set(d) }
 
-// rememberView keeps how the window's drawing is viewed, for the next time
-// it opens.
-func (w *window) rememberView() {
-	if store != nil {
-		store.SetView(w.doc.Path(), w.app.ViewState())
+// viewKeyOf returns what the view of a drawing is kept under: its file, or
+// for an untitled drawing its name, which it keeps when a quit leaves it
+// unsaved and the next launch opens it again.
+func viewKeyOf(d *mygo.Document[*doc.Drawing]) string {
+	if p := d.Path(); p != "" {
+		return p
 	}
+	return settings.Untitled(d.Name())
+}
+
+// rememberView keeps how the window's drawing is viewed, for the next time
+// it opens. Main thread only.
+func (w *window) rememberView() {
+	if store == nil {
+		return
+	}
+	k := viewKeyOf(w.doc)
+	if w.viewKey != k && strings.HasPrefix(w.viewKey, settings.Untitled("")) {
+		// Saved under a name: its view goes with the file, not the name it
+		// had, which a new untitled drawing may take.
+		store.Forget(w.viewKey)
+	}
+	store.SetView(k, w.app.ViewState())
+	w.viewKey = k
 }
 
 // store is the settings file; nil when there is nowhere to keep it.
@@ -178,8 +198,12 @@ func main() {
 			w.app.MCP = agents.Status
 			if store != nil {
 				w.app.SetPrefs(store.Prefs())
-				if v, ok := store.View(d.Path()); ok {
-					w.app.SetViewState(v)
+				// An untitled drawing has a view only when it opens edited,
+				// left unsaved by a quit: a new one starts where new ones do.
+				if d.Path() != "" || d.IsEdited() {
+					if v, ok := store.View(viewKeyOf(d)); ok {
+						w.app.SetViewState(v)
+					}
 				}
 				w.app.OnPrefsChange = store.ChangePrefs
 				w.app.OnViewChange = func(settings.View) { w.rememberView() }
@@ -195,7 +219,14 @@ func main() {
 			c := agents.add(w)
 			w.win.OnFocus(func() { agents.front(c) })
 			w.win.OnClosed(func() {
-				w.rememberView()
+				if d.Path() == "" && !d.IsEdited() {
+					// Nothing to open again: an untitled drawing left blank.
+					if store != nil {
+						store.Forget(w.viewKey)
+					}
+				} else {
+					w.rememberView()
+				}
 				if store != nil {
 					if err := store.Flush(); err != nil {
 						log.Printf("godraw: saving settings: %v", err)
