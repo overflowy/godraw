@@ -3,7 +3,32 @@
   "identifier": "com.overflowy.godraw",
   "version": "0.2.0",
   "out": "build",
-  "macos": { "icon": "icon/AppIcon.icon" },
+  "macos": {
+    "icon": "icon/AppIcon.icon",
+    "infoPlist": {
+      "CFBundleDocumentTypes": [
+        {
+          "CFBundleTypeName": "GoDraw Drawing",
+          "CFBundleTypeRole": "Editor",
+          "LSHandlerRank": "Owner",
+          "LSItemContentTypes": ["com.overflowy.godraw.drawing"],
+          "CFBundleTypeExtensions": ["godraw"],
+          "CFBundleTypeMIMETypes": ["application/vnd.godraw+json"]
+        }
+      ],
+      "UTExportedTypeDeclarations": [
+        {
+          "UTTypeIdentifier": "com.overflowy.godraw.drawing",
+          "UTTypeDescription": "GoDraw Drawing",
+          "UTTypeConformsTo": ["public.json"],
+          "UTTypeTagSpecification": {
+            "public.filename-extension": ["godraw"],
+            "public.mime-type": ["application/vnd.godraw+json"]
+          }
+        }
+      ]
+    }
+  },
   "linux": { "webview": false, "comment": "A local whiteboard", "categories": ["Graphics"] },
   "updates": {
     "publicKey": "fHQhcLBZI03cemFWM/3gA0yLOk8ll8dtH8IxmB9eir0=",
